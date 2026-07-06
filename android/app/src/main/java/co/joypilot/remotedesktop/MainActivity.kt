@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.util.Log
 import android.text.InputType
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -175,7 +176,9 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Session key must be at least 16 characters", Toast.LENGTH_LONG).show()
             return
         }
-        prefs.serverUrl = serverBox.text.toString().trim()
+        val url = serverBox.text.toString().trim()
+        Log.d("MainActivity", "Saving settings: url=$url, keyLen=${key.length}")
+        prefs.serverUrl = url
         prefs.sessionKey = key
         prefs.deviceName = nameBox.text.toString().trim().ifBlank { Build.MODEL }
         ConnectionManager.stop()

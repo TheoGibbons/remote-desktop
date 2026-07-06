@@ -34,6 +34,17 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     private var symbols = false
     private var fnLayer = false
 
+    private val lettersRows = listOf(
+        "q w e r t y u i o p",
+        "a s d f g h j k l",
+        "z x c v b n m"
+    )
+    private val symbolRows = listOf(
+        "1 2 3 4 5 6 7 8 9 0",
+        "@ # $ % & * - + ( )",
+        "! \" ' : ; / ? , ."
+    )
+
     private val modButtons = HashMap<String, Button>()
     private lateinit var shiftButton: Button
     private lateinit var dynamic: LinearLayout
@@ -141,17 +152,6 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     }
 
     // ---- dynamic layers ----
-
-    private val lettersRows = listOf(
-        "q w e r t y u i o p",
-        "a s d f g h j k l",
-        "z x c v b n m"
-    )
-    private val symbolRows = listOf(
-        "1 2 3 4 5 6 7 8 9 0",
-        "@ # $ % & * - + ( )",
-        "! \" ' : ; / ? , ."
-    )
 
     private fun rebuildDynamic() {
         dynamic.removeAllViews()

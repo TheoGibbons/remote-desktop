@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -85,9 +86,24 @@ object ConnectionManager {
     private fun connect() {
         if (!enabled) return
         val prefs = Prefs(appContext)
+        var url = prefs.serverUrl.trim()
+
+        // The relay server expects the /ws path. Append it if missing.
+        val hostStart = url.indexOf("://").let { if (it == -1) 0 else it + 3 }
+        val pathStart = url.indexOf("/", hostStart)
+        if (pathStart == -1 || pathStart == url.length - 1) {
+            url = url.removeSuffix("/") + "/ws"
+        }
+
+        Log.d("ConnectionManager", "Connecting to $url")
         setState("connecting")
-        val request = Request.Builder().url(prefs.serverUrl).build()
-        ws = client.newWebSocket(request, listener)
+        try {
+            val request = Request.Builder().url(url).build()
+            ws = client.newWebSocket(request, listener)
+        } catch (e: Exception) {
+            Log.e("ConnectionManager", "Failed to create WebSocket request for URL: $url", e)
+            setState("error: invalid URL")
+        }
     }
 
     private fun scheduleReconnect(socket: WebSocket) {
@@ -126,6 +142,7 @@ object ConnectionManager {
 
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            Log.d("ConnectionManager", "WebSocket opened")
             val prefs = Prefs(appContext)
             // hello is cleartext and carries only the derived pairing id.
             webSocket.send(
@@ -166,10 +183,15 @@ object ConnectionManager {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            Log.e("ConnectionManager", "WebSocket failure: ${t.message}", t)
+            response?.let {
+                Log.e("ConnectionManager", "Response code: ${it.code}, message: ${it.message}")
+            }
             scheduleReconnect(webSocket)
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            Log.d("ConnectionManager", "WebSocket closed: $code / $reason")
             scheduleReconnect(webSocket)
         }
     }
