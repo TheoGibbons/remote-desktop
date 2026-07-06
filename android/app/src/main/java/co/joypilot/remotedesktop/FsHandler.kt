@@ -108,8 +108,9 @@ class FsHandler(private val context: Context) {
         }
     }
 
-    /** Streams any InputStream to a peer as a file transfer. */
-    fun sendFile(toPeer: String, input: InputStream, name: String, size: Long, xferId: Int) {
+    /** Streams any InputStream to a peer as a file transfer.
+     *  @return true if the whole file was sent and fs-end ok was signalled. */
+    fun sendFile(toPeer: String, input: InputStream, name: String, size: Long, xferId: Int): Boolean {
         try {
             ConnectionManager.sendJson(
                 JSONObject()
@@ -141,18 +142,26 @@ class FsHandler(private val context: Context) {
                 JSONObject().put("type", "fs-end").put("to", toPeer).put("xferId", xferId).put("ok", true)
             )
             status("Sent $name")
+            return true
         } catch (e: Exception) {
             ConnectionManager.sendJson(
                 JSONObject().put("type", "fs-end").put("to", toPeer)
                     .put("xferId", xferId).put("ok", false).put("error", e.message ?: "send failed")
             )
             status("Send failed: ${e.message}")
+            return false
         }
     }
 
-    fun sendFileAsync(toPeer: String, input: InputStream, name: String, size: Long) {
+    fun sendFileAsync(
+        toPeer: String, input: InputStream, name: String, size: Long,
+        onDone: ((Boolean) -> Unit)? = null,
+    ) {
         val id = nextXferId()
-        exec.execute { sendFile(toPeer, input, name, size, id) }
+        exec.execute {
+            val ok = sendFile(toPeer, input, name, size, id)
+            onDone?.invoke(ok)
+        }
     }
 
     // ---------- receiving ----------

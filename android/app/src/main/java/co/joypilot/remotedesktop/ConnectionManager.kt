@@ -61,6 +61,9 @@ object ConnectionManager {
 
     fun start(context: Context) {
         init(context)
+        // Idempotent: the activity, ConnectionService and the accessibility
+        // service may all call this — keep the existing socket if we have one.
+        if (enabled && ws != null) return
         val prefs = Prefs(appContext)
         if (prefs.sessionKey.length < 16 || prefs.serverUrl.isBlank()) {
             setState("disconnected: not configured")
@@ -151,6 +154,7 @@ object ConnectionManager {
                     .put("session", pairId)
                     .put("device", "android")
                     .put("name", prefs.deviceName)
+                    .put("uid", prefs.deviceUid)
                     .toString()
             )
         }
@@ -212,7 +216,14 @@ object ConnectionManager {
             }
             "peer-joined" -> {
                 val p = msg.getJSONObject("peer")
-                peers.add(Peer(p.getString("id"), p.getString("device"), p.getString("name")))
+                val peer = Peer(p.getString("id"), p.getString("device"), p.getString("name"))
+                peers.add(peer)
+                main.post {
+                    android.widget.Toast.makeText(
+                        appContext, "${peer.name} (${peer.device}) is now paired and online",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
                 setState("connected") // nudge peer-dependent UI to refresh
             }
             "peer-left" -> {

@@ -125,7 +125,8 @@ public class FsService
         _ = Task.Run(() => SendFileAsync(from, path, xferId));
     }
 
-    public async Task SendFileAsync(string toPeer, string localPath, uint xferId)
+    /// <returns>true if the whole file was sent and fs-end ok was signalled.</returns>
+    public async Task<bool> SendFileAsync(string toPeer, string localPath, uint xferId)
     {
         try
         {
@@ -165,6 +166,7 @@ public class FsService
 
             _ws.SendJson(new JsonObject { ["type"] = "fs-end", ["to"] = toPeer, ["xferId"] = xferId, ["ok"] = true });
             TransferStatus?.Invoke($"Sent {fi.Name}");
+            return true;
         }
         catch (Exception ex)
         {
@@ -177,6 +179,7 @@ public class FsService
                 ["error"] = ex.Message,
             });
             TransferStatus?.Invoke($"Send failed: {ex.Message}");
+            return false;
         }
     }
 

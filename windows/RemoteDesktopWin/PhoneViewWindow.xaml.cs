@@ -3,12 +3,16 @@ using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace RemoteDesktopWin;
 
 /// <summary>
-/// Displays the phone's streamed screen. A click becomes a tap; a press-drag
-/// becomes a swipe gesture on the phone.
+/// Displays the phone's streamed screen and forwards mouse input as touch:
+///  - quick click                -> tap
+///  - press and hold             -> long-press (touch held down)
+///  - press and drag             -> real drag (streamed touch moves)
+///  - mouse wheel                -> pinch zoom in/out at the cursor
 /// </summary>
 public partial class PhoneViewWindow : Window
 {
@@ -17,6 +21,13 @@ public partial class PhoneViewWindow : Window
 
     private Point? _downPos;
     private DateTime _downTime;
+    private bool _touching;             // a touch-down has been sent to the phone
+    private DateTime _lastMoveSent;
+    private readonly DispatcherTimer _holdTimer;
+
+    private const double DragSlopPx = 6;
+    private static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
+    private static readonly TimeSpan MoveInterval = TimeSpan.FromMilliseconds(30);
 
     public PhoneViewWindow(WsClient ws, string phoneId)
     {
@@ -25,6 +36,14 @@ public partial class PhoneViewWindow : Window
         _phoneId = phoneId;
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
         Closed += (_, _) => _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _phoneId });
+
+        // Holding the button without moving becomes a long-press on the phone.
+        _holdTimer = new DispatcherTimer { Interval = HoldDelay };
+        _holdTimer.Tick += (_, _) =>
+        {
+            _holdTimer.Stop();
+            if (_downPos is { } p && !_touching) BeginTouch(p);
+        };
     }
 
     public void OnScreenInfo(int width, int height)
@@ -72,44 +91,82 @@ public partial class PhoneViewWindow : Window
         return (nx, ny);
     }
 
+    private void SendTouch(string action, double x, double y) =>
+        _ws.SendJson(new JsonObject
+        {
+            ["type"] = "touch",
+            ["to"] = _phoneId,
+            ["action"] = action,
+            ["x"] = x,
+            ["y"] = y,
+        });
+
+    private void BeginTouch(Point at)
+    {
+        if (Normalize(at) is not { } n) return;
+        _touching = true;
+        SendTouch("down", n.x, n.y);
+    }
+
     private void Screen_MouseDown(object sender, MouseButtonEventArgs e)
     {
         _downPos = e.GetPosition(ScreenImage);
         _downTime = DateTime.UtcNow;
+        _touching = false;
         ScreenImage.CaptureMouse();
+        _holdTimer.Start();
     }
 
-    private void Screen_MouseMove(object sender, MouseEventArgs e) { }
+    private void Screen_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_downPos is not { } down) return;
+        var pos = e.GetPosition(ScreenImage);
+
+        if (!_touching)
+        {
+            if ((pos - down).Length < DragSlopPx) return;
+            _holdTimer.Stop();
+            BeginTouch(down); // drag starts where the button went down
+        }
+
+        if (DateTime.UtcNow - _lastMoveSent < MoveInterval) return;
+        if (Normalize(pos) is not { } n) return;
+        _lastMoveSent = DateTime.UtcNow;
+        SendTouch("move", n.x, n.y);
+    }
 
     private void Screen_MouseUp(object sender, MouseButtonEventArgs e)
     {
         ScreenImage.ReleaseMouseCapture();
-        if (_downPos == null) return;
+        _holdTimer.Stop();
+        if (_downPos is not { } down) return;
         var up = e.GetPosition(ScreenImage);
-        var down = _downPos.Value;
         _downPos = null;
 
-        var a = Normalize(down);
-        var b = Normalize(up);
-        if (a == null) return;
+        if (_touching)
+        {
+            _touching = false;
+            var n = Normalize(up) ?? Normalize(down);
+            if (n is { } end) SendTouch("up", end.x, end.y);
+        }
+        else if (Normalize(down) is { } a)
+        {
+            // Short press with no movement: plain tap.
+            _ws.SendJson(new JsonObject { ["type"] = "tap", ["to"] = _phoneId, ["x"] = a.x, ["y"] = a.y });
+        }
+    }
 
-        var dist = (up - down).Length;
-        if (dist < 8 || b == null)
+    private void Screen_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        var at = Normalize(e.GetPosition(ScreenImage)) ?? (0.5, 0.5);
+        _ws.SendJson(new JsonObject
         {
-            _ws.SendJson(new JsonObject { ["type"] = "tap", ["to"] = _phoneId, ["x"] = a.Value.x, ["y"] = a.Value.y });
-        }
-        else
-        {
-            var ms = Math.Clamp((int)(DateTime.UtcNow - _downTime).TotalMilliseconds, 60, 1500);
-            _ws.SendJson(new JsonObject
-            {
-                ["type"] = "swipe",
-                ["to"] = _phoneId,
-                ["x1"] = a.Value.x, ["y1"] = a.Value.y,
-                ["x2"] = b.Value.x, ["y2"] = b.Value.y,
-                ["ms"] = ms,
-            });
-        }
+            ["type"] = "pinch",
+            ["to"] = _phoneId,
+            ["x"] = at.Item1,
+            ["y"] = at.Item2,
+            ["dir"] = e.Delta > 0 ? "in" : "out",
+        });
     }
 
     private void Back_Click(object sender, RoutedEventArgs e) =>

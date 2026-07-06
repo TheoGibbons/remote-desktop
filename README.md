@@ -18,7 +18,9 @@ Three components share one small WebSocket protocol ([PROTOCOL.md](PROTOCOL.md))
    or just your LAN).
 2. In **each** app's settings, enter the **same three things once**:
    - the server URL (`ws://host:8090/ws`, or `wss://…` behind TLS),
-   - the **same long session key** (tap *Generate* on one device, copy it to the other),
+   - the **same long session key** (tap *Generate* on one device, copy it to the other —
+     or click **QR code** on the PC and tap **Scan QR** on the phone to copy the
+     server URL + key in one scan),
    - a device name.
 3. Press **Save & Connect**. That's it — forever. Both apps auto-reconnect with
    backoff and re-send the key on their own. There is **no login, no token
@@ -32,7 +34,8 @@ enforce ≥16 chars and the *Generate* button creates a 32-char random one). See
 ## Feature checklist (from the original brief)
 
 **Phone → PC**
-- ✅ Left click (tap), right click (long-press or 2-finger tap), scroll (2-finger drag)
+- ✅ Always-visible mouse pointer (touchpad-style): drag to move it, tap = left
+  click, 2-finger tap = right click, double-tap & hold = drag, 2-finger drag = scroll
 - ✅ Full on-screen keyboard including **Win, Ctrl, Alt, Shift**, function keys, arrows, Esc/Tab/etc., plus native-IME typing for long text
 - ✅ Multiple monitors **stitched** into one canvas
 - ✅ Pinch to **zoom in/out** and drag to pan

@@ -186,7 +186,16 @@ class FileExplorerActivity : AppCompatActivity() {
         if (input == null) {
             statusText.text = "Cannot open selected file"; return
         }
-        ConnectionManager.fs.sendFileAsync(winId!!, input, name, size)
+        ConnectionManager.fs.sendFileAsync(winId!!, input, name, size) { ok ->
+            if (ok) runOnUiThread {
+                Toast.makeText(
+                    this,
+                    "“$name” uploaded to the desktop's Downloads\\RemoteDesktop folder " +
+                        "(not the folder you are browsing)",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
         statusText.text = "Uploading $name..."
     }
 

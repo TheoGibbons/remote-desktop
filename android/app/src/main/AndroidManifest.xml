@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Broad file access so the desktop can browse the phone's storage.
          Granted once via the "All files access" settings screen. -->
@@ -21,7 +23,7 @@
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
-        android:icon="@android:drawable/sym_def_app_icon"
+        android:icon="@mipmap/ic_launcher"
         android:theme="@style/Theme.AppCompat.DayNight"
         android:usesCleartextTraffic="true">
 
@@ -48,6 +50,25 @@
             android:name=".ScreenCaptureService"
             android:foregroundServiceType="mediaProjection"
             android:exported="false" />
+
+        <!-- Keeps the relay connection alive so paired devices can reach this
+             phone while the app is in the background / after reboot. -->
+        <service
+            android:name=".ConnectionService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains the end-to-end encrypted session with the user's own paired computer for remote control and file transfer" />
+        </service>
+
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name=".InputAccessibilityService"

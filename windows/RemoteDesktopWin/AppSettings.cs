@@ -12,6 +12,10 @@ public class AppSettings
     public int JpegQuality { get; set; } = 55;
     public int MaxStreamWidth { get; set; } = 2200;
     public bool AutoConnect { get; set; } = true;
+    public bool StartWithWindows { get; set; }
+    // Stable per-install id so the relay can replace this device's stale
+    // connection on reconnect instead of listing it twice.
+    public string DeviceUid { get; set; } = Guid.NewGuid().ToString("N");
 
     private static string Dir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RemoteDesktopWin");

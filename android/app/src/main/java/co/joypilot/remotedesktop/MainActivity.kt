@@ -3,6 +3,8 @@ package co.joypilot.remotedesktop
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -20,6 +22,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.Base64
 
@@ -34,6 +39,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var viewDesktopBtn: Button
     private lateinit var filesBtn: Button
     private lateinit var shareBtn: Button
+    private lateinit var a11yBtn: Button
+    private lateinit var filesPermBtn: Button
+
+    private val grantedColor = Color.parseColor("#2E7D32")   // green: all good
+    private val neededColor = Color.parseColor("#C62828")    // red: action required
 
     private val stateListener: (String) -> Unit = { refreshStatus() }
 
@@ -45,6 +55,10 @@ class MainActivity : AppCompatActivity() {
             }
             refreshStatus()
         }
+
+    private val qrScanner = registerForActivityResult(ScanContract()) { result ->
+        result.contents?.let { applyScannedSettings(it) }
+    }
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -74,8 +88,12 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
         root.addView(keyBox)
-        root.addView(Button(this).apply {
+
+        val keyButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        keyButtons.addView(Button(this).apply {
             text = "Generate strong key"
+            isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
             setOnClickListener {
                 val bytes = ByteArray(24)
                 SecureRandom().nextBytes(bytes)
@@ -84,6 +102,20 @@ class MainActivity : AppCompatActivity() {
                 )
             }
         })
+        keyButtons.addView(Button(this).apply {
+            text = "Scan QR"
+            isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
+            setOnClickListener {
+                qrScanner.launch(ScanOptions().apply {
+                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    setPrompt("Scan the QR code shown by “QR code” in the desktop app")
+                    setBeepEnabled(false)
+                    setOrientationLocked(true)
+                })
+            }
+        })
+        root.addView(keyButtons)
 
         label("Device name")
         nameBox = EditText(this).apply { setText(prefs.deviceName) }
@@ -113,9 +145,17 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(filesBtn)
 
-        label("Let the desktop control this phone:")
+        // ---- permissions group: green = granted, red = action needed ----
+        label("Permissions (let the desktop control this phone):")
+        val permGroup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+            setBackgroundColor(Color.parseColor("#14000000"))
+        }
+
         shareBtn = Button(this).apply {
-            text = "Enable screen sharing"
+            isAllCaps = false
+            setTextColor(Color.WHITE)
             setOnClickListener {
                 if (ScreenCaptureService.isRunning) {
                     ScreenCaptureService.stop(this@MainActivity)
@@ -126,15 +166,18 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        root.addView(shareBtn)
+        permGroup.addView(shareBtn)
 
-        root.addView(Button(this).apply {
-            text = "Enable tap control (Accessibility)"
+        a11yBtn = Button(this).apply {
+            isAllCaps = false
+            setTextColor(Color.WHITE)
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-        })
+        }
+        permGroup.addView(a11yBtn)
 
-        root.addView(Button(this).apply {
-            text = "Grant file access (for desktop file browsing)"
+        filesPermBtn = Button(this).apply {
+            isAllCaps = false
+            setTextColor(Color.WHITE)
             setOnClickListener {
                 if (Build.VERSION.SDK_INT >= 30) {
                     startActivity(
@@ -146,7 +189,9 @@ class MainActivity : AppCompatActivity() {
                         android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 1)
                 }
             }
-        })
+        }
+        permGroup.addView(filesPermBtn)
+        root.addView(permGroup)
 
         setContentView(ScrollView(this).apply { addView(root, MATCH_PARENT, WRAP_CONTENT) })
 
@@ -155,7 +200,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (prefs.autoConnect && prefs.sessionKey.length >= 16) {
-            ConnectionManager.start(this)
+            ConnectionService.start(this)
         }
     }
 
@@ -168,6 +213,29 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         ConnectionManager.stateListeners.remove(stateListener)
+    }
+
+    /** QR payload from the desktop app: {"v":1,"server":"wss://…","key":"…"} */
+    private fun applyScannedSettings(contents: String) {
+        try {
+            val obj = JSONObject(contents)
+            val server = obj.optString("server")
+            val key = obj.optString("key")
+            if (key.length < 16) throw Exception("key too short")
+            if (server.isNotBlank()) serverBox.setText(server)
+            keyBox.setText(key)
+            Toast.makeText(this, "Session settings scanned", Toast.LENGTH_SHORT).show()
+            saveAndConnect()
+        } catch (e: Exception) {
+            // Not our JSON payload — accept a bare key string as a fallback.
+            if (contents.trim().length >= 16 && !contents.contains('\n')) {
+                keyBox.setText(contents.trim())
+                Toast.makeText(this, "Session key scanned", Toast.LENGTH_SHORT).show()
+                saveAndConnect()
+            } else {
+                Toast.makeText(this, "That QR code is not a Remote Desktop pairing code", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun saveAndConnect() {
@@ -183,6 +251,15 @@ class MainActivity : AppCompatActivity() {
         prefs.deviceName = nameBox.text.toString().trim().ifBlank { Build.MODEL }
         ConnectionManager.stop()
         ConnectionManager.start(this)
+        // Foreground service keeps the session alive so the desktop can reach
+        // this phone without the app being open (ConnectionManager.start is
+        // idempotent, so the service won't open a second socket).
+        ConnectionService.start(this)
+    }
+
+    private fun setPermState(b: Button, granted: Boolean, grantedText: String, neededText: String) {
+        b.text = if (granted) "✓  $grantedText" else "✗  $neededText"
+        b.backgroundTintList = ColorStateList.valueOf(if (granted) grantedColor else neededColor)
     }
 
     @SuppressLint("SetTextI18n")
@@ -195,9 +272,13 @@ class MainActivity : AppCompatActivity() {
         val hasWindows = peers.any { it.device == "windows" }
         viewDesktopBtn.isEnabled = hasWindows
         filesBtn.isEnabled = hasWindows
-        shareBtn.text = if (ScreenCaptureService.isRunning) "Disable screen sharing" else "Enable screen sharing"
-        val a11y = if (InputAccessibilityService.instance != null) " · tap control ON" else ""
-        val mgd = if (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()) " · file access OK" else ""
-        statusText.text = "Status: ${ConnectionManager.state}$a11y$mgd"
+
+        setPermState(shareBtn, ScreenCaptureService.isRunning,
+            "Screen sharing enabled (tap to stop)", "Enable screen sharing")
+        setPermState(a11yBtn, InputAccessibilityService.instance != null,
+            "Tap control enabled", "Enable tap control (Accessibility)")
+        val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
+        setPermState(filesPermBtn, filesOk,
+            "File access granted", "Grant file access (for desktop file browsing)")
     }
 }

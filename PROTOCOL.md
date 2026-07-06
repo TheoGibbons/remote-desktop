@@ -31,7 +31,7 @@ route to one peer; otherwise it is broadcast to all other peers in the session.
 
 | type    | fields                                   | notes |
 |---------|------------------------------------------|-------|
-| `hello` | `session` (the derived **pairing id**, not the raw key), `device` (`windows`\|`android`), `name` | First message after connect. Cleartext. |
+| `hello` | `session` (the derived **pairing id**, not the raw key), `device` (`windows`\|`android`), `name`, `uid`? | First message after connect. Cleartext. `uid` is a stable random per-install id; when a device reconnects with the same `uid`, the server kicks its stale connection from the session (and broadcasts `peer-left`) so the device is never listed twice. |
 
 ### Server → Client
 
@@ -66,6 +66,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `scroll` | `dx`, `dy` | Wheel notches; positive `dy` scrolls up. |
 | `key`    | `action` (`down`\|`up`\|`press`), `code` | Key names: `A`-`Z`, `0`-`9`, `F1`-`F12`, `ENTER`, `ESC`, `TAB`, `SPACE`, `BACKSPACE`, `DELETE`, `INSERT`, `HOME`, `END`, `PGUP`, `PGDN`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `WIN`, `CTRL`, `ALT`, `SHIFT`, `CAPS`, `PRINTSCREEN`, or a single character. |
 | `text`   | `text` | Type a unicode string (used for normal typing without modifiers). |
+| `cad`    | – | Request Ctrl+Alt+Del. The real secure attention sequence can't be injected by normal apps, so the host calls `SendSAS` where policy allows it and opens Task Manager otherwise. |
 
 **Input — controlling Android** (coordinates normalized 0..1 over the phone screen)
 
@@ -73,6 +74,8 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 |---------|--------|-------|
 | `tap`   | `x`, `y` | |
 | `swipe` | `x1`, `y1`, `x2`, `y2`, `ms` | Drag gesture over `ms` milliseconds. |
+| `touch` | `action` (`down`\|`move`\|`up`), `x`, `y` | Streamed pointer for real-time press / long-press / drag. The phone plays it as one continued accessibility stroke: the finger stays down from `down` until `up`. Senders should throttle `move` to ~30 ms. |
+| `pinch` | `x`, `y`, `dir` (`in`\|`out`) | Two-finger pinch step centered at `x`,`y` (e.g. one mouse-wheel notch). |
 | `back` / `homebtn` / `recents` | – | Global navigation actions. |
 
 **File system** (`path` uses the native separators of the target device)

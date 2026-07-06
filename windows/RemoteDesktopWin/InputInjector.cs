@@ -153,6 +153,35 @@ public static class InputInjector
         return true;
     }
 
+    /// <summary>
+    /// Best-effort Ctrl+Alt+Del. Injecting the real secure attention sequence
+    /// is blocked by Windows for normal apps; SendSAS works only when allowed
+    /// by policy, so fall back to opening Task Manager (the most common reason
+    /// to want Ctrl+Alt+Del remotely).
+    /// </summary>
+    public static void CtrlAltDel()
+    {
+        try
+        {
+            SendSAS(false);
+        }
+        catch
+        {
+            // sas.dll unavailable or not permitted.
+        }
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("taskmgr.exe")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch { }
+    }
+
+    [DllImport("sas.dll")]
+    private static extern void SendSAS(bool asUser);
+
     public static void TypeText(string text)
     {
         var inputs = new List<INPUT>(text.Length * 2);

@@ -15,7 +15,7 @@
             <TextBox x:Name="PathBox" Margin="6,0" VerticalContentAlignment="Center" KeyDown="PathBox_KeyDown"/>
         </DockPanel>
 
-        <ListView x:Name="EntryList" Grid.Row="1" Margin="0,8" MouseDoubleClick="Entry_DoubleClick">
+        <ListView x:Name="EntryList" Grid.Row="1" Margin="0,8" SelectionMode="Single" MouseDoubleClick="Entry_DoubleClick">
             <ListView.View>
                 <GridView>
                     <GridViewColumn Header="Name" Width="360" DisplayMemberBinding="{Binding Display}"/>
@@ -26,7 +26,7 @@
         </ListView>
 
         <DockPanel Grid.Row="2">
-            <Button Content="⬇ Download selected" Padding="10,4" Click="Download_Click"/>
+            <Button Content="⬇ Download" Padding="10,4" Click="Download_Click"/>
             <Button Content="⬆ Upload file to phone..." Padding="10,4" Margin="8,0,0,0" Click="Upload_Click"/>
             <TextBlock x:Name="StatusText" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </DockPanel>

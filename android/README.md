@@ -2,9 +2,12 @@
 
 Kotlin app (min SDK 26 / Android 8.0). It:
 
-- views & controls the paired PC: **pinch-zoom/pan**, tap = click, long-press =
-  right-click, two-finger drag = scroll, and a **full on-screen keyboard** with
-  Win / Ctrl / Alt / Shift / function keys plus native-IME typing for long text;
+- views & controls the paired PC with an **always-visible mouse pointer**
+  (touchpad-style): drag to move the pointer, tap = left click, two-finger tap =
+  right click, double-tap & hold = click-drag (one or two fingers for
+  left/right), two-finger hold-drag = scroll wheel, pinch = zoom, and a **full
+  on-screen keyboard** with Win / Ctrl / Alt / Shift / function keys plus
+  native-IME typing for long text;
 - shares its own screen (MediaProjection) so the PC can see it, and accepts
   taps/swipes from the PC (Accessibility gesture dispatch);
 - browses the PC's files and transfers files both ways.
@@ -27,9 +30,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ## First-run setup (once)
 
 1. Launch **Remote Desktop**.
-2. Enter the **Server URL** and paste the **same session key** used on the PC
-   (or tap *Generate strong key* here and copy it to the PC).
-3. **Save & connect.** Settings persist and the app auto-connects from then on.
+2. Easiest: click **QR code** in the desktop app and tap **Scan QR** here — it
+   fills in the server URL and session key and connects. (Or type them manually /
+   tap *Generate strong key* and copy it to the PC.)
+3. **Save & connect.** Settings persist, a small foreground service keeps the
+   session alive in the background (and after reboots), and the app
+   auto-connects from then on.
 
 Then grant the capabilities you want (each is a one-time OS permission):
 

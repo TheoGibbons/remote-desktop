@@ -83,6 +83,7 @@ wss.on("connection", (ws, req) => {
     ws,
     ip,
     id: null,
+    uid: null,
     name: null,
     device: null,
     sessionHash: null,
@@ -147,12 +148,26 @@ function handleHello(client, msg, helloTimer) {
   client.sessionHash = hashKey(key);
   client.device = msg.device === "windows" ? "windows" : "android";
   client.name = String(msg.name || client.device).slice(0, 64);
+  client.uid = typeof msg.uid === "string" && msg.uid ? msg.uid.slice(0, 64) : null;
   client.id = String(nextPeerId++);
 
   let peers = sessions.get(client.sessionHash);
   if (!peers) {
     peers = new Map();
     sessions.set(client.sessionHash, peers);
+  }
+
+  // A device that reconnects (new socket, same install uid) replaces its old
+  // entry immediately instead of showing up as a duplicate peer until the
+  // stale connection times out.
+  if (client.uid) {
+    for (const p of [...peers.values()]) {
+      if (p.uid === client.uid) {
+        console.log(`[replace] ${p.name} superseded by new connection`);
+        leaveSession(p);
+        p.ws.terminate();
+      }
+    }
   }
 
   send(client, {
@@ -171,6 +186,7 @@ function handleHello(client, msg, helloTimer) {
 function leaveSession(client) {
   if (!client.sessionHash) return;
   const peers = sessions.get(client.sessionHash);
+  client.sessionHash = null; // idempotent: close after replacement won't re-broadcast
   if (!peers) return;
   peers.delete(client.id);
   for (const p of peers.values()) {

@@ -17,11 +17,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const ok = (name, cond) => results.push([name, !!cond]);
 
-function connect(device, name, key = KEY) {
+function connect(device, name, key = KEY, uid = undefined) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(URL);
-    const client = { ws, msgs: [], bins: [], welcome: null };
-    ws.on("open", () => ws.send(JSON.stringify({ type: "hello", session: key, device, name })));
+    const client = { ws, msgs: [], bins: [], welcome: null, closed: false };
+    ws.on("close", () => (client.closed = true));
+    ws.on("open", () => ws.send(JSON.stringify({ type: "hello", session: key, device, name, uid })));
     ws.on("message", (data, isBinary) => {
       if (isBinary) return void client.bins.push(data);
       const m = JSON.parse(data.toString());
@@ -61,16 +62,29 @@ async function main() {
   await sleep(150);
   ok("phone got binary frame", phone.bins.length === 1 && phone.bins[0][0] === 1);
 
-  // 4. Session isolation
+  // 4. Reconnect with the same device uid replaces the stale peer entry
+  const tab1 = await connect("android", "my-tab", KEY, "uid-tablet-1");
+  await sleep(150);
+  const tab2 = await connect("android", "my-tab", KEY, "uid-tablet-1");
+  await sleep(150);
+  ok("old connection is kicked on uid rejoin", tab1.closed);
+  ok("rejoin welcome has no duplicate of itself",
+    !tab2.welcome.peers.some((p) => p.id === tab1.welcome.id));
+  ok("peers notified stale entry left",
+    pc.msgs.some((m) => m.type === "peer-left" && m.id === tab1.welcome.id));
+  tab2.ws.close();
+  await sleep(150);
+
+  // 5. Session isolation
   const other = await connect("android", "x", "a-totally-different-key-9999");
   ok("different key is isolated", other.welcome.peers.length === 0);
 
-  // 5. Min key length rejected
+  // 6. Min key length rejected
   let shortErr = false;
   try { await connect("android", "x", "short"); } catch (e) { shortErr = e.message === "bad-hello"; }
   ok("short key rejected", shortErr);
 
-  // 6. Brute-force rate limit (disconnect after each guess)
+  // 7. Brute-force rate limit (disconnect after each guess)
   let banned = false;
   for (let i = 0; i < 25 && !banned; i++) {
     await new Promise((res) => {

@@ -41,10 +41,17 @@ dotnet publish -c Release -r win-x64 --self-contained ^
 Leave **"Allow paired devices to view and control this computer"** checked for
 the phone to be able to control the PC.
 
-- **View phone screen** / double-click the phone in the list → opens a live view
-  where clicking taps and press-drag swipes; Back/Home/Recents buttons included.
+- **View phone screen** / double-click the phone in the list → opens a live view:
+  click = tap, press-and-drag = real drag, hold in place = long-press, mouse
+  wheel = pinch zoom in/out; Back/Home/Recents buttons included.
 - **Browse phone files** → a file explorer to download from / upload to the phone.
-  Downloads are saved to `%USERPROFILE%\Downloads\RemoteDesktop`.
+  Downloads are saved to `%USERPROFILE%\Downloads\RemoteDesktop`; uploads land in
+  the phone's `Downloads/RemoteDesktop`.
+- **QR code** (next to *Generate*) → shows the server URL + session key as a QR
+  code the phone scans to pair in one step.
+- Closing the window hides the app to the **tray** — paired devices can still
+  connect. Right-click the tray icon → Exit to quit, and tick **Start with
+  Windows** so the PC is reachable after a reboot without opening anything.
 
 ## Notes
 

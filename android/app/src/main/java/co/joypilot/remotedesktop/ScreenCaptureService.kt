@@ -56,7 +56,16 @@ class ScreenCaptureService : Service() {
 
         /** A peer asked to view this phone's screen. */
         fun onViewRequested(context: Context) {
-            instance?.setStreaming(true)
+            val svc = instance
+            Handler(context.mainLooper).post {
+                android.widget.Toast.makeText(
+                    context,
+                    if (svc != null) "The desktop started viewing this phone"
+                    else "The desktop tried to view this phone — enable screen sharing in the app first",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+            svc?.setStreaming(true)
         }
 
         fun onViewStopped() {
@@ -200,7 +209,7 @@ class ScreenCaptureService : Service() {
         val notif: Notification = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("Remote Desktop")
             .setContentText("Screen sharing is available to paired devices")
-            .setSmallIcon(android.R.drawable.ic_menu_share)
+            .setSmallIcon(R.drawable.ic_stat_remote)
             .setContentIntent(pi)
             .build()
         if (Build.VERSION.SDK_INT >= 29) {

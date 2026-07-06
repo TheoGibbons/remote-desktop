@@ -21,4 +21,16 @@ class Prefs(context: Context) {
     var autoConnect: Boolean
         get() = sp.getBoolean("autoConnect", true)
         set(v) = sp.edit().putBoolean("autoConnect", v).apply()
+
+    /** Stable per-install id so the relay replaces this device's stale
+     *  connection on reconnect instead of listing it twice. */
+    val deviceUid: String
+        get() {
+            var uid = sp.getString("deviceUid", null)
+            if (uid == null) {
+                uid = java.util.UUID.randomUUID().toString().replace("-", "")
+                sp.edit().putString("deviceUid", uid).apply()
+            }
+            return uid
+        }
 }

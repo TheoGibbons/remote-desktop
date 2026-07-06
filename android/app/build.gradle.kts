@@ -33,4 +33,6 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // QR scanning for one-tap pairing with the desktop app.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 }

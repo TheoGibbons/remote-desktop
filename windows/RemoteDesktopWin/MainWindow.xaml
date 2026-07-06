@@ -27,7 +27,11 @@
 
                 <Label Content="Session key:" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"/>
                 <TextBox x:Name="SessionKeyBox" Grid.Row="1" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"/>
-                <Button x:Name="GenKeyButton" Content="Generate" Grid.Row="1" Grid.Column="2" Margin="6,3,0,3" Padding="8,2" Click="GenKey_Click"/>
+                <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal">
+                    <Button x:Name="GenKeyButton" Content="Generate" Margin="6,3,0,3" Padding="8,2" Click="GenKey_Click"/>
+                    <Button x:Name="QrButton" Content="QR code" Margin="6,3,0,3" Padding="8,2" Click="Qr_Click"
+                            ToolTip="Show a QR code the phone can scan to copy these settings"/>
+                </StackPanel>
 
                 <Label Content="Device name:" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center"/>
                 <TextBox x:Name="DeviceNameBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,3" VerticalAlignment="Center"/>
@@ -39,8 +43,12 @@
             <TextBlock x:Name="StatusText" Text="Not connected" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </StackPanel>
 
-        <CheckBox x:Name="AllowStreamCheck" Grid.Row="2" Margin="0,10,0,0" IsChecked="True"
-                  Content="Allow paired devices to view and control this computer"/>
+        <StackPanel Grid.Row="2" Margin="0,10,0,0">
+            <CheckBox x:Name="AllowStreamCheck" IsChecked="True"
+                      Content="Allow paired devices to view and control this computer"/>
+            <CheckBox x:Name="StartupCheck" Margin="0,6,0,0" Checked="Startup_Changed" Unchecked="Startup_Changed"
+                      Content="Start with Windows (keeps this PC reachable; the app lives in the tray)"/>
+        </StackPanel>
 
         <GroupBox Header="Paired devices" Grid.Row="3" Margin="0,10,0,0" Padding="8">
             <ListBox x:Name="PeerList" MouseDoubleClick="PeerList_DoubleClick"/>

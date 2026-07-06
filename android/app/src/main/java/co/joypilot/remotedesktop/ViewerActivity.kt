@@ -100,36 +100,46 @@ class ViewerActivity : AppCompatActivity() {
                     keyboard.releaseAll(); View.GONE
                 } else View.VISIBLE
             })
-            addView(tb("Drag") {
-                screen.dragMode = !screen.dragMode
-                Toast.makeText(this@ViewerActivity, if (screen.dragMode) "Drag mode ON" else "Drag mode OFF", Toast.LENGTH_SHORT).show()
-            })
+            addView(tb("?") { showGestureHelp() })
             addView(tb("Ctrl+Alt+Del") { ctrlAltDel() })
             addView(tb("✕") { finish() })
         }
     }
 
     private fun wireGestures() {
-        screen.onLeftClick = { x, y ->
-            send(JSONObject().put("type", "mouse").put("action", "down").put("button", "left").put("x", x).put("y", y))
-            send(JSONObject().put("type", "mouse").put("action", "up").put("button", "left").put("x", x).put("y", y))
+        screen.onMouseMove = { x, y ->
+            send(JSONObject().put("type", "mouse").put("action", "move").put("x", x).put("y", y))
         }
-        screen.onRightClick = { x, y ->
-            send(JSONObject().put("type", "mouse").put("action", "down").put("button", "right").put("x", x).put("y", y))
-            send(JSONObject().put("type", "mouse").put("action", "up").put("button", "right").put("x", x).put("y", y))
+        screen.onMouseButton = { button, action, x, y ->
+            send(JSONObject().put("type", "mouse").put("action", action).put("button", button).put("x", x).put("y", y))
         }
         screen.onWheel = { dx, dy -> send(JSONObject().put("type", "scroll").put("dx", dx).put("dy", dy)) }
-        screen.onLeftDown = { x, y -> send(JSONObject().put("type", "mouse").put("action", "down").put("button", "left").put("x", x).put("y", y)) }
-        screen.onMove = { x, y -> send(JSONObject().put("type", "mouse").put("action", "move").put("x", x).put("y", y)) }
-        screen.onLeftUp = { x, y -> send(JSONObject().put("type", "mouse").put("action", "up").put("button", "left").put("x", x).put("y", y)) }
+    }
+
+    private fun showGestureHelp() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Mouse gestures")
+            .setMessage(
+                """
+                Move pointer — drag with one finger
+                Left-click — tap with one finger
+                Left-click drag — double-tap and hold, then drag
+                Right-click — tap with two fingers
+                Right-click drag — double-tap and hold with two fingers, then drag
+                Mouse wheel — hold with two fingers, then drag up or down
+                Zoom — pinch with two fingers
+                """.trimIndent()
+            )
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun ctrlAltDel() {
-        send(JSONObject().put("type", "key").put("code", "CTRL").put("action", "down"))
-        send(JSONObject().put("type", "key").put("code", "ALT").put("action", "down"))
-        send(JSONObject().put("type", "key").put("code", "DELETE").put("action", "press"))
-        send(JSONObject().put("type", "key").put("code", "ALT").put("action", "up"))
-        send(JSONObject().put("type", "key").put("code", "CTRL").put("action", "up"))
+        // The real Ctrl+Alt+Del is a secure sequence Windows won't let apps
+        // inject; the host answers `cad` with SendSAS when policy allows it
+        // and opens Task Manager otherwise.
+        send(JSONObject().put("type", "cad"))
+        Toast.makeText(this, "Sent Ctrl+Alt+Del (opens Task Manager on most PCs)", Toast.LENGTH_SHORT).show()
     }
 
     /** Hidden field that funnels the phone's native IME into remote text/keys. */

@@ -126,11 +126,14 @@ public partial class FileExplorerWindow : Window
         });
     }
 
-    private void Upload_Click(object sender, RoutedEventArgs e)
+    private async void Upload_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Send file to phone" };
         if (dlg.ShowDialog() != true) return;
         var xferId = _fs.NextXferId();
-        _ = _fs.SendFileAsync(_phoneId, dlg.FileName, xferId);
+        var name = System.IO.Path.GetFileName(dlg.FileName);
+        if (await _fs.SendFileAsync(_phoneId, dlg.FileName, xferId))
+            Toast.Show($"“{name}” uploaded to the phone's Downloads/RemoteDesktop folder " +
+                       "(not the folder you are browsing).");
     }
 }

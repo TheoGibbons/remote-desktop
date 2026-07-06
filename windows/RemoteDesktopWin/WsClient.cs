@@ -47,15 +47,17 @@ public class WsClient : IDisposable
     private byte[] _encKey = Array.Empty<byte>();
     private string _pairId = "";
     private string _deviceName = "";
+    private string _deviceUid = "";
 
     public bool IsConnected => _ws?.State == WebSocketState.Open && MyId != null;
 
-    public void Start(string url, string sessionKey, string deviceName)
+    public void Start(string url, string sessionKey, string deviceName, string deviceUid)
     {
         Stop();
         _url = url;
         (_encKey, _pairId) = Crypto.DeriveKeys(sessionKey);
         _deviceName = deviceName;
+        _deviceUid = deviceUid;
         _running = true;
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => RunLoop(_cts.Token));
@@ -93,6 +95,7 @@ public class WsClient : IDisposable
                     ["session"] = _pairId,
                     ["device"] = "windows",
                     ["name"] = _deviceName,
+                    ["uid"] = _deviceUid,
                 });
 
                 var pump = Task.Run(() => SendPump(_ws, _outbox, ct), ct);

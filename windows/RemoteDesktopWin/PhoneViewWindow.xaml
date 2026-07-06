@@ -10,7 +10,7 @@
 
         <Image x:Name="ScreenImage" Grid.Row="0" Stretch="Uniform"
                MouseLeftButtonDown="Screen_MouseDown" MouseLeftButtonUp="Screen_MouseUp"
-               MouseMove="Screen_MouseMove"/>
+               MouseMove="Screen_MouseMove" MouseWheel="Screen_MouseWheel"/>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="6">
             <Button Content="◀ Back" Padding="14,6" Margin="4,0" Click="Back_Click"/>
