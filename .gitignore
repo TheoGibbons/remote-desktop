@@ -1,0 +1,20 @@
+# Node
+server/node_modules/
+npm-debug.log*
+
+# .NET
+windows/**/bin/
+windows/**/obj/
+*.user
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/captures/
+*.iml
+.DS_Store
+
+.idea/

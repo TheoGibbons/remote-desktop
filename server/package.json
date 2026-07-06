@@ -1,0 +1,14 @@
+{
+  "name": "remote-desktop-relay",
+  "version": "1.0.0",
+  "description": "WebSocket relay server pairing devices by shared session key",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.mjs && node test-e2ee.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

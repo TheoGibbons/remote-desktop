@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Remote Desktop</string>
+    <string name="accessibility_description">Lets your paired computer tap and swipe on this phone during a remote session. Only devices that know your session key can send input.</string>
+</resources>

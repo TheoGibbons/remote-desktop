@@ -1,0 +1,55 @@
+<Window x:Class="RemoteDesktopWin.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Remote Desktop" Height="480" Width="520" MinWidth="440" MinHeight="420">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <GroupBox Header="Session settings (set once — the app reconnects automatically forever)" Grid.Row="0" Padding="8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition/><RowDefinition/><RowDefinition/>
+                </Grid.RowDefinitions>
+
+                <Label Content="Server URL:" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center"/>
+                <TextBox x:Name="ServerUrlBox" Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,3" VerticalAlignment="Center"/>
+
+                <Label Content="Session key:" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center"/>
+                <TextBox x:Name="SessionKeyBox" Grid.Row="1" Grid.Column="1" Margin="0,3" VerticalAlignment="Center"/>
+                <Button x:Name="GenKeyButton" Content="Generate" Grid.Row="1" Grid.Column="2" Margin="6,3,0,3" Padding="8,2" Click="GenKey_Click"/>
+
+                <Label Content="Device name:" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center"/>
+                <TextBox x:Name="DeviceNameBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,3" VerticalAlignment="Center"/>
+            </Grid>
+        </GroupBox>
+
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,0">
+            <Button x:Name="ConnectButton" Content="Save &amp; Connect" Padding="12,4" Click="Connect_Click"/>
+            <TextBlock x:Name="StatusText" Text="Not connected" VerticalAlignment="Center" Margin="12,0,0,0"/>
+        </StackPanel>
+
+        <CheckBox x:Name="AllowStreamCheck" Grid.Row="2" Margin="0,10,0,0" IsChecked="True"
+                  Content="Allow paired devices to view and control this computer"/>
+
+        <GroupBox Header="Paired devices" Grid.Row="3" Margin="0,10,0,0" Padding="8">
+            <ListBox x:Name="PeerList" MouseDoubleClick="PeerList_DoubleClick"/>
+        </GroupBox>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,10,0,0">
+            <Button x:Name="ViewPhoneButton" Content="View phone screen" Padding="12,4" Click="ViewPhone_Click" IsEnabled="False"/>
+            <Button x:Name="FilesButton" Content="Browse phone files" Padding="12,4" Margin="8,0,0,0" Click="Files_Click" IsEnabled="False"/>
+            <TextBlock x:Name="TransferText" VerticalAlignment="Center" Margin="12,0,0,0"/>
+        </StackPanel>
+    </Grid>
+</Window>
