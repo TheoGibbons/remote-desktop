@@ -102,10 +102,14 @@ class RemoteScreenView @JvmOverloads constructor(
         var tx = v[Matrix.MTRANS_X]
         var ty = v[Matrix.MTRANS_Y]
 
+        // When zoomed in, allow half a viewport of overscroll past each edge:
+        // any edge of the desktop can be dragged all the way to the centre of the
+        // view. That lets the user pull the top/corners out from under the
+        // on-screen button overlay. (When the desktop fits, keep it centred.)
         tx = if (dispW <= width) (width - dispW) / 2f
-        else tx.coerceIn(width - dispW, 0f)
+        else tx.coerceIn(width / 2f - dispW, width / 2f)
         ty = if (dispH <= height) (height - dispH) / 2f
-        else ty.coerceIn(height - dispH, 0f)
+        else ty.coerceIn(height / 2f - dispH, height / 2f)
 
         matrix.setValues(v.also { it[Matrix.MTRANS_X] = tx; it[Matrix.MTRANS_Y] = ty })
     }
@@ -250,6 +254,9 @@ class RemoteScreenView @JvmOverloads constructor(
         const val DOUBLE_TAP_MS = 350L
         const val HOLD_MS = 320L
         const val WHEEL_PX_PER_NOTCH = 90.0
+        // Max pinch-zoom, relative to the fit-to-screen scale (so you can zoom
+        // well past 1:1 to read fine detail).
+        const val MAX_ZOOM = 40f
     }
 
     private fun startDrag(dragState: State) {
@@ -397,7 +404,7 @@ class RemoteScreenView @JvmOverloads constructor(
                 // Pinch to zoom about the focus point…
                 val dScale = if (prevDist > 0) dist / prevDist else 1f
                 val cur = currentScale()
-                val target = (cur * dScale).coerceIn(fitScale, fitScale * 8f)
+                val target = (cur * dScale).coerceIn(fitScale, fitScale * MAX_ZOOM)
                 val applied = target / cur
                 matrix.postScale(applied, applied, focusX, focusY)
                 // …and pan by however the two fingers moved together.
