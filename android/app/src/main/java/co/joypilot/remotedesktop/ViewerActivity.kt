@@ -192,9 +192,9 @@ class ViewerActivity : AppCompatActivity() {
                 Left-click — tap with one finger
                 Left-click drag — double-tap and hold, then drag
                 Right-click — tap with two fingers
-                Right-click drag — double-tap and hold with two fingers, then drag
-                Mouse wheel — hold with two fingers, then drag up or down
+                Pan — drag with two fingers
                 Zoom — pinch with two fingers
+                Mouse wheel — drag up or down with three fingers
                 """.trimIndent()
             )
             .setPositiveButton("OK", null)

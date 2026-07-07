@@ -35,10 +35,10 @@ enforce ≥16 chars and the *Generate* button creates a 32-char random one). See
 
 **Phone → PC**
 - ✅ Always-visible mouse pointer (touchpad-style): drag to move it, tap = left
-  click, 2-finger tap = right click, double-tap & hold = drag, 2-finger drag = scroll
+  click, 2-finger tap = right click, double-tap & hold = drag, 3-finger drag = scroll
 - ✅ Full on-screen keyboard including **Win, Ctrl, Alt, Shift**, function keys, arrows, Esc/Tab/etc., plus native-IME typing for long text
 - ✅ Multiple monitors **stitched** into one canvas
-- ✅ Pinch to **zoom in/out** and drag to pan
+- ✅ Pinch to **zoom in/out** and 2-finger drag to **pan**
 
 **PC → Phone**
 - ✅ Tap / swipe / Back / Home / Recents on the phone screen
