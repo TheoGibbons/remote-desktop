@@ -59,7 +59,10 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `screen-info` | `width`, `height` | Pixel size of the streamed (stitched) surface. Sent by the host when streaming starts and whenever it changes. |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
 
-**Input — controlling Windows** (coordinates normalized 0..1 over the stitched virtual desktop)
+**Input — controlling Windows** (coordinates normalized 0..1 over the stitched
+virtual desktop). The controller may be a phone or another PC — the host injects
+these identically either way, so Windows↔Windows control needs no new messages;
+the viewer simply decodes the type-3 stream (below) and sends these.
 
 | type     | fields | notes |
 |----------|--------|-------|

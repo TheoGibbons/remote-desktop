@@ -1,0 +1,27 @@
+<Window x:Class="RemoteDesktopWin.PcViewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Computer" Height="600" Width="900" MinWidth="480" MinHeight="360"
+        Background="#111" Focusable="True"
+        PreviewKeyDown="Window_PreviewKeyDown" PreviewKeyUp="Window_PreviewKeyUp"
+        PreviewTextInput="Window_PreviewTextInput" Deactivated="Window_Deactivated">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Background="#1e1e1e" LastChildFill="False">
+            <Button Content="Ctrl+Alt+Del" DockPanel.Dock="Left" Margin="6,4" Padding="10,4" Click="Cad_Click"/>
+            <TextBlock x:Name="HintText" DockPanel.Dock="Left" Foreground="#aaa"
+                       VerticalAlignment="Center" Margin="8,0"
+                       Text="Your keyboard and mouse control the remote PC while this window is focused."/>
+        </DockPanel>
+
+        <!-- Focusable=False so key events bubble to the window's Preview handlers
+             instead of being consumed by focus/navigation on the image. -->
+        <Image x:Name="ScreenImage" Grid.Row="1" Stretch="Uniform" Focusable="False"
+               MouseDown="Screen_MouseDown" MouseUp="Screen_MouseUp"
+               MouseMove="Screen_MouseMove" MouseWheel="Screen_MouseWheel"/>
+    </Grid>
+</Window>

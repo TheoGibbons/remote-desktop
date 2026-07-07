@@ -138,20 +138,42 @@ class RemoteScreenView @JvmOverloads constructor(
         onMouseMove?.invoke(cursorNormX(), cursorNormY())
     }
 
-    /** Auto-pan the viewport so the pointer never leaves the visible area. */
-    private fun keepPointerVisible() {
+    // The pointer is kept at least this far (screen px) from every viewport edge.
+    private val pointerMargin = 24f * density
+
+    /**
+     * How far the pointer, mapped to the screen, currently sits *past* the safe
+     * margin at each edge, in screen pixels. Zero on an axis means it's inside.
+     */
+    private fun pointerEdgeOverflow(): Pair<Float, Float> {
         val pts = floatArrayOf(cursorX, cursorY)
         matrix.mapPoints(pts)
-        val margin = 48f * density / 2f
         var dx = 0f
         var dy = 0f
-        if (pts[0] < margin) dx = margin - pts[0]
-        if (pts[0] > width - margin) dx = width - margin - pts[0]
-        if (pts[1] < margin) dy = margin - pts[1]
-        if (pts[1] > height - margin) dy = height - margin - pts[1]
+        if (pts[0] < pointerMargin) dx = pointerMargin - pts[0]
+        if (pts[0] > width - pointerMargin) dx = width - pointerMargin - pts[0]
+        if (pts[1] < pointerMargin) dy = pointerMargin - pts[1]
+        if (pts[1] > height - pointerMargin) dy = height - pointerMargin - pts[1]
+        return Pair(dx, dy)
+    }
+
+    /** One-finger move: auto-pan the viewport so the pointer never leaves the edge. */
+    private fun keepPointerVisible() {
+        val (dx, dy) = pointerEdgeOverflow()
         if (dx != 0f || dy != 0f) {
             matrix.postTranslate(dx, dy)
             clampTranslation()
+        }
+    }
+
+    /** Two-finger pan: drag the pointer along so it doesn't get panned off-screen. */
+    private fun keepPointerInView() {
+        val (dx, dy) = pointerEdgeOverflow()
+        if (dx != 0f || dy != 0f) {
+            val scale = currentScale()
+            cursorX = (cursorX + dx / scale).coerceIn(0f, imgW.toFloat())
+            cursorY = (cursorY + dy / scale).coerceIn(0f, imgH.toFloat())
+            sendPointer()
         }
     }
 
@@ -381,6 +403,8 @@ class RemoteScreenView @JvmOverloads constructor(
                 // …and pan by however the two fingers moved together.
                 matrix.postTranslate(dFocusX, dFocusY)
                 clampTranslation()
+                // If the pan pushed the pointer to the edge, drag it along.
+                keepPointerInView()
                 invalidate()
             }
             else -> {}

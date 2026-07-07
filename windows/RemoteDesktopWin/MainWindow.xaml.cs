@@ -20,6 +20,7 @@ public partial class MainWindow : Window
 
     private readonly List<Peer> _peers = new();
     private PhoneViewWindow? _phoneView;
+    private PcViewWindow? _pcView;
     private FileExplorerWindow? _fileExplorer;
     private System.Windows.Forms.NotifyIcon? _tray;
     private bool _exiting;
@@ -261,8 +262,11 @@ public partial class MainWindow : Window
                 break;
 
             case "peer-left":
-                _peers.RemoveAll(p => p.Id == msg["id"]?.GetValue<string>());
+                var leftId = msg["id"]?.GetValue<string>();
+                _peers.RemoveAll(p => p.Id == leftId);
                 RefreshPeerList();
+                if (_pcView != null && _pcView.PeerId == leftId) _pcView.Close();
+                if (_phoneView != null && _phoneView.PeerId == leftId) _phoneView.Close();
                 break;
 
             case "error":
@@ -316,9 +320,11 @@ public partial class MainWindow : Window
                 break;
 
             case "screen-info":
-                _phoneView?.OnScreenInfo(
-                    msg["width"]?.GetValue<int>() ?? 0,
-                    msg["height"]?.GetValue<int>() ?? 0);
+                var siW = msg["width"]?.GetValue<int>() ?? 0;
+                var siH = msg["height"]?.GetValue<int>() ?? 0;
+                var siFrom = msg["from"]?.GetValue<string>();
+                if (_phoneView != null && _phoneView.PeerId == siFrom) _phoneView.OnScreenInfo(siW, siH);
+                if (_pcView != null && _pcView.PeerId == siFrom) _pcView.OnScreenInfo(siW, siH);
                 break;
 
             case "fs-list":
@@ -339,37 +345,51 @@ public partial class MainWindow : Window
         if (data.Length == 0) return;
         switch (data[0])
         {
-            case 1: // video frame from the phone
+            case 1: // full-frame JPEG (phone host)
                 Dispatcher.BeginInvoke(() => _phoneView?.OnFrame(data));
                 break;
             case 2: // file chunk
                 _fs.HandleFileChunk(data);
+                break;
+            case 3: // dirty-rect screen patch (Windows host)
+                Dispatcher.BeginInvoke(() => _pcView?.OnPatch(data));
                 break;
         }
     }
 
     private void RefreshPeerList()
     {
+        var selectedId = (PeerList.SelectedItem as Peer)?.Id;
         PeerList.ItemsSource = null;
         PeerList.ItemsSource = _peers;
-        var hasAndroid = _peers.Any(p => p.Device == "android");
-        ViewPhoneButton.IsEnabled = hasAndroid;
-        FilesButton.IsEnabled = hasAndroid;
+        if (selectedId != null)
+            PeerList.SelectedItem = _peers.FirstOrDefault(p => p.Id == selectedId);
+        // Both a PC and a phone can be viewed and browsed; act on the selected peer.
+        ViewButton.IsEnabled = _peers.Count > 0;
+        FilesButton.IsEnabled = _peers.Count > 0;
     }
-
-    private Peer? FirstAndroid() => _peers.FirstOrDefault(p => p.Device == "android");
 
     private string PeerName(string? id) =>
         _peers.FirstOrDefault(p => p.Id == id)?.Name ?? "A paired device";
 
-    private void ViewPhone_Click(object sender, RoutedEventArgs e) => OpenPhoneView();
+    /// <summary>The selected peer, or the only paired peer if there is exactly one.</summary>
+    private Peer? TargetPeer() =>
+        PeerList.SelectedItem as Peer ?? (_peers.Count == 1 ? _peers[0] : null);
 
-    private void PeerList_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e) => OpenPhoneView();
+    private void View_Click(object sender, RoutedEventArgs e) => OpenViewFor(TargetPeer());
 
-    private void OpenPhoneView()
+    private void PeerList_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e) =>
+        OpenViewFor(PeerList.SelectedItem as Peer ?? TargetPeer());
+
+    private void OpenViewFor(Peer? peer)
     {
-        var phone = FirstAndroid();
-        if (phone == null) return;
+        if (peer == null) { Toast.Show("Select a paired device in the list first."); return; }
+        if (peer.Device == "windows") OpenPcView(peer);
+        else OpenPhoneView(peer);
+    }
+
+    private void OpenPhoneView(Peer phone)
+    {
         if (_phoneView == null || !_phoneView.IsLoaded)
         {
             _phoneView = new PhoneViewWindow(_ws, phone.Id);
@@ -382,13 +402,27 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OpenPcView(Peer pc)
+    {
+        if (_pcView == null || !_pcView.IsLoaded)
+        {
+            _pcView = new PcViewWindow(_ws, pc.Id, pc.Name);
+            _pcView.Closed += (_, _) => _pcView = null;
+            _pcView.Show();
+        }
+        else
+        {
+            _pcView.Activate();
+        }
+    }
+
     private void Files_Click(object sender, RoutedEventArgs e)
     {
-        var phone = FirstAndroid();
-        if (phone == null) return;
+        var peer = TargetPeer();
+        if (peer == null) { Toast.Show("Select a paired device in the list first."); return; }
         if (_fileExplorer == null || !_fileExplorer.IsLoaded)
         {
-            _fileExplorer = new FileExplorerWindow(_ws, _fs, phone.Id);
+            _fileExplorer = new FileExplorerWindow(_ws, _fs, peer.Id);
             _fileExplorer.Closed += (_, _) => _fileExplorer = null;
             _fileExplorer.Show();
         }

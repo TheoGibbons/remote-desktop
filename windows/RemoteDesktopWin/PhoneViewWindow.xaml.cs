@@ -19,6 +19,8 @@ public partial class PhoneViewWindow : Window
     private readonly WsClient _ws;
     private readonly string _phoneId;
 
+    public string PeerId => _phoneId;
+
     private Point? _downPos;
     private DateTime _downTime;
     private bool _touching;             // a touch-down has been sent to the phone

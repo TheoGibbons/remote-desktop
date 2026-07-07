@@ -3,11 +3,12 @@
 C# / WPF app targeting **.NET 8 (Windows)**. It:
 
 - streams the whole virtual desktop — **all monitors stitched** into one image —
-  as JPEG frames when a phone asks to view it;
+  as dirty-rect JPEG tiles when a phone **or another PC** asks to view it;
 - injects mouse and keyboard (via `SendInput`, incl. Win/Ctrl/Alt/Shift and
   absolute multi-monitor positioning);
-- shows the phone's screen and sends taps/swipes;
-- browses the phone's files and transfers files both ways.
+- **views and controls another Windows PC** (full keyboard + mouse), as well as
+  showing a phone's screen and sending taps/swipes;
+- browses the other device's files and transfers files both ways.
 
 ## Build & run
 
@@ -39,14 +40,21 @@ dotnet publish -c Release -r win-x64 --self-contained ^
    launch from then on.
 
 Leave **"Allow paired devices to view and control this computer"** checked for
-the phone to be able to control the PC.
+a phone **or another paired PC** to be able to control this computer.
 
-- **View phone screen** / double-click the phone in the list → opens a live view:
-  click = tap, press-and-drag = real drag, hold in place = long-press, mouse
-  wheel = pinch zoom in/out; Back/Home/Recents buttons included.
-- **Browse phone files** → a file explorer to download from / upload to the phone.
-  Downloads are saved to `%USERPROFILE%\Downloads\RemoteDesktop`; uploads land in
-  the phone's `Downloads/RemoteDesktop`.
+- Select a device in **Paired devices**, then **View screen** (or double-click
+  it) → opens a live view:
+  - **another PC** → full desktop control: move/click/scroll with the mouse and
+    type with your real keyboard (shortcuts, modifiers and arrows included) while
+    the window is focused. A **Ctrl+Alt+Del** button covers the one combo Windows
+    won't let apps send directly. The remote PC must have *Allow paired devices…*
+    checked.
+  - **a phone** → click = tap, press-and-drag = real drag, hold in place =
+    long-press, mouse wheel = pinch zoom in/out; Back/Home/Recents buttons included.
+- **Browse files** → a file explorer to download from / upload to the selected
+  device (a PC or a phone). Downloads are saved to
+  `%USERPROFILE%\Downloads\RemoteDesktop`; uploads land in the peer's
+  `Downloads/RemoteDesktop` (Windows) or `Downloads/RemoteDesktop` (Android).
 - **QR code** (next to *Generate*) → shows the server URL + session key as a QR
   code the phone scans to pair in one step.
 - Closing the window hides the app to the **tray** — paired devices can still

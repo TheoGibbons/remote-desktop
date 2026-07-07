@@ -58,8 +58,9 @@
         </GroupBox>
 
         <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,10,0,0">
-            <Button x:Name="ViewPhoneButton" Content="View phone screen" Padding="12,4" Click="ViewPhone_Click" IsEnabled="False"/>
-            <Button x:Name="FilesButton" Content="Browse phone files" Padding="12,4" Margin="8,0,0,0" Click="Files_Click" IsEnabled="False"/>
+            <Button x:Name="ViewButton" Content="View screen" Padding="12,4" Click="View_Click" IsEnabled="False"
+                    ToolTip="View and control the selected device (a PC or a phone)."/>
+            <Button x:Name="FilesButton" Content="Browse files" Padding="12,4" Margin="8,0,0,0" Click="Files_Click" IsEnabled="False"/>
             <TextBlock x:Name="TransferText" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </StackPanel>
     </Grid>

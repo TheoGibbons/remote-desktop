@@ -1,15 +1,16 @@
 # Remote Desktop
 
-Two-way remote control between your Windows PC and your Android phone, plus
-file transfer between them — designed to be **set up once and then just work**,
-with no re-authentication on every use or every update.
+Remote control across your devices — **Windows ↔ Android** in both directions and
+**Windows ↔ Windows** (computer-to-computer) — plus file transfer between any of
+them. Designed to be **set up once and then just work**, with no re-authentication
+on every use or every update.
 
 Three components share one small WebSocket protocol ([PROTOCOL.md](PROTOCOL.md)):
 
 | Component | Folder | Tech | Role |
 |-----------|--------|------|------|
 | Relay server | [`server/`](server/) | Node.js + `ws` | Pairs devices by a shared **session key** and relays traffic. The only always-on, internet-facing piece. |
-| Windows app | [`windows/`](windows/) | C# / WPF (.NET 8) | Streams all monitors (stitched); injects mouse/keyboard from the phone; serves & receives files. |
+| Windows app | [`windows/`](windows/) | C# / WPF (.NET 8) | Streams all monitors (stitched) and injects mouse/keyboard; can also **view & control another PC** (full keyboard + mouse); serves & receives files. |
 | Android app | [`android/`](android/) | Kotlin | Views & controls the PC (zoom, full keyboard incl. Win/Ctrl/Alt/Shift); shares its own screen so the PC can tap it; serves & receives files. |
 
 ## How pairing works (the "set up once" part)
@@ -44,8 +45,14 @@ enforce ≥16 chars and the *Generate* button creates a 32-char random one). See
 - ✅ Tap / swipe / Back / Home / Recents on the phone screen
 - ⚠️ Unlocking a *secure* lockscreen (PIN/pattern/biometric) is **not possible** — Android forbids apps from doing it. A phone with no secure lock (swipe-only) can be unlocked, since the tap lands on the lockscreen surface.
 
+**PC ↔ PC (computer-to-computer)**
+- ✅ View and control another Windows PC: the same dirty-rect screen stream, full
+  mouse (move / click / scroll), and your **physical keyboard** (shortcuts,
+  modifiers, arrows, typing) while the view window is focused, plus a
+  **Ctrl+Alt+Del** button. Uses the existing protocol unchanged.
+
 **Both directions**
-- ✅ File explorer (separate screen from the remote view) to browse the other device's filesystem and **send files back and forth**
+- ✅ File explorer (separate screen from the remote view) to browse the other device's filesystem and **send files back and forth** (phone *or* PC)
 - ✅ Per-IP **rate limiting** on the session-key check so a leaked key can't be brute-forced/spammed
 
 ## Quick start
