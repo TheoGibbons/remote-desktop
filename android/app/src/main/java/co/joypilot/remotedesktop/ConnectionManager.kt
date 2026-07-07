@@ -181,8 +181,9 @@ object ConnectionManager {
             full[0] = frameType
             System.arraycopy(plaintext, 0, full, 1, plaintext.size)
             when (frameType.toInt()) {
-                1 -> binaryListeners.forEach { it(full) }   // video frame from a peer
+                1 -> binaryListeners.forEach { it(full) }   // full video frame from a peer
                 2 -> fs.handleFileChunk(full)               // file chunk
+                3 -> binaryListeners.forEach { it(full) }   // dirty-rect screen patch
             }
         }
 

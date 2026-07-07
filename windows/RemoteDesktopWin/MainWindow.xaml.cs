@@ -40,6 +40,11 @@ public partial class MainWindow : Window
         SessionKeyBox.Text = _settings.SessionKey;
         DeviceNameBox.Text = _settings.DeviceName;
         StartupCheck.IsChecked = _settings.StartWithWindows;
+        if (IsElevated())
+        {
+            ElevateButton.Visibility = Visibility.Collapsed;
+            Title += " (administrator)";
+        }
 
         _ws.StateChanged += s => Dispatcher.Invoke(() => OnState(s));
         _ws.JsonReceived += m => Dispatcher.Invoke(() => OnJson(m));
@@ -112,25 +117,82 @@ public partial class MainWindow : Window
         Application.Current.Shutdown();
     }
 
-    // ---------- run at login ----------
+    // ---------- elevation & run at login ----------
+
+    // Windows UIPI silently discards SendInput into higher-integrity windows
+    // (Task Manager auto-elevates, so does any UAC-elevated app). Running this
+    // app elevated is the supported way to control those remotely.
+
+    private static bool IsElevated()
+    {
+        using var id = System.Security.Principal.WindowsIdentity.GetCurrent();
+        return new System.Security.Principal.WindowsPrincipal(id)
+            .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+    }
+
+    private void Elevate_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+            });
+            ExitApp();
+        }
+        catch
+        {
+            // User declined the UAC prompt — keep running as-is.
+        }
+    }
 
     private void Startup_Changed(object sender, RoutedEventArgs e)
     {
         _settings.StartWithWindows = StartupCheck.IsChecked == true;
         _settings.Save();
+        ApplyStartupRegistration();
+    }
+
+    /// <summary>
+    /// Register (or remove) launch-at-login matching the current elevation:
+    /// a plain HKCU Run entry when not elevated, a highest-run-level scheduled
+    /// task when elevated (the Run key cannot start elevated programs).
+    /// </summary>
+    private void ApplyStartupRegistration()
+    {
+        var exe = Environment.ProcessPath!;
         try
         {
             using var run = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
                 @"Software\Microsoft\Windows\CurrentVersion\Run");
-            if (_settings.StartWithWindows)
-                run.SetValue("RemoteDesktopWin", '"' + Environment.ProcessPath + '"');
+            run.DeleteValue("RemoteDesktopWin", throwOnMissingValue: false);
+            RunSchtasks("/Delete /F /TN RemoteDesktopWin"); // stale task from an elevated install
+
+            if (!_settings.StartWithWindows) return;
+            if (IsElevated())
+                RunSchtasks($"/Create /F /TN RemoteDesktopWin /SC ONLOGON /RL HIGHEST /TR \"\\\"{exe}\\\"\"");
             else
-                run.DeleteValue("RemoteDesktopWin", throwOnMissingValue: false);
+                run.SetValue("RemoteDesktopWin", '"' + exe + '"');
         }
         catch (Exception ex)
         {
             Toast.Show("Could not update startup setting: " + ex.Message);
         }
+    }
+
+    private static void RunSchtasks(string args)
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("schtasks.exe", args)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+            p?.WaitForExit(5000);
+        }
+        catch { }
     }
 
     private void GenKey_Click(object sender, RoutedEventArgs e)
@@ -211,8 +273,13 @@ public partial class MainWindow : Window
                 if (AllowStreamCheck.IsChecked == true)
                 {
                     _streamer.Start();
+                    _streamer.RequestKeyframe(); // joining mid-stream needs a full frame
                     Toast.Show($"{PeerName(msg["from"]?.GetValue<string>())} started viewing this screen");
                 }
+                break;
+
+            case "request-keyframe":
+                _streamer.RequestKeyframe();
                 break;
 
             case "stop-view":

@@ -13,6 +13,7 @@ import android.os.Environment
 import android.provider.Settings
 import android.util.Log
 import android.text.InputType
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
@@ -41,6 +42,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var shareBtn: Button
     private lateinit var a11yBtn: Button
     private lateinit var filesPermBtn: Button
+    private lateinit var permHeader: TextView
+    private lateinit var permGroup: LinearLayout
 
     private val grantedColor = Color.parseColor("#2E7D32")   // green: all good
     private val neededColor = Color.parseColor("#C62828")    // red: action required
@@ -145,12 +148,23 @@ class MainActivity : AppCompatActivity() {
         }
         root.addView(filesBtn)
 
-        // ---- permissions group: green = granted, red = action needed ----
-        label("Permissions (let the desktop control this phone):")
-        val permGroup = LinearLayout(this).apply {
+        // ---- permissions: collapsible section, green = granted, red = needed ----
+        permHeader = TextView(this).apply {
+            textSize = 16f
+            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+            setOnClickListener {
+                permGroup.visibility =
+                    if (permGroup.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                refreshStatus()
+            }
+        }
+        root.addView(permHeader)
+
+        permGroup = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
             setBackgroundColor(Color.parseColor("#14000000"))
+            visibility = View.GONE // collapsed by default; the heading shows the state
         }
 
         shareBtn = Button(this).apply {
@@ -280,5 +294,13 @@ class MainActivity : AppCompatActivity() {
         val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
         setPermState(filesPermBtn, filesOk,
             "File access granted", "Grant file access (for desktop file browsing)")
+
+        val grantedCount = listOf(ScreenCaptureService.isRunning,
+            InputAccessibilityService.instance != null, filesOk).count { it }
+        val arrow = if (permGroup.visibility == View.VISIBLE) "▾" else "▸"
+        permHeader.text = "$arrow  Permissions ($grantedCount/3 enabled)"
+        // Slight tint: green when everything is set up, red when action is needed.
+        permHeader.setBackgroundColor(
+            if (grantedCount == 3) Color.parseColor("#334CAF50") else Color.parseColor("#33F44336"))
     }
 }

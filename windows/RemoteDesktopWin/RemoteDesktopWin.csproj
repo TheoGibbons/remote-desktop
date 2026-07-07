@@ -11,11 +11,27 @@
     <RootNamespace>RemoteDesktopWin</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <!-- Pointer-based pixel compare in ScreenStreamer's dirty-rect diff. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- WFAC010: the WinForms analyzer flags the manifest DPI settings, but this
+         is a WPF app (WinForms is only referenced for the tray NotifyIcon) and
+         WPF takes its DPI awareness from the manifest. -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- UseWindowsForms injects these as global usings, which collides with the
+         WPF Application/Point/MouseEventArgs types. WinForms types (tray icon)
+         are fully qualified in code instead. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
     <PackageReference Include="QRCoder" Version="1.6.0" />
+    <!-- DXGI Desktop Duplication capture (ScreenStreamer/DxgiCaptureSource). -->
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
   </ItemGroup>
 
   <ItemGroup>

@@ -52,10 +52,27 @@ the phone to be able to control the PC.
 - Closing the window hides the app to the **tray** — paired devices can still
   connect. Right-click the tray icon → Exit to quit, and tick **Start with
   Windows** so the PC is reachable after a reboot without opening anything.
+- **Controlling elevated windows** (Task Manager, UAC-elevated installers):
+  Windows UIPI silently blocks injected input into higher-integrity windows,
+  so remote control appears to "stop working" while they have focus. Click
+  **Restart as administrator** to fix that; *Start with Windows* then switches
+  from a Run-key entry to a highest-run-level scheduled task automatically
+  (the Run key can't start elevated programs). The UAC consent dialog itself
+  lives on the secure desktop and can never be captured or clicked remotely —
+  that one is by design and has no workaround.
 
 ## Notes
 
-- Screen capture uses GDI `CopyFromScreen`, so it will briefly pause on the
-  secure desktop (UAC prompt / lock screen) and resume automatically.
-- Streaming frame rate/quality/scale are in `settings.json`
-  (`Fps`, `JpegQuality`, `MaxStreamWidth`).
+- Screen capture uses the **DXGI Desktop Duplication API** (the OS reports
+  exactly which regions changed, at low CPU cost), falling back automatically
+  to GDI `CopyFromScreen` + frame diffing where duplication isn't available
+  (secure desktop, some RDP sessions, rotated monitors) and retrying DXGI
+  every ~10 s while on the fallback. Capture pauses briefly on the secure
+  desktop (UAC prompt / lock screen) and resumes automatically.
+- Streaming is **dirty-rect based**: only changed regions are sent as JPEG
+  tiles (plus a keyframe on start/resize/request and every ~10 s while things
+  change). A static screen costs almost no bandwidth, which is why streaming
+  defaults to **native resolution** and JPEG quality 80.
+- Frame rate/quality/scale are in `settings.json` (`Fps`, `JpegQuality`,
+  `MaxStreamWidth` — `0` means native resolution; set e.g. `1600` to clamp
+  width on very slow links).

@@ -40,6 +40,9 @@
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,10,0,0">
             <Button x:Name="ConnectButton" Content="Save &amp; Connect" Padding="12,4" Click="Connect_Click"/>
+            <Button x:Name="ElevateButton" Content="Restart as administrator" Padding="12,4" Margin="8,0,0,0"
+                    Click="Elevate_Click"
+                    ToolTip="Windows (UIPI) blocks remote input to elevated windows like Task Manager unless this app also runs elevated."/>
             <TextBlock x:Name="StatusText" Text="Not connected" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </StackPanel>
 

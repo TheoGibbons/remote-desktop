@@ -57,10 +57,12 @@ async function main() {
   ok("pc got routed start-view w/ from", pc.msgs.some((m) => m.type === "start-view" && m.from === phone.welcome.id));
   ok("pc got broadcast mouse", pc.msgs.some((m) => m.type === "mouse" && m.x === 0.5));
 
-  // 3. Binary relay (video frame)
+  // 3. Binary relay (video frame + dirty-rect patch)
   pc.ws.send(Buffer.concat([Buffer.from([1]), Buffer.from("fakejpeg")]));
+  pc.ws.send(Buffer.concat([Buffer.from([3]), Buffer.from("fakepatch")]));
   await sleep(150);
-  ok("phone got binary frame", phone.bins.length === 1 && phone.bins[0][0] === 1);
+  ok("phone got binary frame", phone.bins.some((b) => b[0] === 1));
+  ok("phone got patch frame", phone.bins.some((b) => b[0] === 3));
 
   // 4. Reconnect with the same device uid replaces the stale peer entry
   const tab1 = await connect("android", "my-tab", KEY, "uid-tablet-1");

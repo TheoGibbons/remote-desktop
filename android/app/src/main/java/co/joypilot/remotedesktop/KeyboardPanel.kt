@@ -2,6 +2,7 @@ package co.joypilot.remotedesktop
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Color
 import android.util.TypedValue
 import android.view.Gravity
@@ -50,16 +51,44 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     private lateinit var dynamic: LinearLayout
     private val density = context.resources.displayMetrics.density
 
+    // Key size adapts to the screen so all rows fit in landscape too.
+    private var keyHeightPx = 0
+    private var keyTextSp = 13f
+
     init {
         orientation = VERTICAL
         setBackgroundColor(Color.parseColor("#20232A"))
         val pad = (4 * density).toInt()
         setPadding(pad, pad, pad, pad)
+        buildAll()
+    }
 
+    private fun buildAll() {
+        computeKeySize()
+        removeAllViews()
+        modButtons.clear()
         addView(buildModifierRow())
         dynamic = LinearLayout(context).apply { orientation = VERTICAL }
         addView(dynamic)
         rebuildDynamic()
+        refreshModHighlights()
+    }
+
+    /** Budget ~60% of the screen height over the 8 possible rows, so the
+     *  panel never overflows (landscape) but keys stay finger-sized (portrait). */
+    private fun computeKeySize() {
+        val dm = context.resources.displayMetrics
+        val rows = 8
+        val perRow = (dm.heightPixels * 0.60f / rows).toInt() - dp(2) // minus margins
+        keyHeightPx = perRow.coerceIn(dp(30), dp(46))
+        keyTextSp = if (keyHeightPx < dp(38)) 11f else 13f
+    }
+
+    /** The viewer activity handles rotation itself (configChanges), so rebuild
+     *  the rows for the new screen size here. */
+    override fun onConfigurationChanged(newConfig: Configuration?) {
+        super.onConfigurationChanged(newConfig)
+        post { buildAll() }
     }
 
     /** Release any held modifiers (call when hiding the panel). */
@@ -76,11 +105,13 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         return Button(context).apply {
             text = label
             isAllCaps = false
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(dp(2), dp(6), dp(2), dp(6))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, keyTextSp)
+            setPadding(dp(2), 0, dp(2), 0)
             minWidth = 0
             minimumWidth = 0
-            layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, weight).apply {
+            minHeight = 0
+            minimumHeight = 0
+            layoutParams = LayoutParams(0, keyHeightPx, weight).apply {
                 setMargins(dp(1), dp(1), dp(1), dp(1))
             }
             setOnClickListener { onTap(this) }

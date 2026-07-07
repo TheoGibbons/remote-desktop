@@ -23,6 +23,7 @@ public static class Crypto
     public const byte ChJson = 0;
     public const byte ChVideo = 1;
     public const byte ChFile = 2;
+    public const byte ChPatch = 3; // dirty-rect screen patch
 
     /// <returns>(32-byte AES key, lowercase-hex pairing id sent to the server)</returns>
     public static (byte[] encKey, string pairId) DeriveKeys(string sessionKey)

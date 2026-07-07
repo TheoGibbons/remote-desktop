@@ -57,6 +57,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `start-view`  | `to`   | Ask peer to start streaming its screen to me. |
 | `stop-view`   | `to`   | Stop streaming. |
 | `screen-info` | `width`, `height` | Pixel size of the streamed (stitched) surface. Sent by the host when streaming starts and whenever it changes. |
+| `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
 
 **Input — controlling Windows** (coordinates normalized 0..1 over the stitched virtual desktop)
 
@@ -96,8 +97,22 @@ byte). After decryption the payload is:
 
 | byte | meaning     | decrypted payload |
 |------|-------------|-------------------|
-| `1`  | video frame | `JPEG bytes` — one full JPEG image of the stitched screen. |
+| `1`  | video frame | `JPEG bytes` — one full JPEG image of the streamed screen. (Still used by the Android host; the Windows host streams type `3`.) |
 | `2`  | file chunk  | `[xferId: uint32 BE][data bytes]` — sequential chunks (≤ 256 KiB) for the transfer announced by `fs-begin`. |
+| `3`  | screen patch | Dirty-rect update, all integers big-endian: `[seq u32][flags u8][surfW u16][surfH u16][rectCount u16]` followed by `rectCount` × `[x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes]`. `flags` bit 0 = keyframe (a single rect covering the whole surface). |
+
+**Dirty-rect streaming (type 3).** The host compares each captured frame to the
+previous one on a 64 px block grid and sends only the changed regions as JPEG
+tiles, so a static screen costs (near) zero bandwidth. Tiles are absolute pixel
+content: the viewer blits them into a persistent `surfW × surfH` canvas, and a
+*lost* patch (they may be dropped under backpressure) only leaves those regions
+stale — there is no codec-style corruption. Recovery rules:
+
+- `seq` increments per patch **including dropped ones**, so a viewer detects
+  loss as a gap and sends `request-keyframe`.
+- The host sends a keyframe on stream start / `request-keyframe` / surface
+  resize, and every ~10 s while deltas are being sent (safety net).
+- A viewer that has no canvas yet ignores deltas and asks for a keyframe.
 
 So the wire layout is `[frameType(1)][nonce(12)][ciphertext][tag(16)]`. Binary
 frames are broadcast by the server to all other peers in the session (sessions

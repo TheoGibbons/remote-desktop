@@ -9,8 +9,10 @@ public class AppSettings
     public string SessionKey { get; set; } = "";
     public string DeviceName { get; set; } = Environment.MachineName;
     public int Fps { get; set; } = 12;
-    public int JpegQuality { get; set; } = 55;
-    public int MaxStreamWidth { get; set; } = 2200;
+    public int JpegQuality { get; set; } = 80;
+    // 0 = stream at native resolution (affordable since only dirty rects are
+    // sent); set to clamp the stitched width for very slow links.
+    public int MaxStreamWidth { get; set; } = 0;
     public bool AutoConnect { get; set; } = true;
     public bool StartWithWindows { get; set; }
     // Stable per-install id so the relay can replace this device's stale
@@ -27,7 +29,14 @@ public class AppSettings
         try
         {
             if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
+            {
+                var s = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new AppSettings();
+                // Migrate the pre-dirty-rect defaults: full-frame streaming
+                // needed a downscale + low quality; patches don't.
+                if (s.MaxStreamWidth == 2200) s.MaxStreamWidth = 0;
+                if (s.JpegQuality == 55) s.JpegQuality = 80;
+                return s;
+            }
         }
         catch { }
         return new AppSettings();

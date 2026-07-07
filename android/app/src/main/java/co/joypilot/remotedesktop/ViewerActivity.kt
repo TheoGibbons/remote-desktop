@@ -2,6 +2,7 @@ package co.joypilot.remotedesktop
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.os.Bundle
@@ -33,10 +34,76 @@ class ViewerActivity : AppCompatActivity() {
     private var imePrev = ""
     private var imeGuard = false
 
+    // Dirty-rect compositing state (see PROTOCOL.md, binary frame type 3).
+    // Touched only on the network thread that delivers binary frames.
+    private var compose: Bitmap? = null
+    private var composeCanvas: android.graphics.Canvas? = null
+    private var lastSeq = -1L
+    private var haveKeyframe = false
+    @Volatile private var lastKeyframeRequestAt = 0L
+
     private val binaryListener: (ByteArray) -> Unit = { data ->
-        if (data.isNotEmpty() && data[0].toInt() == 1) {
-            val bmp = BitmapFactory.decodeByteArray(data, 1, data.size - 1)
-            if (bmp != null) screen.setFrame(bmp)
+        if (data.isNotEmpty()) when (data[0].toInt()) {
+            1 -> { // legacy full-frame JPEG
+                val bmp = BitmapFactory.decodeByteArray(data, 1, data.size - 1)
+                if (bmp != null) screen.setFrame(bmp)
+            }
+            3 -> handlePatch(data)
+        }
+    }
+
+    /**
+     * [seq u32][flags u8: bit0 keyframe][surfW u16][surfH u16][rectCount u16]
+     * then per rect [x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes].
+     * Tiles are absolute pixel content, so a lost patch only leaves regions
+     * stale — keep painting and ask the host for a keyframe to catch up.
+     */
+    private fun handlePatch(data: ByteArray) {
+        try {
+            val buf = java.nio.ByteBuffer.wrap(data, 1, data.size - 1)
+            val seq = buf.int.toLong() and 0xFFFFFFFFL
+            val keyframe = (buf.get().toInt() and 1) != 0
+            val w = buf.short.toInt() and 0xFFFF
+            val h = buf.short.toInt() and 0xFFFF
+            val rectCount = buf.short.toInt() and 0xFFFF
+
+            var bmp = compose
+            if (bmp == null || bmp.width != w || bmp.height != h) {
+                if (!keyframe) { requestKeyframe(); return } // can't composite yet
+                bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                compose = bmp
+                composeCanvas = android.graphics.Canvas(bmp)
+                haveKeyframe = false
+            }
+            if (keyframe) haveKeyframe = true
+            else if (!haveKeyframe || seq != lastSeq + 1) requestKeyframe()
+            lastSeq = seq
+
+            val canvas = composeCanvas!!
+            repeat(rectCount) {
+                val x = buf.short.toInt() and 0xFFFF
+                val y = buf.short.toInt() and 0xFFFF
+                buf.short // tile w (implicit in the JPEG)
+                buf.short // tile h
+                val len = buf.int
+                val pos = buf.position()
+                buf.position(pos + len)
+                val tile = BitmapFactory.decodeByteArray(data, pos, len) ?: return@repeat
+                canvas.drawBitmap(tile, x.toFloat(), y.toFloat(), null)
+                tile.recycle()
+            }
+            screen.setFrame(bmp)
+        } catch (e: Exception) {
+            requestKeyframe()
+        }
+    }
+
+    private fun requestKeyframe() {
+        val now = System.currentTimeMillis()
+        if (now - lastKeyframeRequestAt < 2000) return
+        lastKeyframeRequestAt = now
+        winId?.let {
+            ConnectionManager.sendJson(JSONObject().put("type", "request-keyframe").put("to", it))
         }
     }
 
