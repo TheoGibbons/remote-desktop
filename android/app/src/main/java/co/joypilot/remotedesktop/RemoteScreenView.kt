@@ -22,11 +22,14 @@ import kotlin.math.min
  *
  *  - 1-finger drag                       -> move the pointer
  *  - 1-finger tap                        -> left click (at the pointer)
- *  - double-tap & hold, then drag        -> left-click drag
+ *  - press & hold, then drag             -> left-click drag
  *  - 2-finger tap                        -> right click (at the pointer)
  *  - 2-finger drag                       -> pan the local viewport
  *  - 2-finger pinch                      -> zoom the local viewport
- *  - 3-finger drag up/down               -> mouse wheel
+ *  - 3-finger drag (throttle)            -> mouse wheel: the scroll speed tracks
+ *                                           how far the fingers are held from
+ *                                           where they first landed; return them
+ *                                           to the start to stop
  *
  * Two-finger pan and pinch are combined into one gesture. The viewport also
  * auto-pans to keep the pointer visible while zoomed in.
@@ -93,25 +96,33 @@ class RemoteScreenView @JvmOverloads constructor(
         return v[Matrix.MSCALE_X]
     }
 
+    // How far past a view edge the image may be dragged, so an edge (and the
+    // corners) can be pulled out from under the on-screen button overlay.
+    private val overscroll = 64f * density
+
     private fun clampTranslation() {
         val v = FloatArray(9)
         matrix.getValues(v)
         val scale = v[Matrix.MSCALE_X]
-        val dispW = imgW * scale
-        val dispH = imgH * scale
-        var tx = v[Matrix.MTRANS_X]
-        var ty = v[Matrix.MTRANS_Y]
+        v[Matrix.MTRANS_X] = clampAxis(v[Matrix.MTRANS_X], imgW * scale, width.toFloat())
+        v[Matrix.MTRANS_Y] = clampAxis(v[Matrix.MTRANS_Y], imgH * scale, height.toFloat())
+        matrix.setValues(v)
+    }
 
-        // When zoomed in, allow half a viewport of overscroll past each edge:
-        // any edge of the desktop can be dragged all the way to the centre of the
-        // view. That lets the user pull the top/corners out from under the
-        // on-screen button overlay. (When the desktop fits, keep it centred.)
-        tx = if (dispW <= width) (width - dispW) / 2f
-        else tx.coerceIn(width / 2f - dispW, width / 2f)
-        ty = if (dispH <= height) (height - dispH) / 2f
-        else ty.coerceIn(height / 2f - dispH, height / 2f)
-
-        matrix.setValues(v.also { it[Matrix.MTRANS_X] = tx; it[Matrix.MTRANS_Y] = ty })
+    /**
+     * Clamp one axis of the image translation to a band that is *continuous* in
+     * the displayed size [disp]. When the image is larger than the view it may
+     * overscroll by at most [overscroll] px past each edge; as it shrinks, the
+     * band closes smoothly onto the centred position. The previous clamp forced
+     * an exact centre the instant a dimension fit while allowing a big overscroll
+     * just above that size, so zooming out across the fit size snapped the image
+     * (a visible jump) and left panning stuck once it had centred.
+     */
+    private fun clampAxis(t: Float, disp: Float, view: Float): Float {
+        val center = (view - disp) / 2f
+        val maxT = maxOf(center, overscroll)
+        val minT = minOf(center, view - disp - overscroll)
+        return t.coerceIn(minT, maxT)
     }
 
     // ---------------- virtual pointer ----------------
@@ -235,14 +246,52 @@ class RemoteScreenView @JvmOverloads constructor(
     private var downFocusX = 0f
     private var downFocusY = 0f
 
-    // Double-tap bookkeeping for the left-click drag gesture.
-    private var lastTap1At = 0L
-    private var leftDragCandidate = false
+    // Three-finger wheel throttle: origin = finger focus when the 3rd finger
+    // landed, current = the latest focus. wheelTicker scrolls based on the
+    // standing displacement (current - origin) until the fingers return home.
+    private var wheelOriginX = 0f
+    private var wheelOriginY = 0f
+    private var wheelCurrentX = 0f
+    private var wheelCurrentY = 0f
+    private val wheelDeadzone = touchSlop.toFloat()
 
     private val holdRunnable = Runnable {
-        // Double-tap & hold without moving: start the drag even before the
-        // finger moves, so drag-and-hold targets (long-press UIs) work too.
-        if (state == State.POINTER1 && leftDragCandidate && !moved) startDrag(State.DRAG_LEFT)
+        // Press and hold without moving starts a left-button drag: the button
+        // goes down now and stays down until the finger lifts, so drag-and-drop
+        // and long-press-and-drag targets work. Because there is no preceding
+        // tap (unlike a double-tap), the host sees a clean down…move…up drag
+        // rather than a double-click followed by a drag.
+        if (state == State.POINTER1 && !moved) startDrag(State.DRAG_LEFT)
+    }
+
+    // Repeats while three fingers are down, turning the standing finger
+    // displacement into a continuous scroll (touch events stop firing once the
+    // fingers hold still, so the timer is what keeps it going). Self-stops if
+    // the gesture has ended, in addition to being cancelled on finger-up.
+    private val wheelTicker = object : Runnable {
+        override fun run() {
+            if (state != State.WHEEL) return
+            val dx = wheelNotches(wheelCurrentX - wheelOriginX)
+            val dy = wheelNotches(wheelCurrentY - wheelOriginY)
+            // Fingers held below their start (positive dispY) scroll the content
+            // down, which is a negative wheel delta (positive dy scrolls up).
+            if (dx != 0.0 || dy != 0.0) onWheel?.invoke(dx, -dy)
+            postDelayed(this, WHEEL_TICK_MS)
+        }
+    }
+
+    /**
+     * Wheel notches to emit this tick for a finger displacement of [dispPx] from
+     * the gesture origin. Inside the deadzone it's zero (so bringing the fingers
+     * back to where they started stops the scroll); past it the rate ramps
+     * linearly with distance.
+     */
+    private fun wheelNotches(dispPx: Float): Double {
+        val mag = abs(dispPx)
+        if (mag <= wheelDeadzone) return 0.0
+        val perSec = ((mag - wheelDeadzone) / WHEEL_PX_PER_NOTCH) * WHEEL_SPEED
+        val notches = perSec * (WHEEL_TICK_MS / 1000.0)
+        return if (dispPx < 0) -notches else notches
     }
 
     private fun twoMoved(): Boolean =
@@ -251,12 +300,18 @@ class RemoteScreenView @JvmOverloads constructor(
 
     private companion object {
         const val TAP_MS = 300L
-        const val DOUBLE_TAP_MS = 350L
         const val HOLD_MS = 320L
         const val WHEEL_PX_PER_NOTCH = 90.0
         // Max pinch-zoom, relative to the fit-to-screen scale (so you can zoom
         // well past 1:1 to read fine detail).
         const val MAX_ZOOM = 40f
+        // Three-finger scrolling is a throttle: while the fingers are held away
+        // from where they first landed, wheel notches are emitted on a timer at
+        // a rate proportional to that displacement. WHEEL_SPEED is the rate (in
+        // notches per second) reached when the fingers sit one notch-worth of
+        // distance (WHEEL_PX_PER_NOTCH) past the neutral deadzone.
+        const val WHEEL_TICK_MS = 40L
+        const val WHEEL_SPEED = 10.0
     }
 
     private fun startDrag(dragState: State) {
@@ -286,12 +341,15 @@ class RemoteScreenView @JvmOverloads constructor(
                 lastX = event.x; lastY = event.y
                 moved = false
                 state = State.POINTER1
-                leftDragCandidate = downTime - lastTap1At < DOUBLE_TAP_MS
-                if (leftDragCandidate) postDelayed(holdRunnable, HOLD_MS)
+                // Arm the press-and-hold timer: if the finger stays put for
+                // HOLD_MS it becomes a left-button drag; if it moves first it's
+                // a pointer move, and if it lifts first it's a tap (left click).
+                postDelayed(holdRunnable, HOLD_MS)
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
                 removeCallbacks(holdRunnable)
+                removeCallbacks(wheelTicker)
                 when (event.pointerCount) {
                     2 -> {
                         if (state == State.DRAG_LEFT) endDrag()
@@ -302,9 +360,13 @@ class RemoteScreenView @JvmOverloads constructor(
                         prevFocusX = downFocusX; prevFocusY = downFocusY
                     }
                     3 -> {
-                        // A third finger switches to mouse-wheel scrolling.
+                        // A third finger switches to mouse-wheel scrolling. Record
+                        // where the fingers landed; the ticker then scrolls based
+                        // on how far they're held from here.
                         state = State.WHEEL
-                        prevFocusX = avgX(event, 3); prevFocusY = avgY(event, 3)
+                        wheelOriginX = avgX(event, 3); wheelOriginY = avgY(event, 3)
+                        wheelCurrentX = wheelOriginX; wheelCurrentY = wheelOriginY
+                        postDelayed(wheelTicker, WHEEL_TICK_MS)
                     }
                     else -> return true // ignore 4+ fingers
                 }
@@ -319,6 +381,7 @@ class RemoteScreenView @JvmOverloads constructor(
 
             MotionEvent.ACTION_POINTER_UP -> {
                 removeCallbacks(holdRunnable)
+                removeCallbacks(wheelTicker)
                 val now = System.currentTimeMillis()
                 if (state == State.POINTER2 && now - twoDownTime < TAP_MS && !twoMoved()) {
                     click("right")
@@ -345,14 +408,12 @@ class RemoteScreenView @JvmOverloads constructor(
 
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(holdRunnable)
+                removeCallbacks(wheelTicker)
                 val now = System.currentTimeMillis()
                 when (state) {
                     State.DRAG_LEFT -> endDrag()
                     State.POINTER1 -> {
-                        if (now - downTime < TAP_MS && !moved) {
-                            click("left")
-                            lastTap1At = now
-                        }
+                        if (now - downTime < TAP_MS && !moved) click("left")
                     }
                     else -> {}
                 }
@@ -361,6 +422,7 @@ class RemoteScreenView @JvmOverloads constructor(
 
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(holdRunnable)
+                removeCallbacks(wheelTicker)
                 if (state == State.DRAG_LEFT) endDrag()
                 state = State.NONE
             }
@@ -373,9 +435,10 @@ class RemoteScreenView @JvmOverloads constructor(
         val dy = event.y - lastY
         if (!moved && hypot(event.x - downX, event.y - downY) > touchSlop) {
             moved = true
+            // Moving before the hold fired means this is a pointer move, not a
+            // drag — cancel the pending hold. (If the hold already started a
+            // drag, state is DRAG_LEFT and these moves extend it below.)
             removeCallbacks(holdRunnable)
-            // Double-tap & drag: hold the button down from the start point.
-            if (leftDragCandidate && state == State.POINTER1) startDrag(State.DRAG_LEFT)
         }
         if (!moved) return
         movePointerBy(dx, dy)
@@ -424,14 +487,10 @@ class RemoteScreenView @JvmOverloads constructor(
 
     private fun handleThreeFingerMove(event: MotionEvent) {
         if (event.pointerCount < 3) return
-        val focusX = avgX(event, 3)
-        val focusY = avgY(event, 3)
-        onWheel?.invoke(
-            (focusX - prevFocusX) / WHEEL_PX_PER_NOTCH,
-            -(focusY - prevFocusY) / WHEEL_PX_PER_NOTCH
-        )
-        prevFocusX = focusX
-        prevFocusY = focusY
+        // Just track where the fingers are now; wheelTicker turns the standing
+        // displacement from the origin into a continuous scroll.
+        wheelCurrentX = avgX(event, 3)
+        wheelCurrentY = avgY(event, 3)
     }
 
     /** Average X of the first [n] pointers (clamped to the available count). */

@@ -190,7 +190,7 @@ class ViewerActivity : AppCompatActivity() {
                 """
                 Move pointer — drag with one finger
                 Left-click — tap with one finger
-                Left-click drag — double-tap and hold, then drag
+                Left-click drag — press and hold, then drag
                 Right-click — tap with two fingers
                 Pan — drag with two fingers
                 Zoom — pinch with two fingers

@@ -4,7 +4,7 @@ Kotlin app (min SDK 26 / Android 8.0). It:
 
 - views & controls the paired PC with an **always-visible mouse pointer**
   (touchpad-style): drag to move the pointer, tap = left click, two-finger tap =
-  right click, double-tap & hold = left click-drag, two-finger drag = pan,
+  right click, press & hold then drag = left click-drag, two-finger drag = pan,
   pinch = zoom, three-finger drag = scroll wheel, and a **full
   on-screen keyboard** with Win / Ctrl / Alt / Shift / function keys plus
   native-IME typing for long text;
