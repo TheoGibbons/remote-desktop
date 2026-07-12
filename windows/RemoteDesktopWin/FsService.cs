@@ -41,15 +41,45 @@ public class FsService
 
     // ---------- serving requests from the peer ----------
 
-    public void HandleJson(JsonNode msg)
+    /// <param name="peerAccessAllowed">Whether the user consents to peers reading
+    /// this machine's files or pushing files to it. Replies to transfers this
+    /// device initiated itself (fs-get downloads) are always processed.</param>
+    public void HandleJson(JsonNode msg, bool peerAccessAllowed)
     {
         switch (msg["type"]?.GetValue<string>())
         {
-            case "fs-list": HandleList(msg); break;
-            case "fs-get": HandleGet(msg); break;
-            case "fs-begin": HandleBegin(msg); break;
+            case "fs-list": if (peerAccessAllowed) HandleList(msg); else DenyList(msg); break;
+            case "fs-get": if (peerAccessAllowed) HandleGet(msg); else DenyGet(msg); break;
+            case "fs-begin": HandleBegin(msg, peerAccessAllowed); break;
             case "fs-end": HandleEnd(msg); break;
         }
+    }
+
+    private const string DeniedError = "File access is disabled on the remote device";
+
+    private void DenyList(JsonNode msg)
+    {
+        _ws.SendJson(new JsonObject
+        {
+            ["type"] = "fs-list-result",
+            ["to"] = msg["from"]!.GetValue<string>(),
+            ["reqId"] = msg["reqId"]?.GetValue<string>() ?? "",
+            ["path"] = msg["path"]?.GetValue<string>() ?? "",
+            ["entries"] = new JsonArray(),
+            ["error"] = DeniedError,
+        });
+    }
+
+    private void DenyGet(JsonNode msg)
+    {
+        _ws.SendJson(new JsonObject
+        {
+            ["type"] = "fs-end",
+            ["to"] = msg["from"]!.GetValue<string>(),
+            ["xferId"] = msg["xferId"]?.GetValue<long>() ?? 0,
+            ["ok"] = false,
+            ["error"] = DeniedError,
+        });
     }
 
     public void HandleFileChunk(byte[] frame)
@@ -193,11 +223,21 @@ public class FsService
         lock (_incoming) _pendingGets[xferId] = (onDone, onError);
     }
 
-    private void HandleBegin(JsonNode msg)
+    private void HandleBegin(JsonNode msg, bool peerAccessAllowed)
     {
         var xferId = (uint)(msg["xferId"]?.GetValue<long>() ?? 0);
         var name = SanitizeFileName(msg["name"]?.GetValue<string>() ?? "file.bin");
         var size = msg["size"]?.GetValue<long>() ?? 0;
+
+        // An unsolicited push (no matching fs-get from us) needs consent;
+        // without a registered transfer its chunks are dropped on arrival.
+        if (!peerAccessAllowed)
+        {
+            lock (_incoming)
+            {
+                if (!_pendingGets.ContainsKey(xferId)) return;
+            }
+        }
 
         try
         {

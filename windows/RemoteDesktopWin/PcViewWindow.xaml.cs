@@ -57,6 +57,11 @@ public partial class PcViewWindow : Window
         Loaded += (_, _) => { Focusable = true; Focus(); Keyboard.Focus(this); };
     }
 
+    /// <summary>Ask for the stream again — the first start-view is dropped when
+    /// the host hasn't approved this device yet.</summary>
+    public void ResendStartView() =>
+        _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _peerId });
+
     /// <summary>Optional: size the window to the remote desktop's aspect ratio.</summary>
     public void OnScreenInfo(int width, int height)
     {

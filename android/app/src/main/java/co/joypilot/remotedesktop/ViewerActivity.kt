@@ -112,6 +112,15 @@ class ViewerActivity : AppCompatActivity() {
             Toast.makeText(this, "Desktop disconnected", Toast.LENGTH_SHORT).show()
             finish()
         }
+        if (msg.optString("type") == "auth-result" && msg.optString("from") == winId) {
+            when (msg.optString("status")) {
+                // Approved: re-request the stream — the start-view sent while we
+                // were still unapproved was dropped by the desktop.
+                "trusted" ->
+                    winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)) }
+                "denied", "revoked", "disconnected" -> finish()
+            }
+        }
     }
 
     @SuppressLint("SetTextI18n")

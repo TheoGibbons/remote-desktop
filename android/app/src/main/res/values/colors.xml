@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Light palette (overridden in values-night). -->
+    <color name="rd_primary">#1A73E8</color>
+    <color name="rd_on_primary">#FFFFFF</color>
+    <color name="rd_primary_container">#D3E3FD</color>
+    <color name="rd_on_primary_container">#041E49</color>
+
+    <!-- Neutral surfaces: white cards with subtle outlines on a light gray page. -->
+    <color name="rd_background">#F6F7F9</color>
+    <color name="rd_surface">#FFFFFF</color>
+    <color name="rd_on_surface">#1F1F1F</color>
+    <color name="rd_surface_variant">#F1F3F4</color>
+    <color name="rd_on_surface_variant">#5F6368</color>
+    <color name="rd_outline">#DADCE0</color>
+    <color name="rd_outline_variant">#E8EAED</color>
+    <bool name="rd_light_system_bars">true</bool>
+
+    <!-- Status colors: green = good, amber = action needed, red = danger. -->
+    <color name="rd_good">#188038</color>
+    <color name="rd_good_container">#E6F4EA</color>
+    <color name="rd_on_good_container">#0D652D</color>
+    <color name="rd_warn">#B26A00</color>
+    <color name="rd_warn_container">#FEF7E0</color>
+    <color name="rd_on_warn_container">#7A4F01</color>
+    <color name="rd_danger">#D93025</color>
+</resources>

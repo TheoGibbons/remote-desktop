@@ -24,7 +24,7 @@
         android:allowBackup="true"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.AppCompat.DayNight"
+        android:theme="@style/Theme.RemoteDesktop"
         android:usesCleartextTraffic="true">
 
         <activity
@@ -44,6 +44,19 @@
 
         <activity
             android:name=".FileExplorerActivity"
+            android:theme="@style/Theme.RemoteDesktop.WithActionBar"
+            android:exported="false" />
+
+        <activity
+            android:name=".PermissionsActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".DevicesActivity"
             android:exported="false" />
 
         <service

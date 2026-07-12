@@ -22,6 +22,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("autoConnect", true)
         set(v) = sp.edit().putBoolean("autoConnect", v).apply()
 
+    /** Consent: paired devices may view this screen and inject taps/keys. */
+    var allowControl: Boolean
+        get() = sp.getBoolean("allowControl", true)
+        set(v) = sp.edit().putBoolean("allowControl", v).apply()
+
+    /** Consent: paired devices may browse this phone's storage and push files to it. */
+    var allowFileAccess: Boolean
+        get() = sp.getBoolean("allowFileAccess", true)
+        set(v) = sp.edit().putBoolean("allowFileAccess", v).apply()
+
     /** Stable per-install id so the relay replaces this device's stale
      *  connection on reconnect instead of listing it twice. */
     val deviceUid: String

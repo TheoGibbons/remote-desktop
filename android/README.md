@@ -31,22 +31,39 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 1. Launch **Remote Desktop**.
 2. Easiest: click **QR code** in the desktop app and tap **Scan QR** here — it
-   fills in the server URL and session key and connects. (Or type them manually /
-   tap *Generate strong key* and copy it to the PC.)
-3. **Save & connect.** Settings persist, a small foreground service keeps the
-   session alive in the background (and after reboots), and the app
-   auto-connects from then on.
+   fills in the server URL and session ID and connects. (Or type the session ID
+   into the main-screen box / tap the refresh icon to generate a strong one and
+   copy it to the PC. The server URL lives in **⋮ → Settings → Server URL**.)
+3. Settings persist, a small foreground service keeps the session alive in the
+   background (and after reboots), and the app auto-connects from then on.
 
-Then grant the capabilities you want (each is a one-time OS permission):
+Then grant the capabilities you want in **Permissions & Access → System
+Permissions** (each is a one-time OS permission):
 
-| Button | Enables | Permission |
-|--------|---------|------------|
-| **Enable screen sharing** | PC can *see* this phone | MediaProjection consent (one dialog) |
-| **Enable tap control (Accessibility)** | PC can *tap/swipe* this phone | Accessibility service toggle |
-| **Grant file access** | PC can browse this phone's files | All-files access (Android 11+) |
+| Row | Enables | Permission |
+|-----|---------|------------|
+| **Screen sharing** | PC can *see* this phone | MediaProjection consent (one dialog) |
+| **Tap control (Accessibility)** | PC can *tap/swipe* this phone | Accessibility service toggle |
+| **File access** | PC can browse this phone's files | All-files access (Android 11+) |
+
+The OS permissions above are one-time grants; the two switches under **Allow
+Paired Devices** (*View and control this phone* and *Browse and transfer
+files*) are the ongoing consent switches — turn one off and paired devices
+lose that capability immediately, without revoking the OS permission.
+
+**Approving devices.** The first time a device connects it must be approved on
+the **Devices** screen (tap the connection-status card; a dialog appears, or a
+notification if the app is in the background): compare the short **device
+code** it shows with the code on that device before tapping *Allow*. Approval
+is keyed to the device's cryptographic identity and sticks across reconnects
+and restarts. Each trusted device has a **Revoke** button (it must be approved
+again to connect) and, while online, a **Disconnect** button (ends the session;
+trust is kept). Changing the session ID resets all approvals. While an
+unapproved device is present in the session, screen sharing and file serving
+pause.
 
 - **View desktop** → live PC view with the mouse/keyboard controls.
-- **Browse desktop files** → download to `Downloads/RemoteDesktop`, or upload.
+- **Browse files** → download to `Downloads/RemoteDesktop`, or upload.
 
 ## Google Play notes
 

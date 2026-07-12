@@ -48,6 +48,11 @@ public partial class PhoneViewWindow : Window
         };
     }
 
+    /// <summary>Ask for the stream again — the first start-view is dropped when
+    /// the phone hasn't approved this device yet.</summary>
+    public void ResendStartView() =>
+        _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
+
     public void OnScreenInfo(int width, int height)
     {
         if (width <= 0 || height <= 0) return;

@@ -41,8 +41,24 @@ dotnet publish -c Release -r win-x64 --self-contained ^
 
 Leave **"Allow paired devices to view and control this computer"** checked for
 a phone **or another paired PC** to be able to control this computer.
+**"Allow paired devices to browse and transfer files on this computer"** gates
+file access separately — with it off, peers cannot list or download this PC's
+files (your own downloads from other devices still work). Both toggles persist
+across restarts.
 
-- Select a device in **Paired devices**, then **View screen** (or double-click
+**Approving devices.** The first time a device connects it must be approved
+here (and this PC must be approved there): a prompt shows its name and a short
+**device code** — approve only if the same code is shown on that device (each
+device's own code appears under the checkboxes). Approval sticks across
+reconnects and restarts; it is keyed to the device's cryptographic identity in
+`%APPDATA%\RemoteDesktopWin\` (`identity.bin`, `trusted-devices.json`), not to
+its name. The **Devices** list shows every approved or connected device with
+**Approve / Deny / Revoke / Disconnect** buttons — *Revoke* deletes the
+approval (the device must be approved again to connect), *Disconnect* just ends
+its current session. Changing the session key resets all approvals. While an
+unapproved device is present in the session, streaming and file serving pause.
+
+- Select a device in **Devices**, then **View screen** (or double-click
   it) → opens a live view:
   - **another PC** → full desktop control: move/click/scroll with the mouse and
     type with your real keyboard (shortcuts, modifiers and arrows included) while

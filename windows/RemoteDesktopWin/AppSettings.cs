@@ -15,14 +15,19 @@ public class AppSettings
     public int MaxStreamWidth { get; set; } = 0;
     public bool AutoConnect { get; set; } = true;
     public bool StartWithWindows { get; set; }
+    // Consent toggles: what paired devices may do to this machine. Persisted so
+    // a restart cannot silently re-enable access the user turned off.
+    public bool AllowRemoteControl { get; set; } = true;
+    public bool AllowFileAccess { get; set; } = true;
     // Stable per-install id so the relay can replace this device's stale
     // connection on reconnect instead of listing it twice.
     public string DeviceUid { get; set; } = Guid.NewGuid().ToString("N");
 
-    private static string Dir =>
+    // Also holds identity.bin and trusted-devices.json (see DeviceAuth.cs).
+    public static string StorageDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RemoteDesktopWin");
 
-    private static string FilePath => Path.Combine(Dir, "settings.json");
+    private static string FilePath => Path.Combine(StorageDir, "settings.json");
 
     public static AppSettings Load()
     {
@@ -44,7 +49,7 @@ public class AppSettings
 
     public void Save()
     {
-        Directory.CreateDirectory(Dir);
+        Directory.CreateDirectory(StorageDir);
         File.WriteAllText(FilePath, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }
 }

@@ -47,21 +47,36 @@
         </StackPanel>
 
         <StackPanel Grid.Row="2" Margin="0,10,0,0">
-            <CheckBox x:Name="AllowStreamCheck" IsChecked="True"
+            <CheckBox x:Name="AllowStreamCheck" Checked="Consent_Changed" Unchecked="Consent_Changed"
                       Content="Allow paired devices to view and control this computer"/>
+            <CheckBox x:Name="AllowFilesCheck" Margin="0,6,0,0" Checked="Consent_Changed" Unchecked="Consent_Changed"
+                      Content="Allow paired devices to browse and transfer files on this computer"/>
             <CheckBox x:Name="StartupCheck" Margin="0,6,0,0" Checked="Startup_Changed" Unchecked="Startup_Changed"
                       Content="Start with Windows (keeps this PC reachable; the app lives in the tray)"/>
+            <TextBlock x:Name="OwnCodeText" Margin="0,6,0,0" Foreground="Gray"
+                       ToolTip="Shown on other devices when this one asks to pair — approve only if the codes match."/>
         </StackPanel>
 
-        <GroupBox Header="Paired devices" Grid.Row="3" Margin="0,10,0,0" Padding="8">
-            <ListBox x:Name="PeerList" MouseDoubleClick="PeerList_DoubleClick"/>
+        <GroupBox Header="Devices (new devices must be approved here once)" Grid.Row="3" Margin="0,10,0,0" Padding="8">
+            <ListBox x:Name="PeerList" MouseDoubleClick="PeerList_DoubleClick" SelectionChanged="PeerList_SelectionChanged"/>
         </GroupBox>
 
-        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,10,0,0">
-            <Button x:Name="ViewButton" Content="View screen" Padding="12,4" Click="View_Click" IsEnabled="False"
-                    ToolTip="View and control the selected device (a PC or a phone)."/>
-            <Button x:Name="FilesButton" Content="Browse files" Padding="12,4" Margin="8,0,0,0" Click="Files_Click" IsEnabled="False"/>
-            <TextBlock x:Name="TransferText" VerticalAlignment="Center" Margin="12,0,0,0"/>
+        <StackPanel Grid.Row="4" Margin="0,10,0,0">
+            <StackPanel Orientation="Horizontal">
+                <Button x:Name="ViewButton" Content="View screen" Padding="12,4" Click="View_Click" IsEnabled="False"
+                        ToolTip="View and control the selected device (a PC or a phone)."/>
+                <Button x:Name="FilesButton" Content="Browse files" Padding="12,4" Margin="8,0,0,0" Click="Files_Click" IsEnabled="False"/>
+                <TextBlock x:Name="TransferText" VerticalAlignment="Center" Margin="12,0,0,0"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <Button x:Name="ApproveButton" Content="Approve" Padding="12,4" Click="Approve_Click" IsEnabled="False"
+                        ToolTip="Trust the selected device — it can then connect without asking again."/>
+                <Button x:Name="DenyButton" Content="Deny" Padding="12,4" Margin="8,0,0,0" Click="Deny_Click" IsEnabled="False"/>
+                <Button x:Name="RevokeButton" Content="Revoke" Padding="12,4" Margin="8,0,0,0" Click="Revoke_Click" IsEnabled="False"
+                        ToolTip="Forget the selected device — it must be approved again to connect."/>
+                <Button x:Name="DisconnectButton" Content="Disconnect" Padding="12,4" Margin="8,0,0,0" Click="Disconnect_Click" IsEnabled="False"
+                        ToolTip="End the selected device's current session (it stays trusted)."/>
+            </StackPanel>
         </StackPanel>
     </Grid>
 </Window>

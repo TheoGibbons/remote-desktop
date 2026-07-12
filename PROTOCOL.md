@@ -15,9 +15,13 @@ the relay only ever sees ciphertext plus minimal routing metadata.
   HKDF-SHA256:
   - a **pairing id** — sent to the server (as `hello.session`) to join a session;
   - an **encryption key** — never leaves the device.
-  Any devices deriving the same pairing id are joined into one session and may
-  control each other; only devices holding the same raw key can decrypt the
-  traffic. A mismatched key therefore simply fails to pair.
+  Any devices deriving the same pairing id are joined into one session; only
+  devices holding the same raw key can decrypt the traffic. A mismatched key
+  therefore simply fails to pair.
+- The session key alone does **not** grant control. It is the rendezvous +
+  encryption secret; actually viewing, controlling or browsing a device
+  additionally requires that device to have **approved the peer's device
+  identity** once (see [Device authentication](#device-authentication)).
 - The server rate-limits join attempts per IP so the pairing id cannot be
   brute-forced by spamming (see below).
 
@@ -41,6 +45,59 @@ route to one peer; otherwise it is broadcast to all other peers in the session.
 | `peer-joined` | `peer` `{id, device, name}`            | |
 | `peer-left`   | `id`                                   | |
 | `error`       | `code`, `message`                      | e.g. `rate-limited`, `bad-hello`. Connection is closed after. |
+
+## Device authentication
+
+Every install generates a persistent **EC P-256 keypair** on first run (Android:
+AndroidKeyStore, non-exportable; Windows: PKCS#8 encrypted with DPAPI next to
+the settings file). The SHA-256 hash of the DER `SubjectPublicKeyInfo` is the
+device's **fingerprint**; its first 8 hex digits, uppercased and grouped
+(`A3F2-9C41`), are shown to users as the **device code**.
+
+Each device keeps a local **trust store** of approved fingerprints, scoped to
+the current pairing id — changing the session key wipes it. Trust decisions are
+made entirely on-device; the relay stores nothing and cannot vouch for anyone.
+
+**Handshake.** On `welcome` (for every listed peer) and on `peer-joined`, each
+device challenges the other, so trust is established mutually within one round
+trip of joining:
+
+| type             | fields | notes |
+|------------------|--------|-------|
+| `auth-challenge` | `to`, `nonce` | `nonce` = base64 of 32 random bytes, single-use. |
+| `auth-response`  | `to`, `nonce` (echoed), `pub` (base64 SPKI), `sig` (base64) | `sig` = ECDSA-SHA256 (DER, RFC 3279) over `"remote-desktop/auth-v1" ‖ nonce ‖ pub ‖ utf8(pairId)`. |
+| `auth-result`    | `to`, `ok`, `status` | Trust state toward the recipient: `trusted`, `pending` (approval prompt showing), `denied`, `revoked`, `disconnected`. Informational — enforcement is the sender dropping messages. |
+
+The challenger verifies the signature against the presented key (the nonce
+prevents replay; the pairId binds it to this session), computes the
+fingerprint, and:
+
+- **known fingerprint** → mark the peer trusted for this connection, update
+  `lastSeen`, send `auth-result ok:true status:trusted`. No user interaction —
+  an approved device never re-prompts unless revoked or the session key changes.
+- **unknown fingerprint** → show an approve/deny prompt naming the peer and its
+  device code (users should compare codes out-of-band), send `status:pending`,
+  then `trusted` or `denied` once the user decides. Denials are remembered for
+  the rest of the process so a hostile peer cannot spam prompts by reconnecting.
+
+**Enforcement.** Messages that view, control, or touch files (`start-view`,
+`request-keyframe`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
+`touch`, `pinch`, `back`, `homebtn`, `recents`, `fs-*`) are dropped unless the
+sending peer is trusted. Because **binary frames are broadcast** and every key
+holder can decrypt them, a host additionally sends no video frames and serves
+no file transfers while *any* unapproved peer is present in the session (the
+stream resumes automatically once the peer is approved or leaves; a keyframe
+covers the gap).
+
+**Revocation.** Each device shows its trusted-device list with per-device
+*Revoke* (delete the fingerprint — the device must be re-approved on its next
+connect) and *Disconnect* (courtesy `auth-result status:disconnected`; viewers
+close their windows, trust is kept). The relay cannot kick peers, so both are
+enforced by the host ignoring the peer, which is the actual security boundary.
+
+A peer that never answers the challenge (e.g. an older app version) simply
+stays untrusted: it can sit in the session but sees no frames and injects
+nothing.
 
 ### Peer ↔ Peer (end-to-end encrypted)
 
@@ -184,4 +241,6 @@ eavesdroppers.
 ## Reconnection
 
 Clients auto-reconnect with backoff (2s → 30s max) and re-send `hello`. The
-session key never expires; there is no re-authentication, ever.
+session key never expires, and the device-authentication handshake re-runs
+silently on every reconnect — an approved device never sees a prompt again
+unless it is revoked or the session key changes.

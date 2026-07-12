@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="rd_primary">#A8C7FA</color>
+    <color name="rd_on_primary">#062E6F</color>
+    <color name="rd_primary_container">#0842A0</color>
+    <color name="rd_on_primary_container">#D3E3FD</color>
+
+    <color name="rd_background">#111318</color>
+    <color name="rd_surface">#1D2025</color>
+    <color name="rd_on_surface">#E3E5E8</color>
+    <color name="rd_surface_variant">#282B31</color>
+    <color name="rd_on_surface_variant">#9AA0A6</color>
+    <color name="rd_outline">#3C4043</color>
+    <color name="rd_outline_variant">#2E3238</color>
+    <bool name="rd_light_system_bars">false</bool>
+
+    <color name="rd_good">#81C995</color>
+    <color name="rd_good_container">#1E3A29</color>
+    <color name="rd_on_good_container">#C4EED0</color>
+    <color name="rd_warn">#FDD663</color>
+    <color name="rd_warn_container">#3E2E04</color>
+    <color name="rd_on_warn_container">#FDE293</color>
+    <color name="rd_danger">#F28B82</color>
+</resources>

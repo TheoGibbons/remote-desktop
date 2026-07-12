@@ -70,8 +70,16 @@ same generated session key into both, and connect.
 
 ## Security model
 
-- **One secret, the session key.** Anyone who knows it can control every device
-  in that session. Treat it like a password. Generate it; don't type a weak one.
+- **The session key pairs; devices approve.** The key is the rendezvous +
+  encryption secret — treat it like a password (generate it; don't type a weak
+  one). But knowing the key is **not enough to control anything**: every install
+  has a persistent device identity (EC P-256 keypair), and the first time a
+  device connects, the other side shows an approve/deny prompt with a short
+  device code to compare. Approved devices reconnect silently forever; each app
+  has a devices list to **revoke** one (it must be re-approved) or disconnect it.
+  Changing the session key resets all approvals. While an *unapproved* device is
+  in the session, hosts also stop streaming/serving files entirely, since those
+  frames are broadcast. See [PROTOCOL.md](PROTOCOL.md#device-authentication).
 - **End-to-end encrypted.** The raw session key **never leaves your devices**.
   Each device derives (HKDF-SHA256) a *pairing id* it sends to the server and a
   separate *encryption key* it keeps. All screen frames, input, file names and

@@ -185,14 +185,15 @@ function handleHello(client, msg, helloTimer) {
 
 function leaveSession(client) {
   if (!client.sessionHash) return;
-  const peers = sessions.get(client.sessionHash);
+  const hash = client.sessionHash;
   client.sessionHash = null; // idempotent: close after replacement won't re-broadcast
+  const peers = sessions.get(hash);
   if (!peers) return;
   peers.delete(client.id);
   for (const p of peers.values()) {
     send(p, { type: "peer-left", id: client.id });
   }
-  if (peers.size === 0) sessions.delete(client.sessionHash);
+  if (peers.size === 0) sessions.delete(hash);
   console.log(`[leave] ${client.name}, session peers=${peers.size}`);
 }
 

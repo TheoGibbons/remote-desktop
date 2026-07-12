@@ -1,213 +1,121 @@
 package co.joypilot.remotedesktop
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Intent
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.media.projection.MediaProjectionManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.provider.Settings
 import android.util.Log
-import android.text.InputType
-import android.view.View
-import android.view.ViewGroup.LayoutParams.MATCH_PARENT
-import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.widget.doAfterTextChanged
+import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.textfield.TextInputEditText
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
-import java.security.SecureRandom
-import java.util.Base64
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: Prefs
-    private lateinit var serverBox: EditText
-    private lateinit var keyBox: EditText
-    private lateinit var nameBox: EditText
-    private lateinit var statusText: TextView
-    private lateinit var peersText: TextView
-    private lateinit var viewDesktopBtn: Button
-    private lateinit var filesBtn: Button
-    private lateinit var shareBtn: Button
-    private lateinit var a11yBtn: Button
-    private lateinit var filesPermBtn: Button
-    private lateinit var permHeader: TextView
-    private lateinit var permGroup: LinearLayout
-
-    private val grantedColor = Color.parseColor("#2E7D32")   // green: all good
-    private val neededColor = Color.parseColor("#C62828")    // red: action required
+    private lateinit var sessionKeyBox: TextInputEditText
+    private lateinit var saveBtn: MaterialButton
+    private lateinit var viewDesktopBtn: MaterialButton
+    private lateinit var filesBtn: MaterialButton
+    private lateinit var statusDot: ImageView
+    private lateinit var statusTitle: TextView
+    private lateinit var statusSubtitle: TextView
+    private lateinit var permissionsSubtitle: TextView
+    private lateinit var thisPhoneName: TextView
 
     private val stateListener: (String) -> Unit = { refreshStatus() }
-
-    private val projectionLauncher =
-        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                ScreenCaptureService.start(this, result.resultCode, result.data!!)
-                Toast.makeText(this, "Screen sharing enabled", Toast.LENGTH_SHORT).show()
-            }
-            refreshStatus()
-        }
+    private val trustListener: () -> Unit = { refreshStatus() }
+    private val approvalListener: (PeerAuth.PendingRequest) -> Unit = { Ui.showApprovalDialog(this, it) }
 
     private val qrScanner = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let { applyScannedSettings(it) }
     }
 
-    @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        title = "Remote Desktop"
         prefs = Prefs(this)
         ConnectionManager.init(this)
+        setContentView(R.layout.activity_main)
 
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
+        val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
+        toolbar.inflateMenu(R.menu.menu_main)
+        toolbar.setOnMenuItemClickListener { item ->
+            if (item.itemId == R.id.action_settings) {
+                startActivity(Intent(this, SettingsActivity::class.java)); true
+            } else false
         }
 
-        fun label(t: String) = root.addView(TextView(this).apply { text = t; setPadding(0, pad / 2, 0, 4) })
+        sessionKeyBox = findViewById(R.id.sessionKeyBox)
+        saveBtn = findViewById(R.id.saveBtn)
+        viewDesktopBtn = findViewById(R.id.viewDesktopBtn)
+        filesBtn = findViewById(R.id.filesBtn)
+        statusDot = findViewById(R.id.statusDot)
+        statusTitle = findViewById(R.id.statusTitle)
+        statusSubtitle = findViewById(R.id.statusSubtitle)
+        permissionsSubtitle = findViewById(R.id.permissionsSubtitle)
+        thisPhoneName = findViewById(R.id.thisPhoneName)
 
-        label("Server URL (ws:// or wss://)")
-        serverBox = EditText(this).apply {
-            setText(prefs.serverUrl)
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
+        sessionKeyBox.setText(prefs.sessionKey)
+        // The save button only appears while the box differs from what's saved.
+        sessionKeyBox.doAfterTextChanged {
+            saveBtn.visibility =
+                if (it.toString().trim() != prefs.sessionKey) android.view.View.VISIBLE
+                else android.view.View.GONE
         }
-        root.addView(serverBox)
+        saveBtn.setOnClickListener { saveAndConnect() }
 
-        label("Session key (same long string on every device — set once)")
-        keyBox = EditText(this).apply {
-            setText(prefs.sessionKey)
-            inputType = InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        }
-        root.addView(keyBox)
-
-        val keyButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        keyButtons.addView(Button(this).apply {
-            text = "Generate strong key"
-            isAllCaps = false
-            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-            setOnClickListener {
-                val bytes = ByteArray(24)
-                SecureRandom().nextBytes(bytes)
-                keyBox.setText(
-                    Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+        findViewById<ImageButton>(R.id.regenerateBtn).setOnClickListener {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Generate a new session ID?")
+                .setMessage(
+                    "Every device must be given the new ID and paired again. " +
+                        "Do this if the current ID may have leaked."
                 )
-            }
-        })
-        keyButtons.addView(Button(this).apply {
-            text = "Scan QR"
-            isAllCaps = false
-            layoutParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
-            setOnClickListener {
-                qrScanner.launch(ScanOptions().apply {
-                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    setPrompt("Scan the QR code shown by “QR code” in the desktop app")
-                    setBeepEnabled(false)
-                    setOrientationLocked(true)
-                })
-            }
-        })
-        root.addView(keyButtons)
-
-        label("Device name")
-        nameBox = EditText(this).apply { setText(prefs.deviceName) }
-        root.addView(nameBox)
-
-        root.addView(Button(this).apply {
-            text = "Save & connect"
-            setOnClickListener { saveAndConnect() }
-        })
-
-        statusText = TextView(this).apply { text = "Not connected"; setPadding(0, pad / 2, 0, 0) }
-        root.addView(statusText)
-        peersText = TextView(this).apply { setPadding(0, 4, 0, pad / 2) }
-        root.addView(peersText)
-
-        viewDesktopBtn = Button(this).apply {
-            text = "View desktop"
-            isEnabled = false
-            setOnClickListener { startActivity(Intent(this@MainActivity, ViewerActivity::class.java)) }
+                .setPositiveButton("Generate") { _, _ ->
+                    sessionKeyBox.setText(Ui.generateSessionKey())
+                    saveAndConnect()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
         }
-        root.addView(viewDesktopBtn)
 
-        filesBtn = Button(this).apply {
-            text = "Browse desktop files"
-            isEnabled = false
-            setOnClickListener { startActivity(Intent(this@MainActivity, FileExplorerActivity::class.java)) }
+        viewDesktopBtn.setOnClickListener { startActivity(Intent(this, ViewerActivity::class.java)) }
+        filesBtn.setOnClickListener { startActivity(Intent(this, FileExplorerActivity::class.java)) }
+
+        findViewById<MaterialCardView>(R.id.statusCard).setOnClickListener {
+            startActivity(Intent(this, DevicesActivity::class.java))
         }
-        root.addView(filesBtn)
-
-        // ---- permissions: collapsible section, green = granted, red = needed ----
-        permHeader = TextView(this).apply {
-            textSize = 16f
-            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
-            setOnClickListener {
-                permGroup.visibility =
-                    if (permGroup.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        findViewById<MaterialCardView>(R.id.permissionsCard).setOnClickListener {
+            startActivity(Intent(this, PermissionsActivity::class.java))
+        }
+        findViewById<MaterialCardView>(R.id.thisPhoneCard).setOnClickListener {
+            Ui.showTextDialog(this, "Device name", prefs.deviceName) { name ->
+                prefs.deviceName = name.ifBlank { Build.MODEL }
                 refreshStatus()
+                // The name is announced when joining, so rejoin to propagate it.
+                if (prefs.sessionKey.isNotEmpty()) Ui.reconnect(this)
             }
         }
-        root.addView(permHeader)
 
-        permGroup = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
-            setBackgroundColor(Color.parseColor("#14000000"))
-            visibility = View.GONE // collapsed by default; the heading shows the state
+        findViewById<MaterialButton>(R.id.scanQrBtn).setOnClickListener {
+            qrScanner.launch(ScanOptions().apply {
+                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                setPrompt("Scan the QR code shown by “QR code” in the desktop app")
+                setBeepEnabled(false)
+                setOrientationLocked(true)
+            })
         }
-
-        shareBtn = Button(this).apply {
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (ScreenCaptureService.isRunning) {
-                    ScreenCaptureService.stop(this@MainActivity)
-                    refreshStatus()
-                } else {
-                    val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                    projectionLauncher.launch(mpm.createScreenCaptureIntent())
-                }
-            }
-        }
-        permGroup.addView(shareBtn)
-
-        a11yBtn = Button(this).apply {
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-        }
-        permGroup.addView(a11yBtn)
-
-        filesPermBtn = Button(this).apply {
-            isAllCaps = false
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (Build.VERSION.SDK_INT >= 30) {
-                    startActivity(
-                        Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                            Uri.parse("package:$packageName"))
-                    )
-                } else {
-                    requestPermissions(arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE,
-                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 1)
-                }
-            }
-        }
-        permGroup.addView(filesPermBtn)
-        root.addView(permGroup)
-
-        setContentView(ScrollView(this).apply { addView(root, MATCH_PARENT, WRAP_CONTENT) })
 
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 2)
@@ -221,12 +129,16 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         ConnectionManager.stateListeners.add(stateListener)
+        PeerAuth.changeListeners.add(trustListener)
+        PeerAuth.approvalListeners.add(approvalListener)
         refreshStatus()
     }
 
     override fun onPause() {
         super.onPause()
         ConnectionManager.stateListeners.remove(stateListener)
+        PeerAuth.changeListeners.remove(trustListener)
+        PeerAuth.approvalListeners.remove(approvalListener)
     }
 
     /** QR payload from the desktop app: {"v":1,"server":"wss://…","key":"…"} */
@@ -235,15 +147,15 @@ class MainActivity : AppCompatActivity() {
             val obj = JSONObject(contents)
             val server = obj.optString("server")
             val key = obj.optString("key")
-            if (key.length < 16) throw Exception("key too short")
-            if (server.isNotBlank()) serverBox.setText(server)
-            keyBox.setText(key)
+            if (SessionKeyPolicy.weaknessOf(key) != null) throw Exception("key too weak")
+            if (server.isNotBlank()) prefs.serverUrl = server
+            sessionKeyBox.setText(key)
             Toast.makeText(this, "Session settings scanned", Toast.LENGTH_SHORT).show()
             saveAndConnect()
         } catch (e: Exception) {
             // Not our JSON payload — accept a bare key string as a fallback.
-            if (contents.trim().length >= 16 && !contents.contains('\n')) {
-                keyBox.setText(contents.trim())
+            if (!contents.contains('\n') && SessionKeyPolicy.weaknessOf(contents.trim()) == null) {
+                sessionKeyBox.setText(contents.trim())
                 Toast.makeText(this, "Session key scanned", Toast.LENGTH_SHORT).show()
                 saveAndConnect()
             } else {
@@ -253,54 +165,60 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun saveAndConnect() {
-        val key = keyBox.text.toString().trim()
-        if (key.length < 16) {
-            Toast.makeText(this, "Session key must be at least 16 characters", Toast.LENGTH_LONG).show()
+        val key = sessionKeyBox.text.toString().trim()
+        SessionKeyPolicy.weaknessOf(key)?.let { weakness ->
+            Toast.makeText(this,
+                "This session ID is too easy to guess: $weakness. " +
+                "Anyone who guesses it gets full control of this phone — tap the refresh icon for a strong one.",
+                Toast.LENGTH_LONG).show()
             return
         }
-        val url = serverBox.text.toString().trim()
-        Log.d("MainActivity", "Saving settings: url=$url, keyLen=${key.length}")
-        prefs.serverUrl = url
+        Log.d("MainActivity", "Saving settings: url=${prefs.serverUrl}, keyLen=${key.length}")
         prefs.sessionKey = key
-        prefs.deviceName = nameBox.text.toString().trim().ifBlank { Build.MODEL }
-        ConnectionManager.stop()
-        ConnectionManager.start(this)
-        // Foreground service keeps the session alive so the desktop can reach
-        // this phone without the app being open (ConnectionManager.start is
-        // idempotent, so the service won't open a second socket).
-        ConnectionService.start(this)
-    }
-
-    private fun setPermState(b: Button, granted: Boolean, grantedText: String, neededText: String) {
-        b.text = if (granted) "✓  $grantedText" else "✗  $neededText"
-        b.backgroundTintList = ColorStateList.valueOf(if (granted) grantedColor else neededColor)
+        saveBtn.visibility = android.view.View.GONE
+        Ui.reconnect(this)
     }
 
     @SuppressLint("SetTextI18n")
     private fun refreshStatus() {
-        statusText.text = "Status: ${ConnectionManager.state}"
+        val state = ConnectionManager.state
+        val (title, dotColor) = when {
+            state == "connected" -> "Connected" to getColor(R.color.rd_good)
+            state == "connecting" -> "Connecting…" to getColor(R.color.rd_warn)
+            state.startsWith("error") -> "Connection error" to getColor(R.color.rd_danger)
+            else -> "Not connected" to getColor(R.color.rd_danger)
+        }
+        statusTitle.text = title
+        statusDot.setColorFilter(dotColor)
+
         val peers = ConnectionManager.peers
-        peersText.text =
+        statusSubtitle.text =
             if (peers.isEmpty()) "No paired devices online"
             else "Paired: " + peers.joinToString { "${it.name} (${it.device})" }
         val hasWindows = peers.any { it.device == "windows" }
         viewDesktopBtn.isEnabled = hasWindows
         filesBtn.isEnabled = hasWindows
 
-        setPermState(shareBtn, ScreenCaptureService.isRunning,
-            "Screen sharing enabled (tap to stop)", "Enable screen sharing")
-        setPermState(a11yBtn, InputAccessibilityService.instance != null,
-            "Tap control enabled", "Enable tap control (Accessibility)")
-        val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
-        setPermState(filesPermBtn, filesOk,
-            "File access granted", "Grant file access (for desktop file browsing)")
+        val pendingCount = PeerAuth.pendingRequests().size
+        if (pendingCount > 0) {
+            statusSubtitle.text = "$pendingCount device(s) waiting for approval — tap to review"
+        }
 
-        val grantedCount = listOf(ScreenCaptureService.isRunning,
-            InputAccessibilityService.instance != null, filesOk).count { it }
-        val arrow = if (permGroup.visibility == View.VISIBLE) "▾" else "▸"
-        permHeader.text = "$arrow  Permissions ($grantedCount/3 enabled)"
-        // Slight tint: green when everything is set up, red when action is needed.
-        permHeader.setBackgroundColor(
-            if (grantedCount == 3) Color.parseColor("#334CAF50") else Color.parseColor("#33F44336"))
+        val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
+        // Same five items as the Permissions & Access banner: 3 OS grants + 2 consents.
+        val granted = listOf(ScreenCaptureService.isRunning,
+            InputAccessibilityService.instance != null, filesOk,
+            prefs.allowControl, prefs.allowFileAccess).count { it }
+        permissionsSubtitle.text =
+            if (granted == 5) "All permissions enabled — remote features fully available"
+            else "$granted of 5 permissions enabled — tap to review"
+        permissionsSubtitle.setTextColor(
+            if (granted == 5)
+                com.google.android.material.color.MaterialColors.getColor(
+                    permissionsSubtitle, com.google.android.material.R.attr.colorOnSurfaceVariant)
+            else getColor(R.color.rd_warn)
+        )
+
+        thisPhoneName.text = "${prefs.deviceName} (${PeerAuth.shortCode(PeerAuth.ownFingerprint)})"
     }
 }

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App-wide Material 3 theme; screens provide their own MaterialToolbar. -->
+    <style name="Theme.RemoteDesktop" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/rd_primary</item>
+        <item name="colorOnPrimary">@color/rd_on_primary</item>
+        <item name="colorPrimaryContainer">@color/rd_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/rd_on_primary_container</item>
+        <!-- Kill the Material 3 purple seed: neutral grays, white cards. -->
+        <item name="colorSurface">@color/rd_surface</item>
+        <item name="colorOnSurface">@color/rd_on_surface</item>
+        <item name="colorSurfaceVariant">@color/rd_surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/rd_on_surface_variant</item>
+        <item name="colorOutline">@color/rd_outline</item>
+        <item name="colorOutlineVariant">@color/rd_outline_variant</item>
+        <item name="android:colorBackground">@color/rd_background</item>
+        <item name="android:windowBackground">@color/rd_background</item>
+        <item name="android:statusBarColor">@color/rd_background</item>
+        <item name="android:windowLightStatusBar">@bool/rd_light_system_bars</item>
+        <item name="android:navigationBarColor">@color/rd_background</item>
+    </style>
+
+    <!-- For screens that still use the window-provided action bar. -->
+    <style name="Theme.RemoteDesktop.WithActionBar" parent="Theme.Material3.DayNight">
+        <item name="colorPrimary">@color/rd_primary</item>
+        <item name="colorOnPrimary">@color/rd_on_primary</item>
+        <item name="colorPrimaryContainer">@color/rd_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/rd_on_primary_container</item>
+        <item name="colorSurface">@color/rd_surface</item>
+        <item name="colorOnSurface">@color/rd_on_surface</item>
+        <item name="colorSurfaceVariant">@color/rd_surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/rd_on_surface_variant</item>
+        <item name="colorOutline">@color/rd_outline</item>
+        <item name="colorOutlineVariant">@color/rd_outline_variant</item>
+        <item name="android:colorBackground">@color/rd_background</item>
+        <item name="android:windowBackground">@color/rd_background</item>
+        <item name="android:statusBarColor">@color/rd_background</item>
+        <item name="android:windowLightStatusBar">@bool/rd_light_system_bars</item>
+        <item name="android:navigationBarColor">@color/rd_background</item>
+    </style>
+
+    <!-- White card with a hairline outline, like the mockup. -->
+    <style name="RdCard" parent="Widget.Material3.CardView.Outlined">
+        <item name="cardBackgroundColor">?attr/colorSurface</item>
+        <item name="strokeColor">?attr/colorOutlineVariant</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="cardCornerRadius">16dp</item>
+        <item name="cardElevation">0dp</item>
+    </style>
+
+    <!-- Section headers ("Allow Paired Devices", "General", …). -->
+    <style name="RdSectionHeader">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginStart">4dp</item>
+        <item name="android:layout_marginTop">20dp</item>
+        <item name="android:layout_marginBottom">8dp</item>
+        <item name="android:textAppearance">?attr/textAppearanceTitleSmall</item>
+        <item name="android:textColor">?attr/colorOnSurfaceVariant</item>
+    </style>
+
+    <!-- Icon at the start of a list row (tint is set per-layout with app:tint). -->
+    <style name="RdRowIcon">
+        <item name="android:layout_width">24dp</item>
+        <item name="android:layout_height">24dp</item>
+        <item name="android:layout_gravity">center_vertical</item>
+        <item name="android:layout_marginEnd">16dp</item>
+    </style>
+</resources>

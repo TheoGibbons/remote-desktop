@@ -39,6 +39,10 @@ public class ScreenStreamer
     private readonly ImageCodecInfo _jpegCodec;
 
     public bool IsStreaming => _cts != null && !_cts.IsCancellationRequested;
+    // Checked before every send: patches are broadcast to the whole session and
+    // any key holder can decrypt them, so the stream must pause while an
+    // unapproved device is present (see PROTOCOL.md, "Device authentication").
+    public Func<bool>? Gate { get; set; }
     public int Fps { get; set; } = 12;
     public long JpegQuality { get; set; } = 80;
     public int MaxWidth { get; set; } = 0; // 0 = stream at native resolution
@@ -127,6 +131,13 @@ public class ScreenStreamer
         {
             while (!ct.IsCancellationRequested)
             {
+                if (Gate is { } gate && !gate())
+                {
+                    forceKeyframe = true; // resume with a full frame
+                    await Task.Delay(250, ct);
+                    continue;
+                }
+
                 var frameStart = Environment.TickCount64;
                 var vs = VirtualScreen();
 

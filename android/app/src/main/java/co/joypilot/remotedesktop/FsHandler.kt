@@ -45,13 +45,37 @@ class FsHandler(private val context: Context) {
 
     // ---------- messages ----------
 
-    fun handleJson(msg: JSONObject) {
+    /** @param peerAccessAllowed whether the user consents to peers reading this
+     *  phone's files or pushing files to it. Replies to transfers this device
+     *  initiated itself (fs-get downloads) are always processed. */
+    fun handleJson(msg: JSONObject, peerAccessAllowed: Boolean) {
         when (msg.optString("type")) {
-            "fs-list" -> handleList(msg)
-            "fs-get" -> handleGet(msg)
-            "fs-begin" -> handleBegin(msg)
+            "fs-list" -> if (peerAccessAllowed) handleList(msg) else denyList(msg)
+            "fs-get" -> if (peerAccessAllowed) handleGet(msg) else denyGet(msg)
+            "fs-begin" -> handleBegin(msg, peerAccessAllowed)
             "fs-end" -> handleEnd(msg)
         }
+    }
+
+    private val deniedError = "File access is disabled on the remote device"
+
+    private fun denyList(msg: JSONObject) {
+        ConnectionManager.sendJson(
+            JSONObject()
+                .put("type", "fs-list-result")
+                .put("to", msg.optString("from"))
+                .put("reqId", msg.optString("reqId"))
+                .put("path", msg.optString("path"))
+                .put("entries", JSONArray())
+                .put("error", deniedError)
+        )
+    }
+
+    private fun denyGet(msg: JSONObject) {
+        ConnectionManager.sendJson(
+            JSONObject().put("type", "fs-end").put("to", msg.optString("from"))
+                .put("xferId", msg.optInt("xferId")).put("ok", false).put("error", deniedError)
+        )
     }
 
     private fun resolve(path: String): File =
@@ -170,9 +194,12 @@ class FsHandler(private val context: Context) {
         pendingGets[xferId] = Pair(onDone, onError)
     }
 
-    private fun handleBegin(msg: JSONObject) {
+    private fun handleBegin(msg: JSONObject, peerAccessAllowed: Boolean) {
         val xferId = msg.optInt("xferId")
         val name = msg.optString("name").replace(Regex("[/\\\\:*?\"<>|]"), "_").ifBlank { "file.bin" }
+        // An unsolicited push (no matching fs-get from us) needs consent;
+        // without a registered transfer its chunks are dropped on arrival.
+        if (!peerAccessAllowed && !pendingGets.containsKey(xferId)) return
         try {
             val temp = File.createTempFile("xfer", ".part", context.cacheDir)
             val cbs = pendingGets.remove(xferId)

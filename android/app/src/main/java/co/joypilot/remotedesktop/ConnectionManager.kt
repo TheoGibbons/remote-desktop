@@ -56,6 +56,7 @@ object ConnectionManager {
         if (!::appContext.isInitialized) {
             appContext = context.applicationContext
             fs = FsHandler(appContext)
+            PeerAuth.init(appContext)
         }
     }
 
@@ -72,6 +73,7 @@ object ConnectionManager {
         val (k, pid) = Crypto.deriveKeys(prefs.sessionKey)
         encKey = k
         pairId = pid
+        PeerAuth.onSessionStart(pid) // wipes the trust store if the key changed
         enabled = true
         backoffMs = 2000L
         connect()
@@ -83,6 +85,7 @@ object ConnectionManager {
         ws = null
         myId = null
         peers.clear()
+        PeerAuth.resetConnection()
         setState("disconnected")
     }
 
@@ -202,26 +205,30 @@ object ConnectionManager {
     }
 
     private fun handleJson(msg: JSONObject) {
+        val from = msg.optString("from")
         when (msg.optString("type")) {
             "welcome" -> {
                 myId = msg.optString("id")
                 backoffMs = 2000L
                 peers.clear()
+                PeerAuth.resetConnection() // new connection, stale peer ids
                 msg.optJSONArray("peers")?.let { arr ->
                     for (i in 0 until arr.length()) {
                         val p = arr.getJSONObject(i)
                         peers.add(Peer(p.getString("id"), p.getString("device"), p.getString("name")))
                     }
                 }
+                peers.forEach { PeerAuth.onPeerJoined(it.id, it.name, it.device) }
                 setState("connected")
             }
             "peer-joined" -> {
                 val p = msg.getJSONObject("peer")
                 val peer = Peer(p.getString("id"), p.getString("device"), p.getString("name"))
                 peers.add(peer)
+                PeerAuth.onPeerJoined(peer.id, peer.name, peer.device)
                 main.post {
                     android.widget.Toast.makeText(
-                        appContext, "${peer.name} (${peer.device}) is now paired and online",
+                        appContext, "${peer.name} (${peer.device}) is online",
                         android.widget.Toast.LENGTH_SHORT
                     ).show()
                 }
@@ -230,20 +237,53 @@ object ConnectionManager {
             "peer-left" -> {
                 val id = msg.optString("id")
                 peers.removeAll { it.id == id }
+                PeerAuth.onPeerLeft(id)
                 setState(state)
             }
             "error" -> setState("error: " + msg.optString("message"))
 
-            // Desktop controlling this phone
-            "tap", "swipe", "back", "homebtn", "recents" ->
-                InputAccessibilityService.instance?.handle(msg)
+            // Device authentication handshake (see PROTOCOL.md).
+            "auth-challenge", "auth-response" -> PeerAuth.handleJson(msg)
+            "auth-result" -> onAuthResult(from, msg.optString("status"))
 
-            "start-view" -> ScreenCaptureService.onViewRequested(appContext)
-            "stop-view" -> ScreenCaptureService.onViewStopped()
+            // Desktop controlling this phone — only with the user's consent
+            // (the toggles in MainActivity) AND from a device this phone has
+            // approved. The session key alone must not grant control.
+            "tap", "swipe", "touch", "pinch", "back", "homebtn", "recents" ->
+                if (Prefs(appContext).allowControl && PeerAuth.isTrusted(from))
+                    InputAccessibilityService.instance?.handle(msg)
 
-            // File system requests/responses
-            "fs-list", "fs-get", "fs-begin", "fs-end" -> fs.handleJson(msg)
+            "start-view" ->
+                if (Prefs(appContext).allowControl && PeerAuth.isTrusted(from))
+                    ScreenCaptureService.onViewRequested(appContext)
+            "stop-view" ->
+                if (PeerAuth.isTrusted(from)) ScreenCaptureService.onViewStopped()
+
+            // File system requests/responses. Chunks are broadcast like video,
+            // so serving also requires that no unapproved peer is present.
+            "fs-list", "fs-get", "fs-begin", "fs-end" ->
+                fs.handleJson(msg, peerAccessAllowed = Prefs(appContext).allowFileAccess &&
+                    PeerAuth.isTrusted(from) && PeerAuth.allPeersTrusted)
         }
         main.post { jsonListeners.forEach { it(msg) } }
     }
+
+    /** A peer told us where we stand with it (this phone is the viewer here).
+     *  ViewerActivity reacts via jsonListeners (re-requests or closes). */
+    private fun onAuthResult(from: String, status: String) {
+        // A full hang-up: also stop streaming this phone's own screen to them.
+        if (status == "revoked" || status == "disconnected") ScreenCaptureService.onViewStopped()
+        val text = when (status) {
+            "pending" -> "${peerName(from)} is asking its user to approve this phone — " +
+                "code ${PeerAuth.shortCode(PeerAuth.ownFingerprint)}"
+            "denied" -> "${peerName(from)} denied this phone access"
+            "revoked" -> "${peerName(from)} revoked this phone's access"
+            "disconnected" -> "${peerName(from)} ended this phone's session"
+            else -> return
+        }
+        main.post { android.widget.Toast.makeText(appContext, text, android.widget.Toast.LENGTH_LONG).show() }
+    }
+
+    private fun peerName(id: String): String =
+        peers.firstOrNull { it.id == id }?.name ?: "A paired device"
 }

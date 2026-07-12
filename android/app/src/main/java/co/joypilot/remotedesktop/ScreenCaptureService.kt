@@ -42,6 +42,14 @@ class ScreenCaptureService : Service() {
 
         val isRunning: Boolean get() = instance != null
 
+        /** Fired on the main thread when the service starts/stops (the service
+         *  starts asynchronously, after the consent dialog's activity result). */
+        val stateListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+        private fun notifyStateChanged(context: Context) {
+            Handler(context.mainLooper).post { stateListeners.forEach { it() } }
+        }
+
         fun start(context: Context, resultCode: Int, data: Intent) {
             val i = Intent(context, ScreenCaptureService::class.java)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
@@ -109,11 +117,13 @@ class ScreenCaptureService : Service() {
 
         setupCapture()
         instance = this
+        notifyStateChanged(this)
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         instance = null
+        notifyStateChanged(this)
         streaming = false
         virtualDisplay?.release()
         imageReader?.close()
@@ -160,6 +170,10 @@ class ScreenCaptureService : Service() {
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
                 if (!streaming) return@setOnImageAvailableListener
+                // Frames are broadcast to the whole session and any key holder
+                // can decrypt them — never send while an unapproved device is
+                // present. Resumes automatically once it is approved or leaves.
+                if (!PeerAuth.allPeersTrusted) return@setOnImageAvailableListener
                 val now = System.currentTimeMillis()
                 if (now - lastFrameAt < 1000L / maxFps) return@setOnImageAvailableListener
                 lastFrameAt = now
