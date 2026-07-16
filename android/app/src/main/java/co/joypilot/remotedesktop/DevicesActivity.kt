@@ -4,7 +4,9 @@ import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
+import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -64,8 +66,8 @@ class DevicesActivity : AppCompatActivity() {
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
-    /** One list row: title + subtitle on the left, action buttons on the right. */
-    private fun row(parent: LinearLayout, title: String, subtitle: String, vararg buttons: MaterialButton) {
+    /** One list row: title + subtitle on the left, action views on the right. */
+    private fun row(parent: LinearLayout, title: String, subtitle: String, vararg actions: View) {
         if (parent.childCount > 0) {
             parent.addView(MaterialDivider(this).apply {
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dividerThickness)
@@ -91,7 +93,7 @@ class DevicesActivity : AppCompatActivity() {
             alpha = 0.7f
         })
         line.addView(texts)
-        buttons.forEach { line.addView(it) }
+        actions.forEach { line.addView(it) }
         parent.addView(line)
     }
 
@@ -100,6 +102,43 @@ class DevicesActivity : AppCompatActivity() {
     ).apply {
         text = label
         setOnClickListener { onClick() }
+    }
+
+    /** "⋮" button opening the Disconnect/Revoke menu for a trusted device. */
+    private fun moreButton(d: PeerAuth.TrustedDevice, onlinePeerId: String?) = ImageButton(this).apply {
+        setImageResource(R.drawable.ic_more_vert)
+        setColorFilter(com.google.android.material.color.MaterialColors.getColor(
+            this, com.google.android.material.R.attr.colorOnSurfaceVariant))
+        contentDescription = "More options for ${d.name}"
+        val out = android.util.TypedValue()
+        theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, out, true)
+        setBackgroundResource(out.resourceId)
+        setOnClickListener {
+            val menu = PopupMenu(this@DevicesActivity, this)
+            if (onlinePeerId != null) menu.menu.add("Disconnect")
+            menu.menu.add("Revoke")
+            menu.setOnMenuItemClickListener { item ->
+                when (item.title) {
+                    "Disconnect" -> {
+                        PeerAuth.disconnectPeer(onlinePeerId!!)
+                        // Hang up whatever it was watching; it stays trusted.
+                        ScreenCaptureService.onViewStopped()
+                        Toast.makeText(this@DevicesActivity,
+                            "Disconnected ${d.name} (it stays trusted)", Toast.LENGTH_SHORT).show()
+                    }
+                    "Revoke" -> {
+                        MaterialAlertDialogBuilder(this@DevicesActivity)
+                            .setTitle("Revoke ${d.name}?")
+                            .setMessage("It will be disconnected and must be approved again before it can connect.")
+                            .setPositiveButton("Revoke") { _, _ -> PeerAuth.revoke(d.fingerprint) }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    }
+                }
+                true
+            }
+            menu.show()
+        }
     }
 
     @SuppressLint("SetTextI18n")
@@ -134,28 +173,12 @@ class DevicesActivity : AppCompatActivity() {
             val onlinePeerId = ConnectionManager.peers
                 .firstOrNull { PeerAuth.isTrusted(it.id) && PeerAuth.fingerprintOfPeer(it.id) == d.fingerprint }
                 ?.id
-            val buttons = mutableListOf(textButton("Revoke") {
-                MaterialAlertDialogBuilder(this)
-                    .setTitle("Revoke ${d.name}?")
-                    .setMessage("It will be disconnected and must be approved again before it can connect.")
-                    .setPositiveButton("Revoke") { _, _ -> PeerAuth.revoke(d.fingerprint) }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            })
-            if (onlinePeerId != null) {
-                buttons.add(0, textButton("Disconnect") {
-                    PeerAuth.disconnectPeer(onlinePeerId)
-                    // Hang up whatever it was watching; it stays trusted.
-                    ScreenCaptureService.onViewStopped()
-                    Toast.makeText(this, "Disconnected ${d.name} (it stays trusted)", Toast.LENGTH_SHORT).show()
-                })
-            }
             row(
                 trustedGroup,
                 "${d.name} (${d.device})",
                 "Code ${PeerAuth.shortCode(d.fingerprint)} — " +
                     if (onlinePeerId != null) "online" else "offline, trusted",
-                *buttons.toTypedArray(),
+                moreButton(d, onlinePeerId),
             )
         }
     }

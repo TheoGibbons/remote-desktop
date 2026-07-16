@@ -17,15 +17,24 @@ public partial class MainWindow : Window
     private record Peer(string Id, string Device, string Name);
 
     /// <summary>One row of the devices list: an online peer, a pending approval,
-    /// or a trusted-but-offline device from the trust store.</summary>
-    private record DeviceRow(string? PeerId, string? Fingerprint, string Name, string Device, string Status)
+    /// or a trusted-but-offline device from the trust store. Public so the
+    /// XAML DataTemplate can bind to it.</summary>
+    public sealed record DeviceRow
     {
-        public override string ToString()
-        {
-            var code = Fingerprint == null ? "" : $"  [{DeviceIdentity.ShortCode(Fingerprint)}]";
-            return $"{Name} ({Device}){code} — {Status}";
-        }
+        public string? PeerId { get; init; }
+        public string? Fingerprint { get; init; }
+        public string Name { get; init; } = "";
+        public string Title { get; init; } = "";
+        public string Subtitle { get; init; } = "";
+        public System.Windows.Media.Brush? Dot { get; init; }
+        public bool ShowApprove { get; init; }
+        public bool ShowView { get; init; }
+        public bool ShowDisconnect { get; init; }
+        public bool ShowRevoke { get; init; }
+        public bool ShowMore => ShowDisconnect || ShowRevoke;
     }
+
+    private string _lastState = "disconnected";
 
     private readonly List<Peer> _peers = new();
     private PhoneViewWindow? _phoneView;
@@ -273,12 +282,38 @@ public partial class MainWindow : Window
 
     private void OnState(string state)
     {
-        StatusText.Text = state;
+        _lastState = state;
         if (state != "connected")
         {
             _peers.Clear();
             _auth.ResetConnection(); // peer ids are stale after a drop
             RefreshDeviceList();
+        }
+        UpdateStatusCard();
+    }
+
+    private void UpdateStatusCard()
+    {
+        var s = _lastState;
+        if (s == "connected")
+        {
+            StatusTitle.Text = "Connected";
+            StatusDot.Fill = (System.Windows.Media.Brush)FindResource("RdGoodBrush");
+            StatusSubtitle.Text = _peers.Count == 0
+                ? "No paired devices online"
+                : "Paired: " + string.Join(", ", _peers.Select(p => $"{p.Name} ({p.Device})"));
+        }
+        else if (s == "connecting")
+        {
+            StatusTitle.Text = "Connecting…";
+            StatusDot.Fill = (System.Windows.Media.Brush)FindResource("RdWarnBrush");
+            StatusSubtitle.Text = _settings.ServerUrl;
+        }
+        else
+        {
+            StatusTitle.Text = "Not connected";
+            StatusDot.Fill = (System.Windows.Media.Brush)FindResource("RdDangerBrush");
+            StatusSubtitle.Text = s.StartsWith("disconnected") ? s : "Save & connect to join the session";
         }
     }
 
@@ -319,7 +354,7 @@ public partial class MainWindow : Window
                 break;
 
             case "error":
-                StatusText.Text = "Error: " + msg["message"]?.GetValue<string>();
+                StatusSubtitle.Text = "Error: " + msg["message"]?.GetValue<string>();
                 break;
 
             case "auth-challenge":
@@ -439,7 +474,7 @@ public partial class MainWindow : Window
             $"\"{req.Name}\" ({req.Device}) wants to pair with this computer.\n\n" +
             $"Device code: {DeviceIdentity.ShortCode(req.Fingerprint)}\n\n" +
             "Only allow if that device shows the same code. Once approved it can " +
-            "view, control and browse this computer whenever the boxes above are ticked.",
+            "view, control and browse this computer whenever those switches are on.",
             "New device wants to connect",
             MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (result == MessageBoxResult.Yes) _auth.Approve(req.Fingerprint);
@@ -464,64 +499,105 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Rebuild the devices list: online peers (with their trust state)
-    /// plus trusted devices that are currently offline.</summary>
+    /// plus trusted devices that are currently offline. Each row carries its
+    /// own action buttons (approve/deny, view/files, disconnect/revoke).</summary>
     private void RefreshDeviceList()
     {
+        var good = (System.Windows.Media.Brush)FindResource("RdGoodBrush");
+        var warn = (System.Windows.Media.Brush)FindResource("RdWarnBrush");
+        var offline = (System.Windows.Media.Brush)FindResource("RdOfflineBrush");
+
         var rows = new List<DeviceRow>();
         foreach (var p in _peers)
         {
             var fp = _auth.FingerprintOf(p.Id);
+            var trusted = _auth.IsTrusted(p.Id);
+            var pending = _auth.Pending.Any(r => r.PeerId == p.Id);
             var status =
-                _auth.IsTrusted(p.Id) ? "online" :
-                _auth.Pending.Any(r => r.PeerId == p.Id) ? "online — waiting for your approval" :
+                trusted ? "online" :
+                pending ? "online — waiting for your approval" :
                 fp != null ? "online — not approved" :
                 "online — verifying…";
-            rows.Add(new DeviceRow(p.Id, fp, p.Name, p.Device, status));
+            var code = fp == null ? "" : $"Code {DeviceIdentity.ShortCode(fp)} — ";
+            rows.Add(new DeviceRow
+            {
+                PeerId = p.Id,
+                Fingerprint = fp,
+                Name = p.Name,
+                Title = $"{p.Name} ({p.Device})",
+                Subtitle = code + status,
+                Dot = trusted ? good : warn,
+                ShowApprove = pending,
+                ShowView = true,
+                ShowDisconnect = trusted,
+                ShowRevoke = fp != null && _auth.TrustedDevices.Any(d => d.Fingerprint == fp),
+            });
         }
         foreach (var d in _auth.TrustedDevices)
             if (rows.All(r => r.Fingerprint != d.Fingerprint))
-                rows.Add(new DeviceRow(null, d.Fingerprint, d.Name, d.Device,
-                    $"offline — trusted (last seen {d.LastSeen.ToLocalTime():g})"));
+                rows.Add(new DeviceRow
+                {
+                    Fingerprint = d.Fingerprint,
+                    Name = d.Name,
+                    Title = $"{d.Name} ({d.Device})",
+                    Subtitle = $"Code {DeviceIdentity.ShortCode(d.Fingerprint)} — " +
+                               $"offline, trusted (last seen {d.LastSeen.ToLocalTime():g})",
+                    Dot = offline,
+                    ShowRevoke = true,
+                });
 
-        var selected = PeerList.SelectedItem as DeviceRow;
-        PeerList.ItemsSource = null;
-        PeerList.ItemsSource = rows;
-        if (selected != null)
-            PeerList.SelectedItem =
-                rows.FirstOrDefault(r => r.Fingerprint != null && r.Fingerprint == selected.Fingerprint)
-                ?? rows.FirstOrDefault(r => r.PeerId != null && r.PeerId == selected.PeerId);
-        UpdateDeviceButtons();
+        DevicesList.ItemsSource = rows;
+        DevicesEmptyText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        UpdateStatusCard();
     }
 
-    private void PeerList_SelectionChanged(object sender, SelectionChangedEventArgs e) => UpdateDeviceButtons();
+    private static DeviceRow? RowOf(object sender) => (sender as FrameworkElement)?.DataContext as DeviceRow;
 
-    private void UpdateDeviceButtons()
+    private void RowApprove_Click(object sender, RoutedEventArgs e)
     {
-        var row = PeerList.SelectedItem as DeviceRow;
-        var target = TargetPeer();
-        ViewButton.IsEnabled = target != null;
-        FilesButton.IsEnabled = target != null;
-        var pending = row?.Fingerprint != null && _auth.Pending.Any(p => p.Fingerprint == row.Fingerprint);
-        ApproveButton.IsEnabled = pending;
-        DenyButton.IsEnabled = pending;
-        RevokeButton.IsEnabled = row?.Fingerprint != null
-            && _auth.TrustedDevices.Any(d => d.Fingerprint == row.Fingerprint);
-        DisconnectButton.IsEnabled = row?.PeerId != null && _auth.IsTrusted(row.PeerId);
+        if (RowOf(sender)?.Fingerprint is { } fp) _auth.Approve(fp);
     }
 
-    private void Approve_Click(object sender, RoutedEventArgs e)
+    private void RowDeny_Click(object sender, RoutedEventArgs e)
     {
-        if ((PeerList.SelectedItem as DeviceRow)?.Fingerprint is { } fp) _auth.Approve(fp);
+        if (RowOf(sender)?.Fingerprint is { } fp) _auth.Deny(fp);
     }
 
-    private void Deny_Click(object sender, RoutedEventArgs e)
+    /// <summary>Disconnect/Revoke live in a per-row "⋯" menu.</summary>
+    private void RowMore_Click(object sender, RoutedEventArgs e)
     {
-        if ((PeerList.SelectedItem as DeviceRow)?.Fingerprint is { } fp) _auth.Deny(fp);
+        if (RowOf(sender) is not { } row) return;
+        var menu = new ContextMenu { Style = (Style)FindResource("RdMenu") };
+        if (row.ShowDisconnect)
+        {
+            var item = new MenuItem
+            {
+                Header = "Disconnect",
+                Style = (Style)FindResource("RdMenuItem"),
+                ToolTip = "End this device's current session (it stays trusted)",
+            };
+            item.Click += (_, _) => DisconnectRow(row);
+            menu.Items.Add(item);
+        }
+        if (row.ShowRevoke)
+        {
+            var item = new MenuItem
+            {
+                Header = "Revoke",
+                Style = (Style)FindResource("RdMenuItemDanger"),
+                ToolTip = "Forget this device — it must be approved again to connect",
+            };
+            item.Click += (_, _) => RevokeRow(row);
+            menu.Items.Add(item);
+        }
+        menu.PlacementTarget = (UIElement)sender;
+        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
+        menu.IsOpen = true;
     }
 
-    private void Revoke_Click(object sender, RoutedEventArgs e)
+    private void RevokeRow(DeviceRow row)
     {
-        if (PeerList.SelectedItem is not DeviceRow { Fingerprint: { } fp } row) return;
+        if (row.Fingerprint is not { } fp) return;
         var res = MessageBox.Show(this,
             $"Revoke \"{row.Name}\" ({DeviceIdentity.ShortCode(fp)})?\n\n" +
             "It will be disconnected and must be approved again before it can connect.",
@@ -531,9 +607,9 @@ public partial class MainWindow : Window
         Toast.Show($"Revoked {row.Name}");
     }
 
-    private void Disconnect_Click(object sender, RoutedEventArgs e)
+    private void DisconnectRow(DeviceRow row)
     {
-        if (PeerList.SelectedItem is not DeviceRow { PeerId: { } id } row) return;
+        if (row.PeerId is not { } id) return;
         _auth.DisconnectPeer(id);
         // Hang up whatever it was watching. (Sessions are expected to hold two
         // devices, so stopping the streamer outright is fine.)
@@ -541,25 +617,33 @@ public partial class MainWindow : Window
         Toast.Show($"Disconnected {row.Name} (it stays trusted and may reconnect)");
     }
 
+    /// <summary>The device name lives outside the session card, so apply it as
+    /// soon as the field loses focus (the name is announced when joining).</summary>
+    private void DeviceName_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (DeviceNameBox.Text.Trim() != _settings.DeviceName &&
+            !string.IsNullOrWhiteSpace(_settings.SessionKey))
+            Connect();
+    }
+
+    private void RowView_Click(object sender, RoutedEventArgs e)
+    {
+        if (RowOf(sender)?.PeerId is { } id)
+            OpenViewFor(_peers.FirstOrDefault(p => p.Id == id));
+    }
+
+    private void RowFiles_Click(object sender, RoutedEventArgs e)
+    {
+        if (RowOf(sender)?.PeerId is { } id)
+            OpenFilesFor(_peers.FirstOrDefault(p => p.Id == id));
+    }
+
     private string PeerName(string? id) =>
         _peers.FirstOrDefault(p => p.Id == id)?.Name ?? "A paired device";
 
-    /// <summary>The selected online peer, or the only online peer if there is exactly one.</summary>
-    private Peer? TargetPeer()
-    {
-        if (PeerList.SelectedItem is DeviceRow { PeerId: { } id })
-            return _peers.FirstOrDefault(p => p.Id == id);
-        return _peers.Count == 1 ? _peers[0] : null;
-    }
-
-    private void View_Click(object sender, RoutedEventArgs e) => OpenViewFor(TargetPeer());
-
-    private void PeerList_DoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e) =>
-        OpenViewFor(TargetPeer());
-
     private void OpenViewFor(Peer? peer)
     {
-        if (peer == null) { Toast.Show("Select a paired device in the list first."); return; }
+        if (peer == null) { Toast.Show("That device is no longer online."); return; }
         if (peer.Device == "windows") OpenPcView(peer);
         else OpenPhoneView(peer);
     }
@@ -592,10 +676,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Files_Click(object sender, RoutedEventArgs e)
+    private void OpenFilesFor(Peer? peer)
     {
-        var peer = TargetPeer();
-        if (peer == null) { Toast.Show("Select a paired device in the list first."); return; }
+        if (peer == null) { Toast.Show("That device is no longer online."); return; }
         if (_fileExplorer == null || !_fileExplorer.IsLoaded)
         {
             _fileExplorer = new FileExplorerWindow(_ws, _fs, peer.Id);
