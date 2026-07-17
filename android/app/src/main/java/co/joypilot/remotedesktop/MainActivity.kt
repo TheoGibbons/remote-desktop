@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var saveBtn: MaterialButton
     private lateinit var viewDesktopBtn: MaterialButton
     private lateinit var filesBtn: MaterialButton
+    private lateinit var deviceActionsRow: android.view.View
     private lateinit var statusDot: ImageView
     private lateinit var statusTitle: TextView
     private lateinit var statusSubtitle: TextView
@@ -60,6 +61,7 @@ class MainActivity : AppCompatActivity() {
         saveBtn = findViewById(R.id.saveBtn)
         viewDesktopBtn = findViewById(R.id.viewDesktopBtn)
         filesBtn = findViewById(R.id.filesBtn)
+        deviceActionsRow = findViewById(R.id.deviceActionsRow)
         statusDot = findViewById(R.id.statusDot)
         statusTitle = findViewById(R.id.statusTitle)
         statusSubtitle = findViewById(R.id.statusSubtitle)
@@ -195,9 +197,10 @@ class MainActivity : AppCompatActivity() {
         statusSubtitle.text =
             if (peers.isEmpty()) "No paired devices online"
             else "Paired: " + peers.joinToString { "${it.name} (${it.device})" }
+        // The desktop actions live with the connected-devices card and only
+        // appear while a computer is actually online in the session.
         val hasWindows = peers.any { it.device == "windows" }
-        viewDesktopBtn.isEnabled = hasWindows
-        filesBtn.isEnabled = hasWindows
+        deviceActionsRow.visibility = if (hasWindows) android.view.View.VISIBLE else android.view.View.GONE
 
         val pendingCount = PeerAuth.pendingRequests().size
         if (pendingCount > 0) {

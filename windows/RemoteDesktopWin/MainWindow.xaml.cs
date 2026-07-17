@@ -36,6 +36,12 @@ public partial class MainWindow : Window
 
     private string _lastState = "disconnected";
 
+    // Compact layout: once connected with devices in the session, only the
+    // essentials stay visible; these track what the user opted to reveal.
+    private bool _extrasShown;
+    private bool _accessExpanded;
+    private bool _simpleSized; // window is currently shrunk to the simple view
+
     private readonly List<Peer> _peers = new();
     private PhoneViewWindow? _phoneView;
     private PcViewWindow? _pcView;
@@ -74,6 +80,8 @@ public partial class MainWindow : Window
         if (IsElevated())
         {
             ElevateButton.Visibility = Visibility.Collapsed;
+            ElevateGrantedText.Visibility = Visibility.Visible;
+            ElevateCaption.Text = "Admin-only windows like Task Manager can be viewed and controlled.";
             Title += " (administrator)";
         }
 
@@ -183,6 +191,7 @@ public partial class MainWindow : Window
         _settings.StartWithWindows = StartupCheck.IsChecked == true;
         _settings.Save();
         ApplyStartupRegistration();
+        ApplySectionVisibility();
     }
 
     private void Consent_Changed(object sender, RoutedEventArgs e)
@@ -190,6 +199,7 @@ public partial class MainWindow : Window
         _settings.AllowRemoteControl = AllowStreamCheck.IsChecked == true;
         _settings.AllowFileAccess = AllowFilesCheck.IsChecked == true;
         _settings.Save();
+        ApplySectionVisibility();
     }
 
     /// <summary>
@@ -315,6 +325,73 @@ public partial class MainWindow : Window
             StatusDot.Fill = (System.Windows.Media.Brush)FindResource("RdDangerBrush");
             StatusSubtitle.Text = s.StartsWith("disconnected") ? s : "Save & connect to join the session";
         }
+        ApplySectionVisibility();
+    }
+
+    /// <summary>
+    /// Once connected with devices in the session the window slims down to the
+    /// essentials: the devices list and a one-line permissions summary, with the
+    /// window shrunk to fit. Everything else hides behind "Show more settings".
+    /// Outside that state the full layout is shown, as before.
+    /// </summary>
+    private void ApplySectionVisibility()
+    {
+        bool compact = _lastState == "connected" && _peers.Count > 0;
+        bool extras = !compact || _extrasShown;
+
+        SessionCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
+        StatusCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
+        ComputerCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
+
+        bool detail = !compact || _accessExpanded;
+        AccessDetailPanel.Visibility = detail ? Visibility.Visible : Visibility.Collapsed;
+        AccessSummaryText.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+        AccessToggleButton.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+        AccessToggleButton.Content = detail ? "\uE70E" : "\uE70D"; // chevron up / down
+        AccessToggleButton.ToolTip = detail ? "Hide the permission switches" : "Show the permission switches";
+
+        int granted = (AllowStreamCheck.IsChecked == true ? 1 : 0)
+                    + (AllowFilesCheck.IsChecked == true ? 1 : 0)
+                    + (StartupCheck.IsChecked == true ? 1 : 0)
+                    + (IsElevated() ? 1 : 0);
+        AccessSummaryText.Text = $"{granted}/4 permissions granted";
+
+        MoreButton.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+        MoreButton.Content = _extrasShown ? "Hide extra settings" : "Show more settings";
+
+        // The simple view holds far less content, so let the window hug it
+        // (it re-fits as devices come and go); restore the tall fixed window
+        // whenever the full layout is back.
+        bool simple = compact && !_extrasShown;
+        if (simple != _simpleSized)
+        {
+            _simpleSized = simple;
+            if (simple)
+            {
+                MinHeight = 240;
+                MaxHeight = 800; // long device lists scroll instead of growing off-screen
+                SizeToContent = SizeToContent.Height;
+            }
+            else
+            {
+                SizeToContent = SizeToContent.Manual;
+                MinHeight = 600;
+                MaxHeight = double.PositiveInfinity;
+                Height = 800;
+            }
+        }
+    }
+
+    private void AccessToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _accessExpanded = !_accessExpanded;
+        ApplySectionVisibility();
+    }
+
+    private void More_Click(object sender, RoutedEventArgs e)
+    {
+        _extrasShown = !_extrasShown;
+        ApplySectionVisibility();
     }
 
     private void OnJson(JsonNode msg)

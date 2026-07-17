@@ -12,7 +12,7 @@
         <StackPanel Margin="18" MaxWidth="700">
 
             <!-- ============ Session ID card ============ -->
-            <Border Style="{StaticResource RdCard}">
+            <Border x:Name="SessionCard" Style="{StaticResource RdCard}">
                 <StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -36,28 +36,18 @@
                         <TextBox x:Name="ServerUrlBox" Style="{StaticResource RdTextBox}"/>
                     </StackPanel>
 
-                    <Grid Margin="0,14,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <Button x:Name="ElevateButton" Content="Restart as administrator"
-                                Style="{StaticResource RdOutlinedButton}" HorizontalAlignment="Left"
-                                Click="Elevate_Click"
-                                ToolTip="Windows (UIPI) blocks remote input to elevated windows like Task Manager unless this app also runs elevated."/>
-                        <StackPanel Grid.Column="1" Orientation="Horizontal">
-                            <Button x:Name="QrButton" Content="Show QR code" Style="{StaticResource RdOutlinedButton}"
-                                    Click="Qr_Click"
-                                    ToolTip="Show a QR code the phone can scan to copy these settings"/>
-                            <Button x:Name="ConnectButton" Content="Save &amp; connect" Style="{StaticResource RdPrimaryButton}"
-                                    Margin="8,0,0,0" Click="Connect_Click"/>
-                        </StackPanel>
-                    </Grid>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+                        <Button x:Name="QrButton" Content="Show QR code" Style="{StaticResource RdOutlinedButton}"
+                                Click="Qr_Click"
+                                ToolTip="Show a QR code the phone can scan to copy these settings"/>
+                        <Button x:Name="ConnectButton" Content="Save &amp; connect" Style="{StaticResource RdPrimaryButton}"
+                                Margin="8,0,0,0" Click="Connect_Click"/>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 
             <!-- ============ Connection status card ============ -->
-            <Border Style="{StaticResource RdCard}" Margin="0,12,0,0">
+            <Border x:Name="StatusCard" Style="{StaticResource RdCard}" Margin="0,12,0,0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -126,7 +116,7 @@
             </Border>
 
             <!-- ============ This Computer card ============ -->
-            <Border Style="{StaticResource RdCard}" Margin="0,12,0,0">
+            <Border x:Name="ComputerCard" Style="{StaticResource RdCard}" Margin="0,12,0,0">
                 <StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -146,57 +136,97 @@
             </Border>
 
             <!-- ============ Access card ============ -->
-            <Border Style="{StaticResource RdCard}" Margin="0,12,0,0">
+            <Border x:Name="AccessCard" Style="{StaticResource RdCard}" Margin="0,12,0,0">
                 <StackPanel>
-                    <TextBlock Text="Allow Paired Devices" Style="{StaticResource RdCardTitle}"/>
-
-                    <Grid Margin="0,12,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock Text="View and control this computer" FontSize="13"
-                                       Foreground="{StaticResource RdOnSurfaceBrush}"/>
-                            <TextBlock Text="Screen, mouse and keyboard" Style="{StaticResource RdCaption}" Margin="0,2,0,0"/>
-                        </StackPanel>
-                        <CheckBox Grid.Column="1" x:Name="AllowStreamCheck" Style="{StaticResource RdSwitch}"
-                                  Checked="Consent_Changed" Unchecked="Consent_Changed"/>
-                    </Grid>
-
-                    <Border Height="1" Background="{StaticResource RdOutlineBrush}" Margin="0,12"/>
-
                     <Grid>
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock Text="Browse and transfer files" FontSize="13"
-                                       Foreground="{StaticResource RdOnSurfaceBrush}"/>
-                            <TextBlock Text="Paired devices can browse this computer's files" Style="{StaticResource RdCaption}" Margin="0,2,0,0"/>
-                        </StackPanel>
-                        <CheckBox Grid.Column="1" x:Name="AllowFilesCheck" Style="{StaticResource RdSwitch}"
-                                  Checked="Consent_Changed" Unchecked="Consent_Changed"/>
+                        <TextBlock Text="Allow Paired Devices" Style="{StaticResource RdCardTitle}" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="1" x:Name="AccessSummaryText" Style="{StaticResource RdCaption}"
+                                   Margin="10,0,8,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+                        <Button Grid.Column="2" x:Name="AccessToggleButton" Style="{StaticResource RdIconButton}"
+                                Content="&#xE70D;" Click="AccessToggle_Click" Visibility="Collapsed"
+                                ToolTip="Show the permission switches"/>
                     </Grid>
 
-                    <Border Height="1" Background="{StaticResource RdOutlineBrush}" Margin="0,12"/>
+                    <StackPanel x:Name="AccessDetailPanel">
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="View and control this computer" FontSize="13"
+                                           Foreground="{StaticResource RdOnSurfaceBrush}"/>
+                                <TextBlock Text="Screen, mouse and keyboard" Style="{StaticResource RdCaption}" Margin="0,2,0,0"/>
+                            </StackPanel>
+                            <CheckBox Grid.Column="1" x:Name="AllowStreamCheck" Style="{StaticResource RdSwitch}"
+                                      Checked="Consent_Changed" Unchecked="Consent_Changed"/>
+                        </Grid>
 
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel>
-                            <TextBlock Text="Start with Windows" FontSize="13"
-                                       Foreground="{StaticResource RdOnSurfaceBrush}"/>
-                            <TextBlock Text="Keeps this PC reachable; the app lives in the tray" Style="{StaticResource RdCaption}" Margin="0,2,0,0"/>
-                        </StackPanel>
-                        <CheckBox Grid.Column="1" x:Name="StartupCheck" Style="{StaticResource RdSwitch}"
-                                  Checked="Startup_Changed" Unchecked="Startup_Changed"/>
-                    </Grid>
+                        <Border Height="1" Background="{StaticResource RdOutlineBrush}" Margin="0,12"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Browse and transfer files" FontSize="13"
+                                           Foreground="{StaticResource RdOnSurfaceBrush}"/>
+                                <TextBlock Text="Paired devices can browse this computer's files" Style="{StaticResource RdCaption}" Margin="0,2,0,0"/>
+                            </StackPanel>
+                            <CheckBox Grid.Column="1" x:Name="AllowFilesCheck" Style="{StaticResource RdSwitch}"
+                                      Checked="Consent_Changed" Unchecked="Consent_Changed"/>
+                        </Grid>
+
+                        <Border Height="1" Background="{StaticResource RdOutlineBrush}" Margin="0,12"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Start with Windows" FontSize="13"
+                                           Foreground="{StaticResource RdOnSurfaceBrush}"/>
+                                <TextBlock Text="Keeps this PC reachable; the app lives in the tray" Style="{StaticResource RdCaption}" Margin="0,2,0,0"/>
+                            </StackPanel>
+                            <CheckBox Grid.Column="1" x:Name="StartupCheck" Style="{StaticResource RdSwitch}"
+                                      Checked="Startup_Changed" Unchecked="Startup_Changed"/>
+                        </Grid>
+
+                        <Border Height="1" Background="{StaticResource RdOutlineBrush}" Margin="0,12"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,10,0">
+                                <TextBlock Text="Administrator mode" FontSize="13"
+                                           Foreground="{StaticResource RdOnSurfaceBrush}"/>
+                                <TextBlock x:Name="ElevateCaption" Style="{StaticResource RdCaption}" Margin="0,2,0,0"
+                                           Text="Remote desktop will freeze if Task Manager is opened — switch to administrator to fix this."/>
+                            </StackPanel>
+                            <Button Grid.Column="1" x:Name="ElevateButton" Content="Switch to administrator"
+                                    Style="{StaticResource RdOutlinedButton}" VerticalAlignment="Center"
+                                    Click="Elevate_Click"
+                                    ToolTip="Windows (UIPI) blocks remote input to elevated windows like Task Manager unless this app also runs elevated."/>
+                            <TextBlock Grid.Column="1" x:Name="ElevateGrantedText" Text="Enabled"
+                                       FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
+                                       Foreground="{StaticResource RdGoodBrush}" Visibility="Collapsed"/>
+                        </Grid>
+                    </StackPanel>
                 </StackPanel>
             </Border>
+
+            <Button x:Name="MoreButton" Style="{StaticResource RdTextButton}" HorizontalAlignment="Center"
+                    Margin="0,10,0,0" Visibility="Collapsed" Click="More_Click" Content="Show more settings"
+                    ToolTip="Show the session ID and this computer's settings"/>
 
             <TextBlock x:Name="TransferText" Style="{StaticResource RdCaption}" Margin="4,10,4,0"/>
         </StackPanel>
