@@ -69,6 +69,12 @@ docker build -t rd-relay .
 docker run -p 8090:8090 --restart unless-stopped rd-relay
 ```
 
+The repository root contains the supported Compose setup for running this
+relay with the public download site, either standalone or behind the shared
+Traefik instance. In production the relay is not published on port 8090;
+Traefik routes `wss://relay.remote-desktop.co/ws` to it and `TRUST_PROXY=1` is
+enabled. The site uses the separate `www.remote-desktop.co` router.
+
 ## Tests
 
 ```bash

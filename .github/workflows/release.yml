@@ -1,0 +1,134 @@
+name: Publish desktop and Android apps
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: windows-latest
+    env:
+      RELAY_SERVER_URL: wss://relay.remote-desktop.co/ws
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Validate release configuration
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') {
+            throw "Use a semantic release tag such as v1.2.3."
+          }
+          if (-not $env:RELAY_SERVER_URL.StartsWith('wss://')) {
+            throw "The public release relay URL must use wss://."
+          }
+          "RELEASE_VERSION_NAME=$version" >> $env:GITHUB_ENV
+          "RELEASE_VERSION_CODE=$env:GITHUB_RUN_NUMBER" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+      - name: Prepare Android signing key
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ANDROID_KEYSTORE_BASE64)) {
+            throw "The ANDROID_KEYSTORE_BASE64 repository secret is required."
+          }
+          $keystorePath = Join-Path $env:RUNNER_TEMP 'remote-desktop-release.jks'
+          [IO.File]::WriteAllBytes($keystorePath, [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64))
+          "ANDROID_KEYSTORE_FILE=$keystorePath" >> $env:GITHUB_ENV
+
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          dotnet publish windows/RemoteDesktopWin/RemoteDesktopWin.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --output dist/windows `
+            "-p:Version=$env:RELEASE_VERSION_NAME" `
+            "-p:DefaultRelayServerUrl=$env:RELAY_SERVER_URL" `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true
+          Move-Item dist/windows/RemoteDesktopWin.exe dist/RemoteDesktop-Windows-x64.exe
+
+      - name: Sign Windows app when a certificate is configured
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)) {
+            Write-Host 'No Windows signing certificate configured; publishing an unsigned EXE.'
+            exit 0
+          }
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
+          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64))
+          $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object FullName -Like '*\x64\signtool.exe' |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signTool) { throw 'signtool.exe was not found on the runner.' }
+          & $signTool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $certificatePath /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD dist/RemoteDesktop-Windows-x64.exe
+          & $signTool verify /pa /v dist/RemoteDesktop-Windows-x64.exe
+
+      - name: Build signed Android app
+        shell: pwsh
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          DEFAULT_RELAY_SERVER_URL: wss://relay.remote-desktop.co/ws
+        run: |
+          .\android\gradlew.bat -p android --no-daemon :app:assembleRelease
+          Move-Item android/app/build/outputs/apk/release/app-release.apk dist/RemoteDesktop-Android.apk
+
+      - name: Verify Android signature
+        shell: pwsh
+        run: |
+          $apkSigner = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Recurse -Filter apksigner.bat |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $apkSigner) { throw 'apksigner was not found on the runner.' }
+          & $apkSigner verify --verbose --print-certs dist/RemoteDesktop-Android.apk
+
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          $names = @('RemoteDesktop-Windows-x64.exe', 'RemoteDesktop-Android.apk')
+          $checksums = foreach ($name in $names) {
+            $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name"
+          }
+          Set-Content -LiteralPath dist/SHA256SUMS.txt -Value $checksums -Encoding ascii
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/RemoteDesktop-Windows-x64.exe
+            dist/RemoteDesktop-Android.apk
+            dist/SHA256SUMS.txt

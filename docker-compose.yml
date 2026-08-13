@@ -1,0 +1,37 @@
+name: remote-desktop
+
+services:
+  relay:
+    build:
+      context: ./server
+    restart: unless-stopped
+    environment:
+      PORT: '8090'
+      TRUST_PROXY: '${RELAY_TRUST_PROXY:-0}'
+    expose:
+      - '8090'
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8090/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  site:
+    build:
+      context: ./site
+      args:
+        PUBLIC_SITE_URL: '${PUBLIC_SITE_URL:-http://localhost:8087}'
+    restart: unless-stopped
+    expose:
+      - '80'
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

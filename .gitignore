@@ -18,3 +18,12 @@ android/captures/
 .DS_Store
 
 .idea/
+
+# Local and production deployment configuration
+.env
+.env.traefik
+.env.production
+
+# Release artifacts
+dist/
+release-keystore-not-configured.jks

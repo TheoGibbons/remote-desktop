@@ -1,0 +1,8 @@
+services:
+  relay:
+    ports:
+      - '${RELAY_BIND:-127.0.0.1}:${RELAY_PORT:-8090}:8090'
+
+  site:
+    ports:
+      - '${SITE_BIND:-127.0.0.1}:${SITE_PORT:-8087}:80'

@@ -5,7 +5,7 @@ namespace RemoteDesktopWin;
 
 public class AppSettings
 {
-    public string ServerUrl { get; set; } = "ws://localhost:8090/ws";
+    public string ServerUrl { get; set; } = AppDefaults.RelayServerUrl;
     public string SessionKey { get; set; } = "";
     public string DeviceName { get; set; } = Environment.MachineName;
     public int Fps { get; set; } = 12;

@@ -1,0 +1,14 @@
+services:
+  relay:
+    environment:
+      TRUST_PROXY: '1'
+    labels:
+      traefik.http.routers.remote-desktop-relay.entrypoints: websecure
+      traefik.http.routers.remote-desktop-relay.tls: 'true'
+      traefik.http.routers.remote-desktop-relay.tls.certresolver: letsencrypt
+
+  site:
+    labels:
+      traefik.http.routers.remote-desktop-site.entrypoints: websecure
+      traefik.http.routers.remote-desktop-site.tls: 'true'
+      traefik.http.routers.remote-desktop-site.tls.certresolver: letsencrypt

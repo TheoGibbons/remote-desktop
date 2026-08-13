@@ -3,6 +3,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val releaseVersionCode = System.getenv("RELEASE_VERSION_CODE")?.toIntOrNull() ?: 1
+val releaseVersionName = System.getenv("RELEASE_VERSION_NAME") ?: "1.0"
+val defaultRelayServerUrl = System.getenv("DEFAULT_RELAY_SERVER_URL") ?: "wss://relay.remote-desktop.co/ws"
+val escapedDefaultRelayServerUrl = defaultRelayServerUrl
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+
 android {
     namespace = "co.joypilot.remotedesktop"
     compileSdk = 34
@@ -11,14 +18,28 @@ android {
         applicationId = "co.joypilot.remotedesktop"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
+        buildConfigField("String", "DEFAULT_RELAY_SERVER_URL", "\"$escapedDefaultRelayServerUrl\"")
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file(System.getenv("ANDROID_KEYSTORE_FILE") ?: "release-keystore-not-configured.jks")
+            storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: ""
+            keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: ""
+            keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: ""
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
+    }
+    buildFeatures {
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

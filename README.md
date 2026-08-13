@@ -58,15 +58,52 @@ enforce ≥16 chars and the *Generate* button creates a 32-char random one). See
 ## Quick start
 
 ```bash
-# 1. Relay server
-cd server
-npm install
-npm start                 # listens on :8090, ws path /ws
+# Relay + public site, without Traefik
+cp .env.example .env
+docker compose up -d --build
 ```
 
 Then build and configure the two apps — see [`windows/README.md`](windows/README.md)
 and [`android/README.md`](android/README.md). Point both at your server, paste the
 same generated session key into both, and connect.
+
+The root Compose stack runs the relay on `ws://127.0.0.1:8090/ws` and the site
+on `http://127.0.0.1:8087`. To run only the relay directly, use
+`cd server && npm ci && npm start`.
+
+## Public deployment and releases
+
+The EC2 deployment is designed for the shared
+[`hobby-traefik`](https://github.com/TheoGibbons/hobby-traefik) proxy. Traefik
+routes `www.remote-desktop.co` to the marketing/download site and
+`relay.remote-desktop.co` to the WebSocket relay. Both DNS records point to the
+same EC2 instance, and only Traefik publishes ports 80 and 443; the containers'
+ports remain private inside Docker.
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | Proxy-independent relay and site services |
+| `docker-compose.override.yml` | Standalone loopback ports |
+| `docker-compose.traefik.yml` | Shared-network and HTTP routing labels |
+| `docker-compose.prod.yml` | HTTPS and Let's Encrypt labels |
+| `scripts/up-local.sh` | Local shared-Traefik startup |
+| `scripts/deploy.sh` | Safe EC2 pull, rebuild, and health check |
+
+For local Traefik, start `hobby-traefik`, copy `.env.traefik.example` to
+`.env.traefik`, and run `bash scripts/up-local.sh`.
+
+For EC2, clone this repository to `~/projects/remote-desktop`, copy
+`.env.production.example` to `.env.production`, point both public DNS records at
+the instance, and run `bash scripts/deploy.sh`.
+Subsequent pushes to `main` can deploy automatically through
+`.github/workflows/deploy.yml`.
+
+Tagged releases such as `v1.0.0` trigger `.github/workflows/release.yml`. The
+workflow publishes a self-contained Windows EXE, a signed Android APK, and a
+SHA-256 checksum file to GitHub Releases. The public site links to stable
+`releases/latest/download/...` assets, so publishing app binaries does not
+require committing them or redeploying EC2. See [RELEASING.md](RELEASING.md) for
+the one-time GitHub secret and variable setup.
 
 ## Security model
 

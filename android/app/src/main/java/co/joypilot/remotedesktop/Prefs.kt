@@ -7,7 +7,7 @@ class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
 
     var serverUrl: String
-        get() = sp.getString("serverUrl", "ws://192.168.1.xxx:8090/ws") ?: "ws://192.168.1.xxx:8090/ws"
+        get() = sp.getString("serverUrl", BuildConfig.DEFAULT_RELAY_SERVER_URL) ?: BuildConfig.DEFAULT_RELAY_SERVER_URL
         set(v) = sp.edit().putString("serverUrl", v).apply()
 
     var sessionKey: String

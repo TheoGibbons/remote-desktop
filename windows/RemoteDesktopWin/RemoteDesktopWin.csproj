@@ -11,6 +11,7 @@
     <RootNamespace>RemoteDesktopWin</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <DefaultRelayServerUrl Condition="'$(DefaultRelayServerUrl)' == ''">wss://relay.remote-desktop.co/ws</DefaultRelayServerUrl>
     <!-- Pointer-based pixel compare in ScreenStreamer's dirty-rect diff. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- WFAC010: the WinForms analyzer flags the manifest DPI settings, but this
@@ -18,6 +19,10 @@
          WPF takes its DPI awareness from the manifest. -->
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="DefaultRelayServerUrl" Value="$(DefaultRelayServerUrl)" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- UseWindowsForms injects these as global usings, which collides with the

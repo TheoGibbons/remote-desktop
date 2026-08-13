@@ -1,0 +1,26 @@
+services:
+  relay:
+    networks:
+      - traefik-public
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: traefik-public
+      traefik.http.routers.remote-desktop-relay.rule: 'Host(`${RELAY_HOST:?Set RELAY_HOST in the environment file}`)'
+      traefik.http.routers.remote-desktop-relay.entrypoints: web
+      traefik.http.routers.remote-desktop-relay.priority: '100'
+      traefik.http.services.remote-desktop-relay.loadbalancer.server.port: '8090'
+
+  site:
+    networks:
+      - traefik-public
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: traefik-public
+      traefik.http.routers.remote-desktop-site.rule: 'Host(`${SITE_HOST:?Set SITE_HOST in the environment file}`)'
+      traefik.http.routers.remote-desktop-site.entrypoints: web
+      traefik.http.routers.remote-desktop-site.priority: '10'
+      traefik.http.services.remote-desktop-site.loadbalancer.server.port: '80'
+
+networks:
+  traefik-public:
+    external: true

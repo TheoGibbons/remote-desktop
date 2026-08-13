@@ -27,6 +27,11 @@ dotnet publish -c Release -r win-x64 --self-contained ^
 # output in bin\Release\net8.0-windows\win-x64\publish\
 ```
 
+For a public build with the production relay pre-filled for new installations,
+add `-p:DefaultRelayServerUrl=wss://relay.remote-desktop.co/ws`. Existing user settings are
+not overwritten. Tagged GitHub releases perform this build automatically; see
+[`../RELEASING.md`](../RELEASING.md).
+
 (You can also open the folder in Visual Studio 2022 — it will detect the
 `.csproj` — and press F5.)
 
@@ -34,7 +39,7 @@ dotnet publish -c Release -r win-x64 --self-contained ^
 
 1. Launch the app.
 2. Click **Generate** to create a session key (or paste the one from your phone).
-3. Set the **Server URL** (e.g. `ws://192.168.1.50:8090/ws` or `wss://your.domain/ws`).
+3. Set the **Server URL** (e.g. `ws://192.168.1.50:8090/ws` or `wss://relay.remote-desktop.co/ws`).
 4. **Save & Connect.** Settings persist to
    `%APPDATA%\RemoteDesktopWin\settings.json` and the app auto-connects on every
    launch from then on.

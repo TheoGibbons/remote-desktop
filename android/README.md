@@ -27,6 +27,11 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+Public APKs use the Gradle `release` build and must be signed. Tagged GitHub
+releases provide the signing values through secrets, compile the production
+relay URL into the app's first-run default, and verify the resulting APK. See
+[`../RELEASING.md`](../RELEASING.md). Existing installs retain their saved URL.
+
 ## First-run setup (once)
 
 1. Launch **Remote Desktop**.
