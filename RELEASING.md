@@ -10,51 +10,93 @@ Generated EXE and APK files are deliberately not committed to Git.
 
 ## EC2 application setup
 
-The shared Traefik proxy must already be running from
-`~/projects/hobby-traefik`, with the external `traefik-public` Docker network in
-place. The EC2 security group needs inbound 22, 80, and 443; port 8090 should
-not be public.
-
-Point both `www.remote-desktop.co` and `relay.remote-desktop.co` at the EC2
-instance, then run:
+Run this from your workstation to connect to EC2:
 
 ```bash
+ssh ubuntu@www.remote-desktop.co
+```
+
+Run these commands on EC2 for the first deployment:
+
+```bash
+docker network inspect traefik-public
+mkdir -p ~/projects
+git ls-remote git@github.com:TheoGibbons/remote-desktop.git HEAD
 git clone git@github.com:TheoGibbons/remote-desktop.git ~/projects/remote-desktop
 cd ~/projects/remote-desktop
 cp .env.production.example .env.production
+./scripts/deploy.sh
 ```
 
-The example already contains the production hostnames. Review it, then run:
+Only do this if the scripts need to be made executable:
+```bash
+cd ./scripts
+chmod +x *.sh
+cd ..
+git add scripts/deploy.sh scripts/up-local.sh
+git commit -m "Make shell scripts executable"
+git push
+./scripts/deploy.sh
+```
+
+Verify the deployment from EC2:
 
 ```bash
-bash scripts/deploy.sh
+curl --fail --show-error https://www.remote-desktop.co/ >/dev/null
+curl --fail --show-error https://relay.remote-desktop.co/
+docker compose \
+  --env-file .env.production \
+  -f docker-compose.yml \
+  -f docker-compose.traefik.yml \
+  -f docker-compose.prod.yml \
+  ps
 ```
 
-The resulting public URLs are:
+Run these commands for later manual deployments:
 
-```text
-https://www.remote-desktop.co/
-wss://relay.remote-desktop.co/ws
+```bash
+ssh ubuntu@www.remote-desktop.co \
+  'cd ~/projects/remote-desktop && bash scripts/deploy.sh'
 ```
-
-The relay has no database or durable server-side application state. A deploy
-briefly disconnects active clients; the apps reconnect automatically. Keep the
-relay at one replica because live sessions are held in process memory.
 
 ## Automatic EC2 deployment
 
-Create a GitHub environment named `production`. Add these environment secrets:
+Run these commands from a workstation with GitHub CLI installed and signed in:
 
-| Secret | Value |
-|---|---|
-| `EC2_HOST` | EC2 public hostname or IP |
-| `EC2_USER` | Deployment user, normally `ubuntu` |
-| `EC2_SSH_PRIVATE_KEY` | Private key whose public key is authorized on EC2 |
-| `EC2_KNOWN_HOSTS` | Verified `known_hosts` line for the EC2 host |
+```bash
+gh auth status
+gh api \
+  --method PUT \
+  repos/TheoGibbons/remote-desktop/environments/production
 
-The EC2 checkout also needs read access to this GitHub repository so
-`git pull --ff-only` can succeed. A repository deploy key is recommended for a
-private repository.
+gh secret set EC2_HOST \
+  --env production \
+  --body 'www.remote-desktop.co'
+
+gh secret set EC2_USER \
+  --env production \
+  --body 'ubuntu'
+
+gh secret set EC2_SSH_PRIVATE_KEY \
+  --env production \
+  < /path/to/ec2-ssh-private-key
+
+ssh-keyscan -H www.remote-desktop.co > remote-desktop-known-hosts
+ssh-keygen -lf remote-desktop-known-hosts
+
+gh secret set EC2_KNOWN_HOSTS \
+  --env production \
+  < remote-desktop-known-hosts
+```
+
+After verifying the displayed EC2 host-key fingerprint, trigger and watch a
+deployment with:
+
+```bash
+gh workflow run deploy.yml --ref main
+sleep 3
+gh run watch "$(gh run list --workflow deploy.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
 
 ## Release build configuration
 
