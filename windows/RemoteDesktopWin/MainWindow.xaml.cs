@@ -95,6 +95,20 @@ public partial class MainWindow : Window
         // connect; the session only ends via the tray's Exit.
         Closing += OnClosingToTray;
 
+        // Launched at login (--minimized): come up in the tray, not on screen.
+        // StartupUri shows the window regardless, so hide it once it's up — and
+        // don't let it steal focus from whatever the user is doing meanwhile.
+        if (App.StartMinimized)
+        {
+            ShowActivated = false;
+            Loaded += (_, _) => Hide();
+        }
+
+        // Refresh the login entry in the background (schtasks spawns processes):
+        // it may predate --minimized, or point at an exe that has since moved.
+        if (_settings.StartWithWindows)
+            Task.Run(ApplyStartupRegistration);
+
         if (_settings.AutoConnect && !string.IsNullOrWhiteSpace(_settings.SessionKey))
             Connect();
     }
@@ -205,7 +219,9 @@ public partial class MainWindow : Window
     /// <summary>
     /// Register (or remove) launch-at-login matching the current elevation:
     /// a plain HKCU Run entry when not elevated, a highest-run-level scheduled
-    /// task when elevated (the Run key cannot start elevated programs).
+    /// task when elevated (the Run key cannot start elevated programs). Either
+    /// way the app is launched with --minimized so a login doesn't pop the
+    /// window open — it waits in the tray.
     /// </summary>
     private void ApplyStartupRegistration()
     {
@@ -219,9 +235,9 @@ public partial class MainWindow : Window
 
             if (!_settings.StartWithWindows) return;
             if (IsElevated())
-                RunSchtasks($"/Create /F /TN RemoteDesktopWin /SC ONLOGON /RL HIGHEST /TR \"\\\"{exe}\\\"\"");
+                RunSchtasks($"/Create /F /TN RemoteDesktopWin /SC ONLOGON /RL HIGHEST /TR \"\\\"{exe}\\\" {App.MinimizedSwitch}\"");
             else
-                run.SetValue("RemoteDesktopWin", '"' + exe + '"');
+                run.SetValue("RemoteDesktopWin", '"' + exe + "\" " + App.MinimizedSwitch);
         }
         catch (Exception ex)
         {

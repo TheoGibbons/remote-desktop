@@ -76,6 +76,9 @@ unapproved device is present in the session, streaming and file serving pause.
 - Closing the window hides the app to the **tray** — paired devices can still
   connect. Right-click the tray icon → Exit to quit, and tick **Start with
   Windows** so the PC is reachable after a reboot without opening anything.
+  A startup launch passes `--minimized`, so after logging in the app sits in
+  the tray without showing its window or taking focus; double-click the tray
+  icon (or right-click → Open) to bring it up.
 - **Controlling elevated windows** (Task Manager, UAC-elevated installers):
   Windows UIPI silently blocks injected input into higher-integrity windows,
   so remote control appears to "stop working" while they have focus. Click
