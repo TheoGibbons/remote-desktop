@@ -22,6 +22,7 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -43,6 +44,7 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var imeCatcher: EditText
     private lateinit var root: FrameLayout
     private lateinit var diagnosticsPanel: LinearLayout
+    private lateinit var diagnosticsScroll: ScrollView
     private lateinit var diagnosticsText: TextView
     private var winId: String? = null
     private var imePrev = ""
@@ -235,14 +237,16 @@ class ViewerActivity : AppCompatActivity() {
             (460 * resources.displayMetrics.density).toInt(),
         )
         root.addView(diagnosticsPanel, FrameLayout.LayoutParams(
-            panelWidth, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START
+            panelWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.TOP or Gravity.START
         ).apply {
             leftMargin = panelMargin
+            rightMargin = panelMargin
             topMargin = panelMargin
+            bottomMargin = panelMargin
         })
 
         root.addView(buildToolbar(), FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP))
 
         imeCatcher = buildImeCatcher()
         root.addView(imeCatcher, FrameLayout.LayoutParams(1, 1))
@@ -252,26 +256,39 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private fun buildToolbar(): LinearLayout {
+        val density = resources.displayMetrics.density
+        val horizontalPadding = (4 * density).toInt()
+        val verticalPadding = (2 * density).toInt()
         fun tb(label: String, onClick: () -> Unit) = Button(this).apply {
             text = label
             isAllCaps = false
-            setPadding(20, 8, 20, 8)
+            isSingleLine = true
+            minimumWidth = 0
+            setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
             alpha = 0.85f
             setOnClickListener { onClick() }
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            weightSum = 6f
             setBackgroundColor(Color.parseColor("#88000000"))
-            addView(tb("⌨") {
+            fun addToolbarButton(label: String, weight: Float = 1f, onClick: () -> Unit) {
+                addView(tb(label, onClick), LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    weight,
+                ))
+            }
+            addToolbarButton("⌨") {
                 keyboard.visibility = if (keyboard.visibility == View.VISIBLE) {
                     keyboard.releaseAll(); View.GONE
                 } else View.VISIBLE
                 keyboard.post { updateBottomOcclusion() }
-            })
-            addView(tb("Stats") { showDiagnostics() })
-            addView(tb("?") { showGestureHelp() })
-            addView(tb("Ctrl+Alt+Del") { ctrlAltDel() })
-            addView(tb("✕") { finish() })
+            }
+            addToolbarButton("Stats") { showDiagnostics() }
+            addToolbarButton("?") { showGestureHelp() }
+            addToolbarButton("Ctrl+Alt+Del", weight = 2f) { ctrlAltDel() }
+            addToolbarButton("✕") { finish() }
         }
     }
 
@@ -405,6 +422,7 @@ class ViewerActivity : AppCompatActivity() {
             return
         }
         diagnosticsPanel.visibility = View.VISIBLE
+        diagnosticsPanel.bringToFront()
         diagnosticsUpdater?.let { diagnosticsHandler.removeCallbacks(it) }
 
         var previousStream = streamStats.snapshot()
@@ -414,7 +432,12 @@ class ViewerActivity : AppCompatActivity() {
                 sendDiagnosticPingIfDue()
                 val stream = streamStats.snapshot()
                 val connection = ConnectionManager.debugStats()
+                val scrollY = diagnosticsScroll.scrollY
                 diagnosticsText.text = formatDiagnostics(previousStream, stream, previousConnection, connection)
+                diagnosticsScroll.post {
+                    val maxScrollY = (diagnosticsText.height - diagnosticsScroll.height).coerceAtLeast(0)
+                    diagnosticsScroll.scrollTo(0, scrollY.coerceAtMost(maxScrollY))
+                }
                 previousStream = stream
                 previousConnection = connection
                 diagnosticsHandler.postDelayed(this, STATS_REFRESH_MS)
@@ -440,6 +463,28 @@ class ViewerActivity : AppCompatActivity() {
             setTextColor(Color.WHITE)
             setTextIsSelectable(true)
         }
+        diagnosticsScroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(diagnosticsText, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ))
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@ViewerActivity).apply {
+                text = getString(R.string.stats)
+                textSize = 16f
+                setTextColor(Color.WHITE)
+                setTypeface(typeface, Typeface.BOLD)
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(Button(this@ViewerActivity).apply {
+                setText(R.string.close)
+                isAllCaps = false
+                setOnClickListener { hideDiagnostics() }
+            })
+        }
         val highlight = CheckBox(this).apply {
             setText(R.string.highlight_dirty_rectangles)
             setTextColor(Color.WHITE)
@@ -455,7 +500,12 @@ class ViewerActivity : AppCompatActivity() {
             elevation = 8 * density
             setBackgroundColor(Color.parseColor("#E619202C"))
             setPadding(pad, pad, pad, (4 * density).toInt())
-            addView(diagnosticsText)
+            addView(header)
+            addView(diagnosticsScroll, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f,
+            ))
             addView(highlight)
         }
     }
