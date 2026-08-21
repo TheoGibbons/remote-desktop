@@ -1,102 +1,16 @@
-# Deployment and release setup
+# Release setup
 
 This repository has two independent delivery paths:
 
-- A push to `main` updates the relay and marketing site on EC2.
-- A tag such as `v1.2.3` builds the Windows and Android apps and publishes them
-  as GitHub Release assets.
+- A push to `main` updates the relay and download site on EC2.
+- A tag such as `v1.2.3` builds the Windows and Android apps and publishes
+  them as GitHub Release assets.
 
 Generated EXE and APK files are deliberately not committed to Git.
 
-## EC2 application setup
-
-Run this from your workstation to connect to EC2:
-
-```bash
-ssh ubuntu@www.remote-desktop.co
-```
-
-Run these commands on EC2 for the first deployment:
-
-```bash
-docker network inspect traefik-public
-mkdir -p ~/projects
-git ls-remote git@github.com:TheoGibbons/remote-desktop.git HEAD
-git clone git@github.com:TheoGibbons/remote-desktop.git ~/projects/remote-desktop
-cd ~/projects/remote-desktop
-cp .env.production.example .env.production
-./scripts/deploy.sh
-```
-
-Only do this if the scripts need to be made executable:
-```bash
-cd ./scripts
-chmod +x *.sh
-cd ..
-git add scripts/deploy.sh scripts/up-local.sh
-git commit -m "Make shell scripts executable"
-git push
-./scripts/deploy.sh
-```
-
-Verify the deployment from EC2:
-
-```bash
-curl --fail --show-error https://www.remote-desktop.co/ >/dev/null
-curl --fail --show-error https://relay.remote-desktop.co/
-docker compose \
-  --env-file .env.production \
-  -f docker-compose.yml \
-  -f docker-compose.traefik.yml \
-  -f docker-compose.prod.yml \
-  ps
-```
-
-Run these commands for later manual deployments:
-
-```bash
-ssh ubuntu@www.remote-desktop.co \
-  'cd ~/projects/remote-desktop && bash scripts/deploy.sh'
-```
-
-## Automatic EC2 deployment
-
-Run these commands from a workstation with GitHub CLI installed and signed in:
-
-```bash
-gh auth status
-gh api \
-  --method PUT \
-  repos/TheoGibbons/remote-desktop/environments/production
-
-gh secret set EC2_HOST \
-  --env production \
-  --body 'www.remote-desktop.co'
-
-gh secret set EC2_USER \
-  --env production \
-  --body 'ubuntu'
-
-gh secret set EC2_SSH_PRIVATE_KEY \
-  --env production \
-  < /path/to/ec2-ssh-private-key
-
-ssh-keyscan -H www.remote-desktop.co > remote-desktop-known-hosts
-ssh-keygen -lf remote-desktop-known-hosts
-
-gh secret set EC2_KNOWN_HOSTS \
-  --env production \
-  < remote-desktop-known-hosts
-```
-
-After verifying the displayed EC2 host-key fingerprint, trigger and watch a
-deployment with:
-
-```bash
-gh workflow run deploy.yml --ref main
-sleep 3
-gh run watch "$(gh run list --workflow deploy.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
-```
+The first path is documented in full in [README.md](README.md) — see
+**Deploying to LIVE**, **Deploying to LIVE with hobby-traefik** and **Setup
+push-to-deploy** there. Everything below covers the second path only.
 
 ## Release build configuration
 
