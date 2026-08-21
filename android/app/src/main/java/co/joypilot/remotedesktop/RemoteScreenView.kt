@@ -7,6 +7,9 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
+import android.graphics.RectF
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -51,13 +54,30 @@ class RemoteScreenView @JvmOverloads constructor(
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private var fitScale = 1f
     private var matrixInitialized = false
+    private var bottomOcclusionPx = 0
+
+    // Debug overlay populated by ViewerActivity from the patch metadata. It is
+    // deliberately drawn here (after the desktop bitmap) so the rectangles stay
+    // aligned while the user pans or zooms.
+    private data class DirtyHighlight(val rect: RectF, val expiresAt: Long)
+    private val dirtyHighlights = ArrayList<DirtyHighlight>()
+    private var dirtyRectHighlightsEnabled = false
+    private val dirtyFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(48, 255, 0, 0)
+        style = Paint.Style.FILL
+    }
+    private val dirtyStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.RED
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * context.resources.displayMetrics.density
+    }
 
     private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop
     private val density = context.resources.displayMetrics.density
 
     // ---------------- frame / viewport ----------------
 
-    fun setFrame(bmp: Bitmap) {
+    fun setFrame(bmp: Bitmap, dirtyRects: List<Rect>? = null) {
         val sizeChanged = bmp.width != imgW || bmp.height != imgH
         bitmap = bmp
         imgW = bmp.width
@@ -67,9 +87,42 @@ class RemoteScreenView @JvmOverloads constructor(
             cursorY = imgH / 2f
         }
         if (sizeChanged || !matrixInitialized) {
-            post { resetToFit() }
+            post {
+                resetToFit()
+                dirtyRects?.let {
+                    addDirtyHighlights(it)
+                    invalidateImageRegions(it)
+                }
+            }
+        } else if (dirtyRects != null) {
+            // Preserve image-space damage for Android 8's partial invalidation
+            // and for the optional debug overlay. Newer Android versions may
+            // promote partial damage to a whole-View redraw internally.
+            post {
+                addDirtyHighlights(dirtyRects)
+                invalidateImageRegions(dirtyRects)
+            }
+        } else {
+            postInvalidate()
         }
-        postInvalidate()
+    }
+
+    /** Pixels at the bottom currently covered by a custom keyboard or IME. */
+    fun setBottomOcclusion(bottomPx: Int) {
+        val next = bottomPx.coerceIn(0, height.coerceAtLeast(0))
+        if (next == bottomOcclusionPx) return
+        bottomOcclusionPx = next
+        if (matrixInitialized) {
+            clampTranslation()
+            keepPointerVisible()
+        }
+        invalidate()
+    }
+
+    fun setDirtyRectHighlightsEnabled(enabled: Boolean) {
+        dirtyRectHighlightsEnabled = enabled
+        if (!enabled) dirtyHighlights.clear()
+        invalidate()
     }
 
     private fun resetToFit() {
@@ -81,6 +134,8 @@ class RemoteScreenView @JvmOverloads constructor(
         matrix.postScale(fitScale, fitScale)
         matrix.postTranslate(dx, dy)
         matrixInitialized = true
+        clampTranslation()
+        keepPointerVisible()
         invalidate()
     }
 
@@ -105,9 +160,12 @@ class RemoteScreenView @JvmOverloads constructor(
         matrix.getValues(v)
         val scale = v[Matrix.MSCALE_X]
         v[Matrix.MTRANS_X] = clampAxis(v[Matrix.MTRANS_X], imgW * scale, width.toFloat())
-        v[Matrix.MTRANS_Y] = clampAxis(v[Matrix.MTRANS_Y], imgH * scale, height.toFloat())
+        v[Matrix.MTRANS_Y] = clampAxis(v[Matrix.MTRANS_Y], imgH * scale, visibleHeight())
         matrix.setValues(v)
     }
+
+    private fun visibleHeight(): Float =
+        (height - bottomOcclusionPx).toFloat().coerceAtLeast(pointerMargin * 2f + 1f)
 
     /**
      * Clamp one axis of the image translation to a band that is *continuous* in
@@ -168,7 +226,8 @@ class RemoteScreenView @JvmOverloads constructor(
         if (pts[0] < pointerMargin) dx = pointerMargin - pts[0]
         if (pts[0] > width - pointerMargin) dx = width - pointerMargin - pts[0]
         if (pts[1] < pointerMargin) dy = pointerMargin - pts[1]
-        if (pts[1] > height - pointerMargin) dy = height - pointerMargin - pts[1]
+        val safeBottom = visibleHeight() - pointerMargin
+        if (pts[1] > safeBottom) dy = safeBottom - pts[1]
         return Pair(dx, dy)
     }
 
@@ -206,7 +265,52 @@ class RemoteScreenView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(Color.BLACK)
         bitmap?.let { canvas.drawBitmap(it, matrix, paint) }
+        drawDirtyHighlights(canvas)
         drawCursor(canvas)
+    }
+
+    private fun addDirtyHighlights(rects: List<Rect>) {
+        if (!dirtyRectHighlightsEnabled) return
+        val expires = SystemClock.uptimeMillis() + DIRTY_HIGHLIGHT_MS
+        rects.forEach { dirtyHighlights.add(DirtyHighlight(RectF(it), expires)) }
+        // Redraw once after expiry so an otherwise-idle desktop does not leave
+        // the final red outline stuck on screen.
+        postInvalidateDelayed(DIRTY_HIGHLIGHT_MS + 16L)
+    }
+
+    private fun drawDirtyHighlights(canvas: Canvas) {
+        if (!dirtyRectHighlightsEnabled || dirtyHighlights.isEmpty()) return
+        val now = SystemClock.uptimeMillis()
+        dirtyHighlights.removeAll { it.expiresAt <= now }
+        for (highlight in dirtyHighlights) {
+            val mapped = RectF(highlight.rect)
+            matrix.mapRect(mapped)
+            canvas.drawRect(mapped, dirtyFill)
+            canvas.drawRect(mapped, dirtyStroke)
+        }
+    }
+
+    @Suppress("DEPRECATION") // Partial View damage still helps on Android 8/8.1.
+    private fun invalidateImageRegions(rects: List<Rect>) {
+        if (rects.isEmpty()) return
+        val damage = RectF()
+        var haveDamage = false
+        for (rect in rects) {
+            val mapped = RectF(rect)
+            matrix.mapRect(mapped)
+            if (haveDamage) damage.union(mapped) else {
+                damage.set(mapped)
+                haveDamage = true
+            }
+        }
+        if (!haveDamage) return
+        val pad = if (dirtyRectHighlightsEnabled) dirtyStroke.strokeWidth + 2f else 1f
+        invalidate(
+            (damage.left - pad).toInt(),
+            (damage.top - pad).toInt(),
+            (damage.right + pad).toInt(),
+            (damage.bottom + pad).toInt()
+        )
     }
 
     private fun drawCursor(canvas: Canvas) {
@@ -312,6 +416,7 @@ class RemoteScreenView @JvmOverloads constructor(
         // distance (WHEEL_PX_PER_NOTCH) past the neutral deadzone.
         const val WHEEL_TICK_MS = 40L
         const val WHEEL_SPEED = 10.0
+        const val DIRTY_HIGHLIGHT_MS = 350L
     }
 
     private fun startDrag(dragState: State) {

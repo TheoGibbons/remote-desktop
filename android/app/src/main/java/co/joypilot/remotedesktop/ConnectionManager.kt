@@ -3,6 +3,7 @@ package co.joypilot.remotedesktop
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import okhttp3.OkHttpClient
@@ -14,6 +15,7 @@ import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * App-wide WebSocket connection. Configured once with server URL + session key,
@@ -22,6 +24,16 @@ import java.util.concurrent.TimeUnit
 object ConnectionManager {
 
     data class Peer(val id: String, val device: String, val name: String)
+    data class DebugStats(
+        val state: String,
+        val connectedForMs: Long,
+        val receivedWireBytes: Long,
+        val receivedMessages: Long,
+        val lastReceiveAgoMs: Long?,
+        val outgoingQueueBytes: Long,
+        val connectionAttempts: Long,
+        val failures: Long,
+    )
 
     private val client = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
@@ -32,6 +44,12 @@ object ConnectionManager {
     private var enabled = false
     private var backoffMs = 2000L
     private lateinit var appContext: Context
+    private val receivedWireBytes = AtomicLong()
+    private val receivedMessages = AtomicLong()
+    private val connectionAttempts = AtomicLong()
+    private val connectionFailures = AtomicLong()
+    @Volatile private var connectedAtMs = 0L
+    @Volatile private var lastReceiveAtMs = 0L
 
     // Derived from the session key; the raw key never leaves the device.
     private var encKey: ByteArray = ByteArray(0)
@@ -89,8 +107,25 @@ object ConnectionManager {
         setState("disconnected")
     }
 
+    fun debugStats(): DebugStats {
+        val now = SystemClock.elapsedRealtime()
+        val connectedAt = connectedAtMs
+        val lastReceive = lastReceiveAtMs
+        return DebugStats(
+            state = state,
+            connectedForMs = if (state == "connected" && connectedAt > 0) now - connectedAt else 0,
+            receivedWireBytes = receivedWireBytes.get(),
+            receivedMessages = receivedMessages.get(),
+            lastReceiveAgoMs = if (lastReceive > 0) now - lastReceive else null,
+            outgoingQueueBytes = ws?.queueSize() ?: 0,
+            connectionAttempts = connectionAttempts.get(),
+            failures = connectionFailures.get(),
+        )
+    }
+
     private fun connect() {
         if (!enabled) return
+        connectionAttempts.incrementAndGet()
         val prefs = Prefs(appContext)
         var url = prefs.serverUrl.trim()
 
@@ -163,6 +198,9 @@ object ConnectionManager {
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            receivedWireBytes.addAndGet(text.toByteArray(Charsets.UTF_8).size.toLong())
+            receivedMessages.incrementAndGet()
+            lastReceiveAtMs = SystemClock.elapsedRealtime()
             val msg = try { JSONObject(text) } catch (e: Exception) { return }
             if (msg.optString("type") == "enc") {
                 val blob = try { Base64.decode(msg.optString("d"), Base64.NO_WRAP) } catch (e: Exception) { return }
@@ -176,6 +214,9 @@ object ConnectionManager {
         }
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            receivedWireBytes.addAndGet(bytes.size.toLong())
+            receivedMessages.incrementAndGet()
+            lastReceiveAtMs = SystemClock.elapsedRealtime()
             val data = bytes.toByteArray()
             if (data.isEmpty()) return
             val frameType = data[0]
@@ -191,6 +232,7 @@ object ConnectionManager {
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            connectionFailures.incrementAndGet()
             Log.e("ConnectionManager", "WebSocket failure: ${t.message}", t)
             response?.let {
                 Log.e("ConnectionManager", "Response code: ${it.code}, message: ${it.message}")
@@ -209,6 +251,7 @@ object ConnectionManager {
         when (msg.optString("type")) {
             "welcome" -> {
                 myId = msg.optString("id")
+                connectedAtMs = SystemClock.elapsedRealtime()
                 backoffMs = 2000L
                 peers.clear()
                 PeerAuth.resetConnection() // new connection, stale peer ids

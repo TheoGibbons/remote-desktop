@@ -35,7 +35,11 @@ public class WsClient : IDisposable
     private Channel<OutFrame>? _outbox;
     private long _queuedBinaryBytes;
 
-    private const long MaxQueuedBinaryBytes = 8 * 1024 * 1024;
+    // Interactive screen updates become actively misleading when several
+    // seconds of old patches sit in front of the latest input response. Keep at
+    // most a small burst; ScreenStreamer then replaces dropped deltas with a
+    // fresh keyframe as soon as the sender catches up.
+    private const long MaxQueuedBinaryBytes = 2 * 1024 * 1024;
 
     public string? MyId { get; private set; }
 
@@ -50,6 +54,8 @@ public class WsClient : IDisposable
     private string _deviceUid = "";
 
     public bool IsConnected => _ws?.State == WebSocketState.Open && MyId != null;
+    public long QueuedBinaryBytes => Math.Max(0, Interlocked.Read(ref _queuedBinaryBytes));
+    public bool IsVideoBacklogged => QueuedBinaryBytes > MaxQueuedBinaryBytes;
 
     public void Start(string url, string sessionKey, string deviceName, string deviceUid)
     {
@@ -232,7 +238,7 @@ public class WsClient : IDisposable
     {
         var outbox = _outbox;
         if (outbox == null || _ws?.State != WebSocketState.Open) return false;
-        if (Interlocked.Read(ref _queuedBinaryBytes) > MaxQueuedBinaryBytes) return false;
+        if (IsVideoBacklogged) return false;
 
         var blob = Crypto.Encrypt(_encKey, payload, frameType);
         var wire = new byte[1 + blob.Length];

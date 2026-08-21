@@ -70,6 +70,11 @@ pause.
 - **View desktop** → live PC view with the mouse/keyboard controls.
 - **Browse files** → download to `Downloads/RemoteDesktop`, or upload.
 
+In the desktop viewer, tap **Stats** for live end-to-end round-trip time,
+wire/screen throughput, changed-frame FPS, JPEG decode time, dirty-area rate,
+sender queue depth, sequence gaps, and decode errors. The same panel has a
+persistent **Highlight updated rectangles in red** debugging option.
+
 ## Google Play notes
 
 - The app requests `MANAGE_EXTERNAL_STORAGE` (All-files access) so the desktop

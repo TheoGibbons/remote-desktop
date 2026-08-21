@@ -459,6 +459,22 @@ public partial class MainWindow : Window
                 OnAuthResult(from, msg["status"]?.GetValue<string>());
                 break;
 
+            case "diagnostic-ping":
+                if (_auth.IsTrusted(from) && from != null)
+                {
+                    _ws.SendJson(new JsonObject
+                    {
+                        ["type"] = "diagnostic-pong",
+                        ["nonce"] = msg["nonce"]?.GetValue<long>() ?? -1,
+                        ["hostQueueBytes"] = _ws.QueuedBinaryBytes,
+                        ["targetFps"] = _streamer.Fps,
+                        ["jpegQuality"] = _streamer.JpegQuality,
+                        ["maxWidth"] = _streamer.MaxWidth,
+                        ["to"] = from,
+                    });
+                }
+                break;
+
             case "start-view":
                 if (controlAllowed)
                 {

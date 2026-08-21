@@ -115,6 +115,8 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `stop-view`   | `to`   | Stop streaming. |
 | `screen-info` | `width`, `height` | Pixel size of the streamed (stitched) surface. Sent by the host when streaming starts and whenever it changes. |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
+| `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. |
+| `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | RTT response plus the desktop sender's queued binary backlog and active stream settings. |
 
 **Input — controlling Windows** (coordinates normalized 0..1 over the stitched
 virtual desktop). The controller may be a phone or another PC — the host injects
@@ -196,7 +198,8 @@ the `pairId` (which the server necessarily sees) reveals nothing about `encKey`.
 
 **AEAD:** AES-256-GCM, fresh random 12-byte nonce per message, 16-byte tag. The
 associated data is a single **channel** byte, binding each ciphertext to its
-context: `0` = JSON control, `1` = video, `2` = file chunk. Frame =
+context: `0` = JSON control, `1` = full-frame video, `2` = file chunk, `3` =
+dirty-rect screen patch. Frame =
 `nonce(12) || ciphertext || tag(16)`.
 
 **Control envelope** (text frame): the inner control message is encrypted on

@@ -5,20 +5,31 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Rect
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
+import android.graphics.Typeface
 import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
+import java.util.Locale
 
 /**
  * Full-screen viewer for controlling the paired Windows desktop. Renders the
@@ -30,9 +41,25 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var screen: RemoteScreenView
     private lateinit var keyboard: KeyboardPanel
     private lateinit var imeCatcher: EditText
+    private lateinit var root: FrameLayout
+    private lateinit var diagnosticsPanel: LinearLayout
+    private lateinit var diagnosticsText: TextView
     private var winId: String? = null
     private var imePrev = ""
     private var imeGuard = false
+    private var imeVisible = false
+    private val streamStats = ViewerStreamStats()
+    private val diagnosticsHandler = Handler(Looper.getMainLooper())
+    private var nextPingNonce = 0L
+    private var pendingPingNonce = -1L
+    private var pingSentAtMs = 0L
+    private var lastRttMs: Long? = null
+    private var pingTimedOut = false
+    private var hostQueueBytes: Long? = null
+    private var hostTargetFps: Int? = null
+    private var hostJpegQuality: Int? = null
+    private var hostMaxWidth: Int? = null
+    private var diagnosticsUpdater: Runnable? = null
 
     // Dirty-rect compositing state (see PROTOCOL.md, binary frame type 3).
     // Touched only on the network thread that delivers binary frames.
@@ -45,8 +72,21 @@ class ViewerActivity : AppCompatActivity() {
     private val binaryListener: (ByteArray) -> Unit = { data ->
         if (data.isNotEmpty()) when (data[0].toInt()) {
             1 -> { // legacy full-frame JPEG
+                val started = SystemClock.elapsedRealtimeNanos()
                 val bmp = BitmapFactory.decodeByteArray(data, 1, data.size - 1)
-                if (bmp != null) screen.setFrame(bmp)
+                if (bmp != null) {
+                    screen.setFrame(bmp)
+                    streamStats.recordFrame(
+                        bytes = data.size,
+                        rectCount = 1,
+                        changedPixels = bmp.width.toLong() * bmp.height,
+                        decodeTimeNanos = SystemClock.elapsedRealtimeNanos() - started,
+                        isKeyframe = true,
+                        hadSequenceGap = false,
+                        width = bmp.width,
+                        height = bmp.height,
+                    )
+                } else streamStats.recordDecodeError()
             }
             3 -> handlePatch(data)
         }
@@ -59,6 +99,7 @@ class ViewerActivity : AppCompatActivity() {
      * stale — keep painting and ask the host for a keyframe to catch up.
      */
     private fun handlePatch(data: ByteArray) {
+        val started = SystemClock.elapsedRealtimeNanos()
         try {
             val buf = java.nio.ByteBuffer.wrap(data, 1, data.size - 1)
             val seq = buf.int.toLong() and 0xFFFFFFFFL
@@ -75,25 +116,48 @@ class ViewerActivity : AppCompatActivity() {
                 composeCanvas = android.graphics.Canvas(bmp)
                 haveKeyframe = false
             }
+            val hadSequenceGap = !keyframe && haveKeyframe &&
+                seq != ((lastSeq + 1L) and 0xFFFFFFFFL)
             if (keyframe) haveKeyframe = true
-            else if (!haveKeyframe || seq != lastSeq + 1) requestKeyframe()
+            else if (!haveKeyframe || hadSequenceGap) requestKeyframe()
             lastSeq = seq
 
             val canvas = composeCanvas!!
+            val dirtyRects = ArrayList<Rect>(rectCount)
+            var changedPixels = 0L
             repeat(rectCount) {
                 val x = buf.short.toInt() and 0xFFFF
                 val y = buf.short.toInt() and 0xFFFF
-                buf.short // tile w (implicit in the JPEG)
-                buf.short // tile h
+                val tileW = buf.short.toInt() and 0xFFFF
+                val tileH = buf.short.toInt() and 0xFFFF
                 val len = buf.int
+                if (len < 0 || len > buf.remaining()) throw IllegalArgumentException("Invalid patch length")
                 val pos = buf.position()
                 buf.position(pos + len)
-                val tile = BitmapFactory.decodeByteArray(data, pos, len) ?: return@repeat
+                val tile = BitmapFactory.decodeByteArray(data, pos, len)
+                    ?: throw IllegalArgumentException("Invalid JPEG tile")
                 canvas.drawBitmap(tile, x.toFloat(), y.toFloat(), null)
                 tile.recycle()
+                val right = (x + tileW).coerceAtMost(w)
+                val bottom = (y + tileH).coerceAtMost(h)
+                if (x < right && y < bottom) {
+                    dirtyRects.add(Rect(x, y, right, bottom))
+                    changedPixels += (right - x).toLong() * (bottom - y)
+                }
             }
-            screen.setFrame(bmp)
+            screen.setFrame(bmp, dirtyRects)
+            streamStats.recordFrame(
+                bytes = data.size,
+                rectCount = dirtyRects.size,
+                changedPixels = changedPixels,
+                decodeTimeNanos = SystemClock.elapsedRealtimeNanos() - started,
+                isKeyframe = keyframe,
+                hadSequenceGap = hadSequenceGap,
+                width = w,
+                height = h,
+            )
         } catch (e: Exception) {
+            streamStats.recordDecodeError()
             requestKeyframe()
         }
     }
@@ -121,6 +185,17 @@ class ViewerActivity : AppCompatActivity() {
                 "denied", "revoked", "disconnected" -> finish()
             }
         }
+        if (msg.optString("type") == "diagnostic-pong" && msg.optString("from") == winId &&
+            msg.optLong("nonce", -1L) == pendingPingNonce
+        ) {
+            lastRttMs = SystemClock.elapsedRealtime() - pingSentAtMs
+            hostQueueBytes = msg.optLong("hostQueueBytes", -1L).takeIf { it >= 0 }
+            hostTargetFps = msg.optInt("targetFps", -1).takeIf { it > 0 }
+            hostJpegQuality = msg.optInt("jpegQuality", -1).takeIf { it > 0 }
+            hostMaxWidth = msg.optInt("maxWidth", -1).takeIf { it >= 0 }
+            pendingPingNonce = -1L
+            pingTimedOut = false
+        }
     }
 
     @SuppressLint("SetTextI18n")
@@ -134,8 +209,10 @@ class ViewerActivity : AppCompatActivity() {
             return
         }
 
-        val root = FrameLayout(this)
+        root = FrameLayout(this)
         screen = RemoteScreenView(this)
+        val debugPrefs = getSharedPreferences(DEBUG_PREFS, Context.MODE_PRIVATE)
+        screen.setDirtyRectHighlightsEnabled(debugPrefs.getBoolean(PREF_HIGHLIGHT_DIRTY, false))
         root.addView(screen, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
@@ -146,10 +223,23 @@ class ViewerActivity : AppCompatActivity() {
             visibility = View.GONE
             onKey = { code, action -> send(JSONObject().put("type", "key").put("code", code).put("action", action)) }
             onText = { text -> send(JSONObject().put("type", "text").put("text", text)) }
-            onOpenIme = { showIme() }
+            onOpenIme = { toggleIme() }
         }
         root.addView(keyboard, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+
+        diagnosticsPanel = buildDiagnosticsPanel()
+        val panelMargin = (8 * resources.displayMetrics.density).toInt()
+        val panelWidth = minOf(
+            (resources.displayMetrics.widthPixels * 0.72f).toInt(),
+            (460 * resources.displayMetrics.density).toInt(),
+        )
+        root.addView(diagnosticsPanel, FrameLayout.LayoutParams(
+            panelWidth, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START
+        ).apply {
+            leftMargin = panelMargin
+            topMargin = panelMargin
+        })
 
         root.addView(buildToolbar(), FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.END))
@@ -158,6 +248,7 @@ class ViewerActivity : AppCompatActivity() {
         root.addView(imeCatcher, FrameLayout.LayoutParams(1, 1))
 
         setContentView(root)
+        installVisibleAreaTracking()
     }
 
     private fun buildToolbar(): LinearLayout {
@@ -175,7 +266,9 @@ class ViewerActivity : AppCompatActivity() {
                 keyboard.visibility = if (keyboard.visibility == View.VISIBLE) {
                     keyboard.releaseAll(); View.GONE
                 } else View.VISIBLE
+                keyboard.post { updateBottomOcclusion() }
             })
+            addView(tb("Stats") { showDiagnostics() })
             addView(tb("?") { showGestureHelp() })
             addView(tb("Ctrl+Alt+Del") { ctrlAltDel() })
             addView(tb("✕") { finish() })
@@ -193,7 +286,7 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private fun showGestureHelp() {
-        androidx.appcompat.app.AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("Mouse gestures")
             .setMessage(
                 """
@@ -258,10 +351,218 @@ class ViewerActivity : AppCompatActivity() {
         if (buf.isNotEmpty()) send(JSONObject().put("type", "text").put("text", buf.toString()))
     }
 
-    private fun showIme() {
-        imeCatcher.requestFocus()
+    private fun toggleIme() {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.showSoftInput(imeCatcher, InputMethodManager.SHOW_IMPLICIT)
+        if (imeVisible) {
+            imm.hideSoftInputFromWindow(imeCatcher.windowToken, 0)
+            imeCatcher.clearFocus()
+        } else {
+            imeCatcher.requestFocus()
+            imm.showSoftInput(imeCatcher, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    /** Keep the virtual cursor above whichever keyboard actually covers pixels. */
+    private fun installVisibleAreaTracking() {
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            root.post { updateBottomOcclusion() }
+            insets
+        }
+        root.viewTreeObserver.addOnGlobalLayoutListener {
+            ViewCompat.getRootWindowInsets(root)?.let {
+                imeVisible = it.isVisible(WindowInsetsCompat.Type.ime())
+            }
+            updateBottomOcclusion()
+        }
+        ViewCompat.requestApplyInsets(root)
+    }
+
+    private fun updateBottomOcclusion() {
+        if (!::screen.isInitialized || screen.height == 0) return
+        val screenLocation = IntArray(2)
+        screen.getLocationOnScreen(screenLocation)
+        val screenBottom = screenLocation[1] + screen.height
+        var covered = 0
+
+        if (::keyboard.isInitialized && keyboard.visibility == View.VISIBLE && keyboard.height > 0) {
+            val keyboardLocation = IntArray(2)
+            keyboard.getLocationOnScreen(keyboardLocation)
+            covered = (screenBottom - keyboardLocation[1]).coerceAtLeast(0)
+        }
+
+        // This is zero when adjustResize already shortened the viewer, and is
+        // the actual overlap when the IME floats over the viewer.
+        val visibleWindow = Rect()
+        screen.getWindowVisibleDisplayFrame(visibleWindow)
+        covered = maxOf(covered, (screenBottom - visibleWindow.bottom).coerceAtLeast(0))
+        screen.setBottomOcclusion(covered)
+    }
+
+    private fun showDiagnostics() {
+        if (diagnosticsPanel.visibility == View.VISIBLE) {
+            hideDiagnostics()
+            return
+        }
+        diagnosticsPanel.visibility = View.VISIBLE
+        diagnosticsUpdater?.let { diagnosticsHandler.removeCallbacks(it) }
+
+        var previousStream = streamStats.snapshot()
+        var previousConnection = ConnectionManager.debugStats()
+        val updater = object : Runnable {
+            override fun run() {
+                sendDiagnosticPingIfDue()
+                val stream = streamStats.snapshot()
+                val connection = ConnectionManager.debugStats()
+                diagnosticsText.text = formatDiagnostics(previousStream, stream, previousConnection, connection)
+                previousStream = stream
+                previousConnection = connection
+                diagnosticsHandler.postDelayed(this, STATS_REFRESH_MS)
+            }
+        }
+        diagnosticsUpdater = updater
+        updater.run()
+    }
+
+    private fun hideDiagnostics() {
+        if (::diagnosticsPanel.isInitialized) diagnosticsPanel.visibility = View.GONE
+        diagnosticsUpdater?.let { diagnosticsHandler.removeCallbacks(it) }
+        diagnosticsUpdater = null
+    }
+
+    private fun buildDiagnosticsPanel(): LinearLayout {
+        val density = resources.displayMetrics.density
+        val pad = (12 * density).toInt()
+        val prefs = getSharedPreferences(DEBUG_PREFS, Context.MODE_PRIVATE)
+        diagnosticsText = TextView(this).apply {
+            typeface = Typeface.MONOSPACE
+            textSize = 12f
+            setTextColor(Color.WHITE)
+            setTextIsSelectable(true)
+        }
+        val highlight = CheckBox(this).apply {
+            setText(R.string.highlight_dirty_rectangles)
+            setTextColor(Color.WHITE)
+            isChecked = prefs.getBoolean(PREF_HIGHLIGHT_DIRTY, false)
+            setOnCheckedChangeListener { _, checked ->
+                prefs.edit().putBoolean(PREF_HIGHLIGHT_DIRTY, checked).apply()
+                screen.setDirtyRectHighlightsEnabled(checked)
+            }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            elevation = 8 * density
+            setBackgroundColor(Color.parseColor("#E619202C"))
+            setPadding(pad, pad, pad, (4 * density).toInt())
+            addView(diagnosticsText)
+            addView(highlight)
+        }
+    }
+
+    private fun sendDiagnosticPingIfDue() {
+        val now = SystemClock.elapsedRealtime()
+        if (pendingPingNonce >= 0 && now - pingSentAtMs < PING_TIMEOUT_MS) return
+        if (pendingPingNonce >= 0) {
+            pendingPingNonce = -1L
+            pingTimedOut = true
+        }
+        if (now - pingSentAtMs < PING_INTERVAL_MS) return
+        val nonce = ++nextPingNonce
+        pendingPingNonce = nonce
+        pingSentAtMs = now
+        send(JSONObject().put("type", "diagnostic-ping").put("nonce", nonce))
+    }
+
+    private fun formatDiagnostics(
+        previousStream: ViewerStreamStats.Snapshot,
+        stream: ViewerStreamStats.Snapshot,
+        previousConnection: ConnectionManager.DebugStats,
+        connection: ConnectionManager.DebugStats,
+    ): String {
+        val elapsedSeconds = ((stream.sampledAtMs - previousStream.sampledAtMs) / 1000.0)
+            .coerceAtLeast(0.001)
+        val frames = stream.frames - previousStream.frames
+        val fps = frames / elapsedSeconds
+        val streamMbps = (stream.streamBytes - previousStream.streamBytes) * 8.0 /
+            elapsedSeconds / 1_000_000.0
+        val wireMbps = (connection.receivedWireBytes - previousConnection.receivedWireBytes) * 8.0 /
+            elapsedSeconds / 1_000_000.0
+        val decodeMs = if (frames > 0) {
+            (stream.decodeNanos - previousStream.decodeNanos) / frames / 1_000_000.0
+        } else 0.0
+        val rectsPerFrame = if (frames > 0) {
+            (stream.rects - previousStream.rects).toDouble() / frames
+        } else 0.0
+        val dirtyPercentPerSecond = if (stream.surfacePixels > 0) {
+            (stream.dirtyPixels - previousStream.dirtyPixels) * 100.0 /
+                stream.surfacePixels / elapsedSeconds
+        } else 0.0
+        val rtt = when {
+            lastRttMs != null -> "${lastRttMs} ms"
+            pingTimedOut -> "timed out"
+            else -> "measuring…"
+        }
+        val lastFrame = stream.lastFrameAgoMs?.let { formatAge(it) } ?: "never"
+        val lastPacket = connection.lastReceiveAgoMs?.let { formatAge(it) } ?: "never"
+        val hostConfig = if (hostTargetFps != null) {
+            "${hostTargetFps} FPS • JPEG ${hostJpegQuality ?: "?"} • " +
+                (hostMaxWidth?.takeIf { it > 0 }?.let { "max ${it}px" } ?: "native width")
+        } else "unavailable"
+
+        return String.format(
+            Locale.US,
+            "Connection  %s (%s)\n" +
+                "Round trip  %s\n" +
+                "Receive     %.2f Mbps wire / %.2f Mbps screen\n" +
+                "Last packet %s ago • %d messages\n" +
+                "Queues      phone %s • desktop %s\n" +
+                "Reconnects  %d attempts • %d failures\n\n" +
+                "Host config %s\n" +
+                "Surface     %d × %d\n" +
+                "Changed FPS %.1f\n" +
+                "Decode      %.2f ms/frame\n" +
+                "Dirty areas %.1f rects/frame • %.1f%% screen/sec\n" +
+                "Frames      %d total • %d keyframes\n" +
+                "Integrity   %d sequence gaps • %d decode errors\n" +
+                "Last frame  %s ago\n\n" +
+                "FPS falls to zero when the desktop is idle.",
+            connection.state,
+            formatAge(connection.connectedForMs),
+            rtt,
+            wireMbps,
+            streamMbps,
+            lastPacket,
+            connection.receivedMessages,
+            formatBytes(connection.outgoingQueueBytes),
+            hostQueueBytes?.let { formatBytes(it) } ?: "unavailable",
+            connection.connectionAttempts,
+            connection.failures,
+            hostConfig,
+            stream.surfaceWidth,
+            stream.surfaceHeight,
+            fps,
+            decodeMs,
+            rectsPerFrame,
+            dirtyPercentPerSecond,
+            stream.frames,
+            stream.keyframes,
+            stream.sequenceGaps,
+            stream.decodeErrors,
+            lastFrame,
+        )
+    }
+
+    private fun formatAge(ms: Long): String = when {
+        ms < 1_000 -> "${ms} ms"
+        ms < 60_000 -> String.format(Locale.US, "%.1f s", ms / 1000.0)
+        else -> "%d:%02d".format(Locale.US, ms / 60_000, (ms / 1_000) % 60)
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> String.format(Locale.US, "%.1f KiB", bytes / 1024.0)
+        else -> String.format(Locale.US, "%.1f MiB", bytes / (1024.0 * 1024.0))
     }
 
     private fun send(obj: JSONObject) {
@@ -279,7 +580,17 @@ class ViewerActivity : AppCompatActivity() {
         super.onPause()
         ConnectionManager.binaryListeners.remove(binaryListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
-        keyboard.releaseAll()
+        if (::keyboard.isInitialized) keyboard.releaseAll()
+        hideDiagnostics()
+        diagnosticsHandler.removeCallbacksAndMessages(null)
         winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "stop-view").put("to", it)) }
+    }
+
+    private companion object {
+        const val DEBUG_PREFS = "viewer_debug"
+        const val PREF_HIGHLIGHT_DIRTY = "highlight_dirty_rects"
+        const val STATS_REFRESH_MS = 1_000L
+        const val PING_INTERVAL_MS = 2_000L
+        const val PING_TIMEOUT_MS = 5_000L
     }
 }

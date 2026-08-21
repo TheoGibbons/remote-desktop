@@ -238,10 +238,25 @@ public class ScreenStreamer
                     if (rects.Count == 0) { await PaceAsync(frameStart, ct); continue; }
                 }
 
+                // Avoid burning CPU on JPEG encoding while the network still
+                // has a stale burst queued. The next deliverable update must be
+                // a keyframe because one or more deltas were skipped.
+                if (_ws.IsVideoBacklogged)
+                {
+                    forceKeyframe = true;
+                    await PaceAsync(frameStart, ct);
+                    continue;
+                }
+
                 // Seq increments even if the send is dropped: the resulting gap
                 // is what tells the viewer to request a keyframe.
                 var payload = BuildPatch(sendSurface, rects, keyframe, encParams);
-                _ws.SendBinary(Crypto.ChPatch, payload);
+                if (!_ws.SendBinary(Crypto.ChPatch, payload))
+                {
+                    forceKeyframe = true;
+                    await PaceAsync(frameStart, ct);
+                    continue;
+                }
 
                 if (keyframe)
                 {
