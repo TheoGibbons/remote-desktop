@@ -2,12 +2,14 @@
 // renders shapes with signed-distance functions, encodes PNGs by hand
 // (zlib is built into Node) and assembles a Windows ICO.
 //
-// Icon: rounded-square indigo→blue gradient, white monitor + phone glyph.
+// App icon:  rounded-square indigo→blue gradient, white monitor + phone glyph.
+// Site icon: the header brand mark — ink tile, mint monitor (see site/public/styles.css).
 import zlib from "zlib";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 
-const ROOT = "/home/theo_unix/projects/remote-desktop";
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // ---------- PNG encoder ----------
 
@@ -71,6 +73,9 @@ function sdRoundRect(px, py, cx, cy, hw, hh, r) {
 const C0 = [99, 102, 241];  // indigo
 const C1 = [29, 78, 216];   // blue
 
+const INK = [7, 18, 23];     // --ink
+const MINT = [120, 241, 173]; // --mint
+
 function gradient(x, y, S) {
   const t = Math.min(1, Math.max(0, (x + y) / (2 * S)));
   return [
@@ -80,10 +85,60 @@ function gradient(x, y, S) {
   ];
 }
 
+// The brand-mark monitor, drawn as an outline: a mint rounded rect with the ink
+// tile colour painted back inside it, then the stand below.
+// A 16px tile cannot hold the full-size proportions — the outline blurs and the gap
+// under the screen closes up — so that size gets its own edges, snapped to the
+// device grid (1 output pixel = 32 design units at 16px).
+const SITE_SCREEN = {
+  //         [centre y, half width, half height, corner radius]
+  small: { out: [208, 160, 112, 32], in: [208, 128, 80, 0], stand: [384, 64, 32, 16] },
+  full: { out: [226.4, 144, 112, 48], in: [226.4, 104, 72, 8], stand: [378.4, 64, 20, 20] },
+};
+
+function siteGlyph(size, bleed) {
+  const small = size <= 16;
+  // the bleed tile overhangs the canvas, so its antialiased edge falls outside the
+  // output and iOS gets fully opaque corners to mask
+  const tile = bleed
+    ? { sd: (x, y) => sdRoundRect(x, y, 256, 256, 288, 288, 0), col: INK }
+    : { sd: (x, y) => sdRoundRect(x, y, 256, 256, 256, 256, 112), col: INK };
+  const screen = small ? SITE_SCREEN.small : SITE_SCREEN.full;
+  return [
+    tile,
+    { sd: (x, y) => sdRoundRect(x, y, 256, screen.out[0], screen.out[1], screen.out[2], screen.out[3]), col: MINT },
+    { sd: (x, y) => sdRoundRect(x, y, 256, screen.in[0], screen.in[1], screen.in[2], screen.in[3]), col: INK },
+    { sd: (x, y) => sdRoundRect(x, y, 256, screen.stand[0], screen.stand[1], screen.stand[2], screen.stand[3]), col: MINT },
+  ];
+}
+
+// The SVG favicon is emitted from the same numbers as the raster tiles, so the two
+// cannot drift apart; 512 design units map onto a 32-unit viewBox.
+function siteSvg() {
+  const g = SITE_SCREEN.full;
+  const u = (v) => +(v / 16).toFixed(3);
+  const hex = (c) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+  const rect = ([cy, hw, hh, r], col) =>
+    `  <rect x="${u(256 - hw)}" y="${u(cy - hh)}" width="${u(hw * 2)}" height="${u(hh * 2)}"` +
+    ` rx="${u(r)}" fill="${hex(col)}"/>`;
+  return [
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">',
+    rect([256, 256, 256, 112], INK),
+    rect(g.out, MINT),
+    rect(g.in, INK),
+    rect(g.stand, MINT),
+    "</svg>",
+    "",
+  ].join("\n");
+}
+
 // All shapes are designed on a 512x512 canvas.
-// mode "full": rounded gradient tile + glyph (Windows ICO, legacy launcher)
-// mode "fg":   glyph only, scaled into the adaptive-icon safe zone, transparent bg
-function shapes(mode) {
+// mode "full":       rounded gradient tile + glyph (Windows ICO, legacy launcher)
+// mode "fg":         glyph only, scaled into the adaptive-icon safe zone, transparent bg
+// mode "site":       brand-mark favicon, rounded tile
+// mode "site-bleed": the same, square to the edges, for the iOS mask to round itself
+function shapes(mode, size) {
+  if (mode === "site" || mode === "site-bleed") return siteGlyph(size, mode === "site-bleed");
   const glyph = [
     // monitor screen
     { sd: (x, y) => sdRoundRect(x, y, 226, 210, 130, 88, 14), col: "white" },
@@ -104,7 +159,7 @@ function shapes(mode) {
 
 function render(size, mode) {
   const S = 512;
-  const list = shapes(mode);
+  const list = shapes(mode, size);
   const ss = 2; // supersampling per axis
   const out = new Uint8Array(size * size * 4);
   // fg glyph is scaled into the adaptive safe zone around the canvas center
@@ -129,7 +184,8 @@ function render(size, mode) {
             const cov = Math.min(1, Math.max(0, 0.5 - d / aa));
             if (cov <= 0) continue;
             let sc;
-            if (sh.col === "white") sc = [255, 255, 255];
+            if (Array.isArray(sh.col)) sc = sh.col;
+            else if (sh.col === "white") sc = [255, 255, 255];
             else sc = gradient(x, y, S); // "tile" and "bg" both sample the gradient
             // src-over
             cr = sc[0] * cov + cr * (1 - cov);
@@ -157,8 +213,8 @@ function png(size, mode) {
 
 // ---------- ICO ----------
 
-function buildIco(sizes) {
-  const pngs = sizes.map((s) => png(s, "full"));
+function buildIco(sizes, mode = "full") {
+  const pngs = sizes.map((s) => png(s, mode));
   const header = Buffer.alloc(6);
   header.writeUInt16LE(0, 0);
   header.writeUInt16LE(1, 2); // icon
@@ -198,7 +254,10 @@ for (const [dpi, mult] of Object.entries(dpis)) {
   write(`${RES}/mipmap-${dpi}/ic_launcher_foreground.png`, png(Math.round(108 * mult), "fg"));
 }
 
-// preview for a quick look
-
+// Download site
+const SITE = `${ROOT}/site/public`;
+write(`${SITE}/favicon.svg`, Buffer.from(siteSvg(), "utf8"));
+write(`${SITE}/favicon.ico`, buildIco([16, 32, 48], "site"));
+write(`${SITE}/apple-touch-icon.png`, png(180, "site-bleed"));
 
 console.log("done");
