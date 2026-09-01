@@ -245,8 +245,18 @@ class ViewerActivity : AppCompatActivity() {
             bottomMargin = panelMargin
         })
 
-        root.addView(buildToolbar(), FrameLayout.LayoutParams(
+        val toolbar = buildToolbar()
+        root.addView(toolbar, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP))
+        toolbar.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+            val screenLocation = IntArray(2)
+            val toolbarLocation = IntArray(2)
+            screen.getLocationOnScreen(screenLocation)
+            view.getLocationOnScreen(toolbarLocation)
+            screen.setTopOcclusion(
+                (toolbarLocation[1] + view.height - screenLocation[1]).coerceAtLeast(0)
+            )
+        }
 
         imeCatcher = buildImeCatcher()
         root.addView(imeCatcher, FrameLayout.LayoutParams(1, 1))

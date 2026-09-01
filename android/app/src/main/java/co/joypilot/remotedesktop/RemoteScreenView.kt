@@ -54,6 +54,7 @@ class RemoteScreenView @JvmOverloads constructor(
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private var fitScale = 1f
     private var matrixInitialized = false
+    private var topOcclusionPx = 0
     private var bottomOcclusionPx = 0
 
     // Debug overlay populated by ViewerActivity from the patch metadata. It is
@@ -116,6 +117,15 @@ class RemoteScreenView @JvmOverloads constructor(
             clampTranslation()
             keepPointerVisible()
         }
+        invalidate()
+    }
+
+    /** Pixels at the top covered by the viewer's button toolbar. */
+    fun setTopOcclusion(topPx: Int) {
+        val next = topPx.coerceIn(0, height.coerceAtLeast(0))
+        if (next == topOcclusionPx) return
+        topOcclusionPx = next
+        if (matrixInitialized) keepPointerVisible()
         invalidate()
     }
 
@@ -213,6 +223,7 @@ class RemoteScreenView @JvmOverloads constructor(
 
     // The pointer is kept at least this far (screen px) from every viewport edge.
     private val pointerMargin = 24f * density
+    private val toolbarPointerGap = 5f * density
 
     /**
      * How far the pointer, mapped to the screen, currently sits *past* the safe
@@ -225,8 +236,9 @@ class RemoteScreenView @JvmOverloads constructor(
         var dy = 0f
         if (pts[0] < pointerMargin) dx = pointerMargin - pts[0]
         if (pts[0] > width - pointerMargin) dx = width - pointerMargin - pts[0]
-        if (pts[1] < pointerMargin) dy = pointerMargin - pts[1]
-        val safeBottom = visibleHeight() - pointerMargin
+        val safeTop = maxOf(pointerMargin, topOcclusionPx + toolbarPointerGap)
+        if (pts[1] < safeTop) dy = safeTop - pts[1]
+        val safeBottom = maxOf(safeTop, visibleHeight() - pointerMargin)
         if (pts[1] > safeBottom) dy = safeBottom - pts[1]
         return Pair(dx, dy)
     }
