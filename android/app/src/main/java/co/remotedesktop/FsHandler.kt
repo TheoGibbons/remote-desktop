@@ -1,4 +1,4 @@
-package co.joypilot.remotedesktop
+package co.remotedesktop
 
 import android.content.ContentValues
 import android.content.Context

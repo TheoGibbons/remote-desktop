@@ -1,4 +1,4 @@
-package co.joypilot.remotedesktop
+package co.remotedesktop
 
 import java.io.ByteArrayOutputStream
 import java.security.SecureRandom

@@ -1,4 +1,4 @@
-package co.joypilot.remotedesktop
+package co.remotedesktop
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription

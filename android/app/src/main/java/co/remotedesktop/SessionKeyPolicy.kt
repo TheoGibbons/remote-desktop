@@ -1,4 +1,4 @@
-package co.joypilot.remotedesktop
+package co.remotedesktop
 
 /**
  * Entropy floor for session keys. The relay only ever sees the derived

@@ -1,4 +1,4 @@
-package co.joypilot.remotedesktop
+package co.remotedesktop
 
 import android.app.Notification
 import android.app.NotificationChannel

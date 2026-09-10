@@ -11,11 +11,11 @@ val escapedDefaultRelayServerUrl = defaultRelayServerUrl
     .replace("\"", "\\\"")
 
 android {
-    namespace = "co.joypilot.remotedesktop"
+    namespace = "co.remotedesktop"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "co.joypilot.remotedesktop"
+        applicationId = "co.remotedesktop"
         minSdk = 26
         targetSdk = 34
         versionCode = releaseVersionCode
