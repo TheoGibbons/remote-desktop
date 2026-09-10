@@ -337,25 +337,47 @@ public class ScreenStreamer
                 // viewer can carry the overlap forward instead of being sent a
                 // fresh keyframe every time it moves. Integer-factor downscaling
                 // is also cleaner than an arbitrary bilinear ratio.
-                int k = Math.Max(1, (int)Math.Round((double)srcRegion.Width / targetOutW));
-                if (regionMode) srcRegion = SnapToGrid(srcRegion, k, vs.Width, vs.Height);
-                int outW = Math.Max(1, srcRegion.Width / k);
-                int outH = Math.Max(1, srcRegion.Height / k);
-
+                int outW, outH;
                 if (wantH264)
                 {
-                    // 4:2:0 chroma is sampled in 2x2 blocks, so an odd edge has
-                    // no meaning. Trim the crop with it rather than the frame
-                    // alone, or the region would stop describing the pixels.
-                    int evenW = Math.Max(2, outW & ~1);
-                    int evenH = Math.Max(2, outH & ~1);
-                    if (evenW != outW || evenH != outH)
+                    // The frame size does not have to track the region: every
+                    // frame header carries the crop, so the frame is only the
+                    // resolution we choose to deliver it at. Pinning it across
+                    // small changes matters because an encoder cannot change
+                    // resolution mid-stream — each change is a teardown on both
+                    // ends plus an IDR, which is what made panning and zooming
+                    // cost 42 keyframes in 58 frames.
+                    int idealW = Math.Clamp(targetOutW, 16, Math.Min(srcRegion.Width, MaxEncodedDimension));
+                    int idealH = Math.Clamp(
+                        (int)Math.Round(idealW * (double)srcRegion.Height / srcRegion.Width),
+                        16, MaxEncodedDimension);
+
+                    // Non-uniform scaling between crop and frame is harmless:
+                    // the viewer maps the frame back onto the crop rect, so the
+                    // stretch cancels. Only resolution adequacy matters here.
+                    bool keepSize = encoder != null
+                        && encoderW * 3 >= idealW * 2 && encoderW * 2 <= idealW * 3
+                        && encoderH * 3 >= idealH * 2 && encoderH * 2 <= idealH * 3;
+                    if (keepSize)
                     {
-                        outW = evenW;
-                        outH = evenH;
-                        srcRegion = new Rectangle(srcRegion.X, srcRegion.Y, outW * k, outH * k);
+                        outW = encoderW;
+                        outH = encoderH;
                     }
-                    if (outW > MaxEncodedDimension || outH > MaxEncodedDimension) wantH264 = false;
+                    else
+                    {
+                        // 4:2:0 chroma is sampled in 2x2 blocks; an odd edge has no meaning.
+                        outW = Math.Max(2, idealW & ~1);
+                        outH = Math.Max(2, idealH & ~1);
+                    }
+                }
+                else
+                {
+                    // Tile path: the integer grid is what lets a pan be sent as
+                    // a whole-pixel shift instead of a repaint.
+                    int k = Math.Max(1, (int)Math.Round((double)srcRegion.Width / targetOutW));
+                    if (regionMode) srcRegion = SnapToGrid(srcRegion, k, vs.Width, vs.Height);
+                    outW = Math.Max(1, srcRegion.Width / k);
+                    outH = Math.Max(1, srcRegion.Height / k);
                 }
 
                 if (srcRegion != lastRegion || outW != lastOutW || outH != lastOutH)

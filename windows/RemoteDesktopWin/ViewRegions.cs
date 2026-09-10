@@ -108,10 +108,21 @@ public sealed class ViewRegionTracker
         double right = wanted.Max(v => v.X + v.W);
         double bottom = wanted.Max(v => v.Y + v.H);
 
-        int x = (int)Math.Floor(Math.Clamp(left, 0, 1) * deskW);
-        int y = (int)Math.Floor(Math.Clamp(top, 0, 1) * deskH);
-        int r = (int)Math.Ceiling(Math.Clamp(right, 0, 1) * deskW);
-        int b = (int)Math.Ceiling(Math.Clamp(bottom, 0, 1) * deskH);
+        // Slide the rect back inside the desktop rather than truncating it.
+        // Truncating changes its *size*, and a size change costs a keyframe on
+        // the tile path and an encoder teardown on the codec path — so simply
+        // panning up to an edge used to be as expensive as a zoom.
+        double wantW = Math.Min(1.0, right - left);
+        double wantH = Math.Min(1.0, bottom - top);
+        double x0 = Math.Clamp(left, 0.0, 1.0 - wantW);
+        double y0 = Math.Clamp(top, 0.0, 1.0 - wantH);
+
+        int x = (int)Math.Floor(x0 * deskW);
+        int y = (int)Math.Floor(y0 * deskH);
+        int r = (int)Math.Ceiling((x0 + wantW) * deskW);
+        int b = (int)Math.Ceiling((y0 + wantH) * deskH);
+        r = Math.Min(r, deskW);
+        b = Math.Min(b, deskH);
 
         // Round out to even pixels: JPEG chroma subsampling works on 2x2 blocks,
         // and an odd-sized crop makes tile edges shift colour between patches.

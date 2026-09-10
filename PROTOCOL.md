@@ -273,9 +273,17 @@ Three consequences worth knowing:
 - **A pan needs no keyframe.** The encoder sees a shifted picture and codes it
   as motion, which is what it is good at. The scroll flag on type `3` exists
   because JPEG tiles have no such mechanism; it is not used here.
-- **A zoom does.** Encoders will not take a mid-stream resolution change, so
-  the host disposes and recreates the encoder, and the new one must lead with
-  an IDR.
+- **The frame size does not track the crop.** Every frame header carries the
+  region, so `surfW`/`surfH` are only the resolution the host chose to deliver
+  that crop at, and the two are free to differ. The host therefore pins the
+  frame size and lets the crop move and resize under it, rebuilding the encoder
+  only when the ideal resolution has drifted about half again either way.
+  Non-uniform scaling between crop and frame is harmless: the viewer maps the
+  frame back onto the crop rect, so the stretch cancels.
+- **Rebuilding is what costs.** Encoders will not take a mid-stream resolution
+  change, so a rebuild is a teardown on both ends plus an IDR and a round trip.
+  Resizing the frame to follow every pan and zoom made keyframes 72% of all
+  frames, which is why the pinning above matters more than it looks.
 - **Frame dimensions are even**, and the crop is trimmed to match rather than
   the frame alone — 4:2:0 chroma is sampled in 2x2 blocks, and trimming only
   the frame would leave the region no longer describing the pixels in it.
