@@ -16,11 +16,18 @@ public interface ICaptureSource : IDisposable
     /// Update <paramref name="surface"/> (virtual-desktop-sized, 32bppRgb)
     /// with the latest desktop content and append the changed regions, in
     /// surface coordinates, to <paramref name="dirty"/>.
+    ///
+    /// <paramref name="interest"/> is the region actually being streamed. A
+    /// source may leave the surface stale outside it — with viewport streaming
+    /// that is most of a multi-monitor desktop, and capturing a monitor nobody
+    /// is looking at costs a full-resolution copy per frame for nothing. It
+    /// must still report accurate dirty rects for anything it does update.
+    ///
     /// Returns false on a transient failure (secure desktop) — retry later.
     /// Throws when the source is lost (display mode change, duplication
     /// access lost) — dispose and recreate.
     /// </summary>
-    bool CaptureInto(Bitmap surface, List<Rectangle> dirty);
+    bool CaptureInto(Bitmap surface, List<Rectangle> dirty, Rectangle interest);
 }
 
 /// <summary>
@@ -45,7 +52,12 @@ public sealed class GdiCaptureSource : ICaptureSource
         _prev = new Bitmap(vs.Width, vs.Height, PixelFormat.Format32bppRgb);
     }
 
-    public bool CaptureInto(Bitmap surface, List<Rectangle> dirty)
+    // The fallback path grabs and diffs the whole desktop regardless of the
+    // streamed region: CopyFromScreen is one call for the lot, and the diff is
+    // a linear scan that already skips unchanged rows cheaply. Cropping here
+    // would mean tracking which parts of the reference frame are valid, for a
+    // saving that only matters on a path we try to get off every 10 s anyway.
+    public bool CaptureInto(Bitmap surface, List<Rectangle> dirty, Rectangle interest)
     {
         try
         {

@@ -113,7 +113,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 |---------------|--------|-------|
 | `start-view`  | `to`   | Ask peer to start streaming its screen to me. |
 | `stop-view`   | `to`   | Stop streaming. |
-| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. Sent when streaming starts and whenever the geometry changes. |
+| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`?, `monitors`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. `monitors` is an array of `{x, y, w, h, primary}` in desktop coordinates, so a viewer can offer "show just this monitor" rather than a letterboxed strip of all of them. Sent when streaming starts and whenever the geometry changes. |
 | `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH` | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. See [Viewport streaming](#viewport-streaming). |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
 | `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. |
@@ -151,6 +151,7 @@ the viewer simply decodes the type-3 stream (below) and sends these.
 | `fs-get`         | `to`, `path`, `xferId` | Ask peer to send me a file. |
 | `fs-begin`       | `to`, `xferId`, `name`, `size` | Sender announces an incoming file (used for both push-upload and get-response). |
 | `fs-end`         | `to`, `xferId`, `ok`, `error?` | |
+| `fs-saved`       | `to`, `xferId`, `path` | Optional receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Older peers may omit this reply. |
 
 ## Binary frames
 
@@ -224,6 +225,13 @@ Because the streamed image is no longer the whole desktop, a viewer must treat
 `desktopWidth`/`desktopHeight` from `screen-info` as its coordinate space —
 normalized input coordinates are relative to the desktop, not to the region it
 happens to be receiving.
+
+The host also skips capturing outputs the streamed region does not touch. On
+the DXGI path that saves a full-resolution GPU copy per monitor per frame, so
+viewing one monitor of a two-monitor desktop costs about half what it used to.
+An output that comes back into view is repainted in full, since the dirty
+metadata accumulated while it was ignored no longer describes the gap — the
+region change that brought it back forces a keyframe anyway.
 
 ## Queueing and priority
 

@@ -235,6 +235,10 @@ class FsHandler(private val context: Context) {
         try {
             val saved = saveToDownloads(t.temp, t.name)
             t.temp.delete()
+            ConnectionManager.sendJson(
+                JSONObject().put("type", "fs-saved").put("to", msg.optString("from"))
+                    .put("xferId", xferId).put("path", saved)
+            )
             status("Saved $saved")
             t.onDone?.invoke(saved)
         } catch (e: Exception) {
@@ -255,7 +259,16 @@ class FsHandler(private val context: Context) {
             context.contentResolver.openOutputStream(uri)!!.use { out ->
                 src.inputStream().use { it.copyTo(out) }
             }
-            return "Downloads/RemoteDesktop/$name"
+            // Read back the actual location: MediaStore may rename duplicate files.
+            context.contentResolver.query(
+                uri, arrayOf(MediaStore.Downloads.DATA), null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val path = cursor.getString(0)
+                    if (!path.isNullOrEmpty()) return path
+                }
+            }
+            throw Exception("Cannot resolve saved file path")
         } else {
             @Suppress("DEPRECATION")
             val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "RemoteDesktop")

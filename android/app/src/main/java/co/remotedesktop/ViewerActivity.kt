@@ -75,6 +75,12 @@ class ViewerActivity : AppCompatActivity() {
     // every region change costs the host a keyframe.
     private var lastSentRegion: String? = null
 
+    // Monitor geometry from the host, in desktop coordinates, plus which one
+    // the picker is currently showing (-1 = the whole desktop).
+    private var monitors: List<Rect> = emptyList()
+    private var monitorIndex = -1
+    private var monitorButton: Button? = null
+
     private val binaryListener: (ByteArray) -> Unit = { data ->
         if (data.isNotEmpty()) when (data[0].toInt()) {
             1 -> { // legacy full-frame JPEG
@@ -235,6 +241,20 @@ class ViewerActivity : AppCompatActivity() {
             val dw = msg.optInt("desktopWidth", msg.optInt("width", 0))
             val dh = msg.optInt("desktopHeight", msg.optInt("height", 0))
             if (dw > 0 && dh > 0) screen.setDesktopSize(dw, dh)
+            msg.optJSONArray("monitors")?.let { arr ->
+                val next = ArrayList<Rect>(arr.length())
+                for (i in 0 until arr.length()) {
+                    val m = arr.optJSONObject(i) ?: continue
+                    val x = m.optInt("x"); val y = m.optInt("y")
+                    val w = m.optInt("w"); val h = m.optInt("h")
+                    if (w > 0 && h > 0) next.add(Rect(x, y, x + w, y + h))
+                }
+                if (next != monitors) {
+                    monitors = next
+                    if (monitorIndex >= next.size) monitorIndex = -1
+                    updateMonitorButton()
+                }
+            }
         }
         if (msg.optString("type") == "diagnostic-pong" && msg.optString("from") == winId &&
             msg.optLong("nonce", -1L) == pendingPingNonce
@@ -329,7 +349,8 @@ class ViewerActivity : AppCompatActivity() {
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            weightSum = 6f
+            // No fixed weightSum: the monitor button is hidden on a
+            // single-monitor host, and a fixed total would leave its gap.
             setBackgroundColor(Color.parseColor("#88000000"))
             fun addToolbarButton(label: String, weight: Float = 1f, onClick: () -> Unit) {
                 addView(tb(label, onClick), LinearLayout.LayoutParams(
@@ -344,11 +365,35 @@ class ViewerActivity : AppCompatActivity() {
                 } else View.VISIBLE
                 keyboard.post { updateBottomOcclusion() }
             }
+            monitorButton = tb("All") { cycleMonitor() }.also {
+                it.visibility = View.GONE
+                addView(it, LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
             addToolbarButton("Stats") { showDiagnostics() }
             addToolbarButton("?") { showGestureHelp() }
             addToolbarButton("Ctrl+Alt+Del", weight = 2f) { ctrlAltDel() }
             addToolbarButton("✕") { finish() }
         }
+    }
+
+    /** Jump the view between the whole desktop and each monitor in turn. */
+    private fun cycleMonitor() {
+        if (monitors.size < 2) return
+        monitorIndex = if (monitorIndex + 1 >= monitors.size) -1 else monitorIndex + 1
+        if (monitorIndex < 0) screen.showDesktopRect(Rect(0, 0, screenDesktopW(), screenDesktopH()))
+        else screen.showDesktopRect(monitors[monitorIndex])
+        updateMonitorButton()
+    }
+
+    private fun screenDesktopW() = monitors.maxOfOrNull { it.right } ?: 0
+    private fun screenDesktopH() = monitors.maxOfOrNull { it.bottom } ?: 0
+
+    private fun updateMonitorButton() {
+        val button = monitorButton ?: return
+        // Nothing to pick between on a single-monitor host.
+        button.visibility = if (monitors.size < 2) View.GONE else View.VISIBLE
+        button.text = if (monitorIndex < 0) "All" else "▣${monitorIndex + 1}"
     }
 
     private fun wireGestures() {

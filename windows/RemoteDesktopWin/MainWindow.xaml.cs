@@ -568,6 +568,9 @@ public partial class MainWindow : Window
             case "fs-list-result":
                 _fileExplorer?.OnListResult(msg);
                 break;
+            case "fs-saved":
+                _fileExplorer?.OnUploadResult(msg);
+                break;
         }
     }
 

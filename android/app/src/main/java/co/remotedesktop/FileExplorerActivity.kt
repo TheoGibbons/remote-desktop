@@ -3,9 +3,12 @@ package co.remotedesktop
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
@@ -18,6 +21,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import org.json.JSONObject
+import java.io.File
 
 /**
  * Browses the paired desktop's filesystem. Tap a folder to open it, tap a file
@@ -45,7 +49,11 @@ class FileExplorerActivity : AppCompatActivity() {
         }
     }
 
-    private val transferListener: (String) -> Unit = { s -> runOnUiThread { statusText.text = s } }
+    private val transferListener: (String) -> Unit = { s -> runOnUiThread { setStatus(s) } }
+
+    // Browsing a saved download must not trigger the upload picker's callback.
+    private val savedFilePicker =
+        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { }
 
     private val uploadPicker =
         registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
@@ -120,7 +128,7 @@ class FileExplorerActivity : AppCompatActivity() {
     }
 
     private fun requestList(p: String) {
-        statusText.text = "Loading..."
+        setStatus("Loading...")
         lastReqId = (++reqCounter).toString()
         ConnectionManager.sendJson(
             JSONObject().put("type", "fs-list").put("to", winId)
@@ -132,7 +140,7 @@ class FileExplorerActivity : AppCompatActivity() {
     private fun showResult(msg: JSONObject) {
         val err = msg.opt("error")
         if (err != null && err != JSONObject.NULL) {
-            statusText.text = "Error: $err"
+            setStatus("Error: $err")
             return
         }
         path = msg.optString("path")
@@ -147,7 +155,7 @@ class FileExplorerActivity : AppCompatActivity() {
         adapter.clear()
         adapter.addAll(entries.map { (if (it.dir) "📁 " else "📄 ") + it.name + if (!it.dir) "   (${fmtSize(it.size)})" else "" })
         adapter.notifyDataSetChanged()
-        statusText.text = "${entries.size} items"
+        setStatus("${entries.size} items")
     }
 
     private fun onEntryTap(pos: Int) {
@@ -162,12 +170,40 @@ class FileExplorerActivity : AppCompatActivity() {
     private fun download(fullPath: String, name: String) {
         val xferId = ConnectionManager.fs.nextXferId()
         ConnectionManager.fs.expectDownload(xferId,
-            { saved -> runOnUiThread { statusText.text = "Saved to $saved" } },
-            { errMsg -> runOnUiThread { statusText.text = "Failed: $errMsg" } })
+            { saved -> runOnUiThread { setStatus("Saved to $saved", saved) } },
+            { errMsg -> runOnUiThread { setStatus("Failed: $errMsg") } })
         ConnectionManager.sendJson(
             JSONObject().put("type", "fs-get").put("to", winId).put("path", fullPath).put("xferId", xferId)
         )
-        statusText.text = "Downloading $name..."
+        setStatus("Downloading $name...")
+    }
+
+    private fun setStatus(text: String, savedPath: String? = null) {
+        statusText.text = text
+        statusText.setOnClickListener(if (savedPath != null) View.OnClickListener {
+            openSavedDirectory(savedPath)
+        } else null)
+        statusText.isClickable = savedPath != null
+        statusText.isFocusable = savedPath != null
+        statusText.tooltipText = if (savedPath != null) "Open containing folder" else null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun openSavedDirectory(savedPath: String) {
+        val directory = File(savedPath).parentFile ?: return
+        val relativePath = directory.relativeTo(Environment.getExternalStorageDirectory()).invariantSeparatorsPath
+        val directoryUri = DocumentsContract.buildDocumentUri(
+            "com.android.externalstorage.documents", "primary:$relativePath"
+        )
+        try {
+            savedFilePicker.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, directoryUri)
+            })
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "No file picker is available", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun uploadUri(uri: Uri) {
@@ -184,7 +220,7 @@ class FileExplorerActivity : AppCompatActivity() {
         }
         val input = contentResolver.openInputStream(uri)
         if (input == null) {
-            statusText.text = "Cannot open selected file"; return
+            setStatus("Cannot open selected file"); return
         }
         ConnectionManager.fs.sendFileAsync(winId!!, input, name, size) { ok ->
             if (ok) runOnUiThread {
@@ -196,7 +232,7 @@ class FileExplorerActivity : AppCompatActivity() {
                 ).show()
             }
         }
-        statusText.text = "Uploading $name..."
+        setStatus("Uploading $name...")
     }
 
     private fun goUp() {

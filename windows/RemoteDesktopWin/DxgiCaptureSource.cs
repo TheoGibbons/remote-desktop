@@ -35,6 +35,7 @@ public sealed class DxgiCaptureSource : ICaptureSource
         public required ID3D11Texture2D Staging;
         public Rectangle Bounds; // position within the stitched surface
         public bool Primed;      // has delivered at least one frame
+        public bool NeedsFull;   // was skipped; its surface content is stale
     }
 
     private readonly List<ID3D11Device> _devices = new();
@@ -114,10 +115,19 @@ public sealed class DxgiCaptureSource : ICaptureSource
         }
     }
 
-    public bool CaptureInto(Bitmap surface, List<Rectangle> dirty)
+    public bool CaptureInto(Bitmap surface, List<Rectangle> dirty, Rectangle interest)
     {
         foreach (var o in _outputs)
         {
+            // Nobody is looking at this output. Leave its frames unacquired —
+            // duplication keeps only the latest, so nothing queues up — and
+            // remember that its part of the surface has gone stale.
+            if (!o.Bounds.IntersectsWith(interest))
+            {
+                o.NeedsFull = true;
+                continue;
+            }
+
             var result = o.Duplication.AcquireNextFrame(0, out OutduplFrameInfo info, out IDXGIResource? resource);
             if (result == Vortice.DXGI.ResultCode.WaitTimeout) continue; // nothing new on this output
             if (result.Failure)
@@ -126,13 +136,18 @@ public sealed class DxgiCaptureSource : ICaptureSource
             try
             {
                 // LastPresentTime == 0 means a cursor-only update: no image.
-                if (info.LastPresentTime == 0 && o.Primed) continue;
+                if (info.LastPresentTime == 0 && o.Primed && !o.NeedsFull) continue;
 
                 using var tex = resource!.QueryInterface<ID3D11Texture2D>();
                 o.Context.CopyResource(o.Staging, tex);
 
                 var rects = new List<Rectangle>(); // output-local coordinates
-                if (!o.Primed)
+                // NeedsFull: this output was skipped while out of view, so the
+                // accumulated dirty metadata no longer describes the gap
+                // between the surface and reality. Repaint the lot. The region
+                // change that brought it back forces a keyframe anyway, so
+                // this costs nothing extra.
+                if (!o.Primed || o.NeedsFull)
                 {
                     rects.Add(new Rectangle(0, 0, o.Bounds.Width, o.Bounds.Height));
                 }
@@ -164,6 +179,7 @@ public sealed class DxgiCaptureSource : ICaptureSource
 
                 CopyRects(o, surface, rects, dirty);
                 o.Primed = true;
+                o.NeedsFull = false;
             }
             finally
             {
@@ -174,7 +190,7 @@ public sealed class DxgiCaptureSource : ICaptureSource
 
         // Until every output has delivered its first frame the surface has
         // black holes; report "not ready" briefly, then give up to GDI.
-        if (_outputs.Exists(o => !o.Primed))
+        if (_outputs.Exists(o => !o.Primed && o.Bounds.IntersectsWith(interest)))
         {
             if (++_unprimedTicks > 6)
                 throw new InvalidOperationException("duplication never delivered a first frame");

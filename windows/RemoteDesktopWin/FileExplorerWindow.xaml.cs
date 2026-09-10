@@ -12,6 +12,9 @@ public partial class FileExplorerWindow : Window
     private readonly string _phoneId;
     private string _path = "";
     private int _reqCounter;
+    private uint _uploadId;
+    private string? _uploadStatus;
+    private string? _uploadPath;
 
     public class Entry
     {
@@ -43,11 +46,25 @@ public partial class FileExplorerWindow : Window
         RequestList("");
     }
 
-    private void OnTransferStatus(string s) => Dispatcher.BeginInvoke(() => StatusText.Text = s);
+    private void SetStatus(string text)
+    {
+        StatusText.Text = text;
+        StatusText.ToolTip = text == _uploadStatus ? _uploadPath : null;
+    }
+
+    private void OnTransferStatus(string s) => Dispatcher.BeginInvoke(() => SetStatus(s));
+
+    public void OnUploadResult(JsonNode msg)
+    {
+        if (msg["from"]?.GetValue<string>() != _phoneId ||
+            msg["xferId"]?.GetValue<long>() != _uploadId) return;
+        _uploadPath = msg["path"]?.GetValue<string>();
+        SetStatus(StatusText.Text);
+    }
 
     private void RequestList(string path)
     {
-        StatusText.Text = "Loading...";
+        SetStatus("Loading...");
         _ws.SendJson(new JsonObject
         {
             ["type"] = "fs-list",
@@ -62,7 +79,7 @@ public partial class FileExplorerWindow : Window
         var error = msg["error"]?.GetValue<string>();
         if (!string.IsNullOrEmpty(error))
         {
-            StatusText.Text = "Error: " + error;
+            SetStatus("Error: " + error);
             return;
         }
         _path = msg["path"]?.GetValue<string>() ?? "";
@@ -79,7 +96,7 @@ public partial class FileExplorerWindow : Window
             });
         }
         EntryList.ItemsSource = entries.OrderByDescending(x => x.Dir).ThenBy(x => x.Name).ToList();
-        StatusText.Text = $"{entries.Count} items";
+        SetStatus($"{entries.Count} items");
     }
 
     private string Join(string dir, string name) =>
@@ -110,13 +127,13 @@ public partial class FileExplorerWindow : Window
     {
         if (EntryList.SelectedItem is not Entry entry || entry.Dir)
         {
-            StatusText.Text = "Select a file first";
+            SetStatus("Select a file first");
             return;
         }
         var xferId = _fs.NextXferId();
         _fs.ExpectDownload(xferId,
-            path => Dispatcher.BeginInvoke(() => StatusText.Text = "Saved to " + path),
-            err => Dispatcher.BeginInvoke(() => StatusText.Text = "Failed: " + err));
+            path => Dispatcher.BeginInvoke(() => SetStatus("Saved to " + path)),
+            err => Dispatcher.BeginInvoke(() => SetStatus("Failed: " + err)));
         _ws.SendJson(new JsonObject
         {
             ["type"] = "fs-get",
@@ -132,6 +149,10 @@ public partial class FileExplorerWindow : Window
         if (dlg.ShowDialog() != true) return;
         var xferId = _fs.NextXferId();
         var name = System.IO.Path.GetFileName(dlg.FileName);
+        _uploadId = xferId;
+        _uploadStatus = $"Sent {name}";
+        _uploadPath = null;
+        StatusText.ToolTip = null;
         if (await _fs.SendFileAsync(_phoneId, dlg.FileName, xferId))
             Toast.Show($"“{name}” uploaded to the phone's Downloads/RemoteDesktop folder " +
                        "(not the folder you are browsing).");

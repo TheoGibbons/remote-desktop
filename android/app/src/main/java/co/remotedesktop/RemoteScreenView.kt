@@ -18,10 +18,18 @@ import kotlin.math.hypot
 import kotlin.math.min
 
 /**
- * Renders the streamed desktop image (all monitors already stitched into one
- * bitmap by the host) and drives a **virtual mouse pointer** that is always
- * visible, touchpad-style — like the Microsoft RD client's "mouse pointer"
- * mode:
+ * Renders the streamed desktop and drives a **virtual mouse pointer** that is
+ * always visible, touchpad-style — like the Microsoft RD client's "mouse
+ * pointer" mode.
+ *
+ * Everything here is measured in **desktop pixels**, not image pixels. Each
+ * frame carries the desktop rectangle it covers, and the host is free to send
+ * a crop of the desktop at whatever resolution the link allows; the view
+ * composes that frame's own image-to-desktop mapping under the pan/zoom
+ * matrix. So a host-side rescale or viewport change moves nothing the user is
+ * holding onto.
+ *
+ * Gestures:
  *
  *  - 1-finger drag                       -> move the pointer
  *  - 1-finger tap                        -> left click (at the pointer)
@@ -180,6 +188,30 @@ class RemoteScreenView @JvmOverloads constructor(
         matrix.postScale(fitScale, fitScale)
         matrix.postTranslate(dx, dy)
         matrixInitialized = true
+        clampTranslation()
+        keepPointerVisible()
+        reportViewport()
+        invalidate()
+    }
+
+    /**
+     * Fit one desktop rectangle to the window — the monitor picker. fitScale
+     * stays tied to the whole desktop, so this is a jump rather than a mode:
+     * the user can still pinch back out to everything.
+     */
+    fun showDesktopRect(r: Rect) {
+        if (deskW == 0 || deskH == 0 || width == 0 || height == 0) return
+        if (r.width() <= 0 || r.height() <= 0) return
+        val vh = visibleHeight()
+        val s = min(width.toFloat() / r.width(), vh / r.height())
+        matrix.reset()
+        matrix.postScale(s, s)
+        matrix.postTranslate(
+            -r.left * s + (width - r.width() * s) / 2f,
+            -r.top * s + (vh - r.height() * s) / 2f,
+        )
+        matrixInitialized = true
+        fitScale = min(width.toFloat() / deskW, height.toFloat() / deskH)
         clampTranslation()
         keepPointerVisible()
         reportViewport()

@@ -189,6 +189,7 @@ public class ScreenStreamer
         bool lastRegionMode = false;
         var dirty = new List<Rectangle>();
         var damage = new DamageMap();
+        var monitors = new List<MonitorInfo>();
 
         // Congestion state.
         int level = StartLevel;
@@ -229,6 +230,7 @@ public class ScreenStreamer
                     output = null;
                     surface = new Bitmap(vs.Width, vs.Height, PixelFormat.Format32bppRgb);
                     source = CreateSource(vs, out sourceIsDxgi);
+                    monitors = Monitors.Enumerate(vs);
                     damage.Resize(vs.Width, vs.Height);
                     lastDxgiRetry = now;
                     lastBounds = vs;
@@ -344,6 +346,18 @@ public class ScreenStreamer
                     if (geometryChanged || regionMode != lastRegionMode)
                     {
                         lastRegionMode = regionMode;
+                        var monitorList = new JsonArray();
+                        foreach (var m in monitors)
+                        {
+                            monitorList.Add(new JsonObject
+                            {
+                                ["x"] = m.Bounds.X,
+                                ["y"] = m.Bounds.Y,
+                                ["w"] = m.Bounds.Width,
+                                ["h"] = m.Bounds.Height,
+                                ["primary"] = m.Primary,
+                            });
+                        }
                         _ws.SendJson(new JsonObject
                         {
                             ["type"] = "screen-info",
@@ -353,6 +367,9 @@ public class ScreenStreamer
                             // in, so a viewer can normalize input against it.
                             ["desktopWidth"] = vs.Width,
                             ["desktopHeight"] = vs.Height,
+                            // So a viewer can offer "show just this monitor"
+                            // instead of a letterboxed strip of all of them.
+                            ["monitors"] = monitorList,
                         });
                     }
                 }
@@ -389,7 +406,11 @@ public class ScreenStreamer
                 bool captured;
                 try
                 {
-                    captured = source.CaptureInto(surface, dirty);
+                    // Only the streamed region needs to be current: with a
+                    // viewport on one monitor, the source can skip the others
+                    // entirely rather than copying a 4K texture per frame for
+                    // pixels nobody will receive.
+                    captured = source.CaptureInto(surface, dirty, srcRegion);
                 }
                 catch
                 {
