@@ -68,7 +68,7 @@ unapproved device is present in the session, screen sharing and file serving
 pause.
 
 - **View desktop** → live PC view with the mouse/keyboard controls.
-- **Browse files** → download to `Downloads/RemoteDesktop`, or upload.
+- **Browse files** → download to `Downloads`, or upload.
 
 In the desktop viewer, tap **Stats** for live end-to-end round-trip time,
 wire/screen throughput, changed-frame FPS, JPEG decode time, dirty-area rate,

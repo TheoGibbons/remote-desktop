@@ -154,7 +154,7 @@ public partial class FileExplorerWindow : Window
         _uploadPath = null;
         StatusText.ToolTip = null;
         if (await _fs.SendFileAsync(_phoneId, dlg.FileName, xferId))
-            Toast.Show($"“{name}” uploaded to the phone's Downloads/RemoteDesktop folder " +
+            Toast.Show($"“{name}” uploaded to the phone's Downloads folder " +
                        "(not the folder you are browsing).");
     }
 }

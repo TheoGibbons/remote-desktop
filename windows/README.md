@@ -74,8 +74,9 @@ unapproved device is present in the session, streaming and file serving pause.
     long-press, mouse wheel = pinch zoom in/out; Back/Home/Recents buttons included.
 - **Browse files** → a file explorer to download from / upload to the selected
   device (a PC or a phone). Downloads are saved to
-  `%USERPROFILE%\Downloads\RemoteDesktop`; uploads land in the peer's
-  `Downloads/RemoteDesktop` (Windows) or `Downloads/RemoteDesktop` (Android).
+  `%USERPROFILE%\Downloads`; uploads land in the peer's `Downloads` folder on
+  Windows or Android alike. A name that clashes with a file already there gets
+  a counter appended — nothing is overwritten.
 - **QR code** (next to *Generate*) → shows the server URL + session key as a QR
   code the phone scans to pair in one step.
 - Closing the window hides the app to the **tray** — paired devices can still

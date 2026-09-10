@@ -25,8 +25,11 @@ public class FsService
         public Action<string>? OnError;
     }
 
+    // Straight into Downloads, not a subfolder of it: received files should
+    // land where the user already looks for downloads. UniquePath below keeps
+    // them from colliding with what is already there.
     public string IncomingDir { get; set; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "RemoteDesktop");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 
     public event Action<string>? TransferStatus;
 

@@ -252,7 +252,9 @@ class FsHandler(private val context: Context) {
         if (Build.VERSION.SDK_INT >= 29) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
-                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/RemoteDesktop")
+                // Downloads itself, not a subfolder of it. MediaStore renames
+                // duplicates, so landing alongside existing files is safe.
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             }
             val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: throw Exception("MediaStore insert failed")
@@ -271,7 +273,7 @@ class FsHandler(private val context: Context) {
             throw Exception("Cannot resolve saved file path")
         } else {
             @Suppress("DEPRECATION")
-            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "RemoteDesktop")
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             dir.mkdirs()
             var dest = File(dir, name)
             var i = 1

@@ -25,7 +25,7 @@ import java.io.File
 
 /**
  * Browses the paired desktop's filesystem. Tap a folder to open it, tap a file
- * to download it into the phone's Downloads/RemoteDesktop folder, or use Upload
+ * to download it into the phone's Downloads folder, or use Upload
  * to push a file from the phone to the desktop.
  */
 class FileExplorerActivity : AppCompatActivity() {
@@ -226,7 +226,7 @@ class FileExplorerActivity : AppCompatActivity() {
             if (ok) runOnUiThread {
                 Toast.makeText(
                     this,
-                    "“$name” uploaded to the desktop's Downloads\\RemoteDesktop folder " +
+                    "“$name” uploaded to the desktop's Downloads folder " +
                         "(not the folder you are browsing)",
                     Toast.LENGTH_LONG
                 ).show()
