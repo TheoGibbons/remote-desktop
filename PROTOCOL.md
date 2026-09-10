@@ -116,7 +116,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `screen-info` | `width`, `height` | Pixel size of the streamed (stitched) surface. Sent by the host when streaming starts and whenever it changes. |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
 | `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. |
-| `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | RTT response plus the desktop sender's queued binary backlog and active stream settings. |
+| `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | RTT response plus the desktop sender's queued binary backlog. The three stream fields report what the host has **adapted to**, not what the user configured, so they move during a session. |
 
 **Input — controlling Windows** (coordinates normalized 0..1 over the stitched
 virtual desktop). The controller may be a phone or another PC — the host injects
@@ -172,13 +172,49 @@ stale — there is no codec-style corruption. Recovery rules:
 
 - `seq` increments per patch **including dropped ones**, so a viewer detects
   loss as a gap and sends `request-keyframe`.
+- **Backpressure is answered with damage, not keyframes.** When the send lane
+  is still busy the host skips encoding that tick and accumulates the changed
+  blocks; the next patch that goes out repaints their union. A host must not
+  respond to congestion by sending a keyframe — a full-screen JPEG is the most
+  expensive frame there is, so it refills the very queue it was waiting on and
+  pins the link at one frame per round trip.
 - The host sends a keyframe on stream start / `request-keyframe` / surface
   resize, and every ~10 s while deltas are being sent (safety net).
 - A viewer that has no canvas yet ignores deltas and asks for a keyframe.
+- **`surfW`/`surfH` change while streaming.** The host scales its output down
+  under sustained congestion and back up when the link clears, so a viewer must
+  treat every patch header as authoritative and reallocate its canvas (and
+  release the old one) whenever the size differs. A size change is always
+  accompanied by a keyframe and a fresh `screen-info`.
 
 So the wire layout is `[frameType(1)][nonce(12)][ciphertext][tag(16)]`. Binary
 frames are broadcast by the server to all other peers in the session (sessions
 are expected to hold 2 devices; the design tolerates more).
+
+## Queueing and priority
+
+Everything shares one TCP connection per device, so anything buffered ahead of a
+keystroke delays it. Both the sender and the relay therefore keep the video
+backlog deliberately small.
+
+**Sender lanes.** Outgoing frames are split in two:
+
+- *reliable* — control JSON and file chunks, strict FIFO. The ordering is
+  load-bearing: `fs-begin` must precede its chunks and `fs-end` must follow
+  them, so these share one queue and are only ever taken from its head.
+- *video* — types `1` and `3`, droppable, capped at a couple of frames. An
+  overflow discards the **oldest** frame, never the newest: a stale screen
+  update is worthless once a newer one exists.
+
+A control message at the head of the reliable lane goes first, then video, then
+a file chunk. So input and `diagnostic-ping`/`pong` overtake both bulk transfers
+and screen data, while the reliable lane is never reordered against itself.
+
+**Relay buffering.** The relay drops a binary frame for any peer whose socket
+already has more than 256 KiB buffered, except file chunks (`2`), which cannot
+be dropped without silently corrupting a transfer and keep an 8 MiB ceiling.
+The frame-type byte is cleartext precisely so the relay can tell these apart
+without decrypting anything.
 
 ## End-to-end encryption
 

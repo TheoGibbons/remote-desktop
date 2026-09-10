@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -17,31 +17,62 @@ namespace RemoteDesktopWin;
 /// error) and the routing envelope (type "enc", optional "to") are visible to
 /// the relay.
 ///
-/// All outgoing frames go through a single ordered outbox so control messages
-/// and binary frames are sent in the exact order they were queued.
+/// **Outgoing frames are split across two lanes** so a screen-sharing burst can
+/// never delay a keystroke:
+///
+/// * *reliable* — control JSON and file chunks, strict FIFO. Order here is
+///   load-bearing (`fs-begin` must precede its chunks and `fs-end` must follow
+///   them), so the two share one queue and are only ever taken from its head.
+/// * *video* — screen frames, droppable. It holds at most
+///   <see cref="MaxQueuedVideoFrames"/> frames / <see cref="MaxQueuedVideoBytes"/>
+///   bytes, and an overflow discards the **oldest** frame: a stale screen update
+///   is worthless the moment a newer one exists, and queueing it only adds
+///   latency to everything behind it.
+///
+/// The pump prefers a control message at the head of the reliable lane, then
+/// video, then a file chunk — so input and diagnostics overtake bulk transfers
+/// and screen data without ever reordering the reliable lane against itself.
 /// </summary>
 public class WsClient : IDisposable
 {
+    private enum Lane { Control, File, Video }
+
     private readonly struct OutFrame
     {
-        public readonly byte[]? Text;
-        public readonly byte[]? Binary;
-        public OutFrame(byte[]? text, byte[]? binary) { Text = text; Binary = binary; }
+        public readonly byte[] Data;
+        public readonly Lane Kind;
+        public OutFrame(byte[] data, Lane kind) { Data = data; Kind = kind; }
     }
 
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _cts;
     private volatile bool _running;
-    private Channel<OutFrame>? _outbox;
-    private long _queuedBinaryBytes;
     private int _backoffMs = MinBackoffMs;
     private string? _lastCloseReason;
 
-    // Interactive screen updates become actively misleading when several
-    // seconds of old patches sit in front of the latest input response. Keep at
-    // most a small burst; ScreenStreamer then replaces dropped deltas with a
-    // fresh keyframe as soon as the sender catches up.
-    private const long MaxQueuedBinaryBytes = 2 * 1024 * 1024;
+    private readonly object _outLock = new();
+    private Queue<OutFrame>? _reliable;
+    private Queue<byte[]>? _video;
+    private Channel<bool>? _wake;
+    private long _queuedVideoBytes;
+    private long _queuedFileBytes;
+    private long _videoFramesDropped;
+    private long _videoBytesSent;
+
+    // Screen updates are worth queueing only while they are still current. Two
+    // frames is enough to keep the socket busy while the next one encodes;
+    // beyond that every queued byte is pure added latency on the round trip.
+    // ScreenStreamer additionally declines to encode while the lane is
+    // occupied, so in normal operation nothing is ever dropped — the cap is a
+    // safety valve, not the mechanism.
+    private const long MaxQueuedVideoBytes = 256 * 1024;
+    private const int MaxQueuedVideoFrames = 2;
+
+    // File chunks cannot be dropped (a hole silently corrupts the transfer), so
+    // they are throttled by refusal instead: FsService retries until there is
+    // room. Kept small so a transfer cannot park seconds of data in front of
+    // the next control message.
+    private const long MaxQueuedFileBytes = 512 * 1024;
 
     // Reconnect backoff. The reset lives in the "welcome" handler, not next to
     // ConnectAsync: the relay rejects a connection (rate limit, ban, too many
@@ -66,8 +97,24 @@ public class WsClient : IDisposable
     private string _deviceUid = "";
 
     public bool IsConnected => _ws?.State == WebSocketState.Open && MyId != null;
-    public long QueuedBinaryBytes => Math.Max(0, Interlocked.Read(ref _queuedBinaryBytes));
-    public bool IsVideoBacklogged => QueuedBinaryBytes > MaxQueuedBinaryBytes;
+
+    /// <summary>Video bytes waiting in the app-level lane (excludes whatever the
+    /// socket itself is still draining).</summary>
+    public long QueuedVideoBytes { get { lock (_outLock) return _queuedVideoBytes; } }
+
+    /// <summary>Total queued binary backlog, reported to viewers in diagnostic-pong.</summary>
+    public long QueuedBinaryBytes { get { lock (_outLock) return _queuedVideoBytes + _queuedFileBytes; } }
+
+    /// <summary>A frame is already waiting to go out. The streamer uses this to
+    /// skip encoding rather than pile up work the network cannot take.</summary>
+    public bool VideoLaneBusy { get { lock (_outLock) return _video is { Count: > 0 }; } }
+
+    /// <summary>Frames discarded by the drop-oldest rule — a congestion signal
+    /// for the streamer quality ladder.</summary>
+    public long VideoFramesDropped { get { lock (_outLock) return _videoFramesDropped; } }
+
+    /// <summary>Video bytes handed to the socket, for throughput estimation.</summary>
+    public long VideoBytesSent { get { lock (_outLock) return _videoBytesSent; } }
 
     public void Start(string url, string sessionKey, string deviceName, string deviceUid)
     {
@@ -86,10 +133,41 @@ public class WsClient : IDisposable
     {
         _running = false;
         _cts?.Cancel();
-        _outbox?.Writer.TryComplete();
+        CloseOutbox();
         try { _ws?.Dispose(); } catch { }
         _ws = null;
         MyId = null;
+    }
+
+    private void OpenOutbox()
+    {
+        lock (_outLock)
+        {
+            _reliable = new Queue<OutFrame>();
+            _video = new Queue<byte[]>();
+            _wake = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+            {
+                FullMode = BoundedChannelFullMode.DropWrite,
+                SingleReader = true,
+            });
+            _queuedVideoBytes = 0;
+            _queuedFileBytes = 0;
+        }
+    }
+
+    private void CloseOutbox()
+    {
+        Channel<bool>? wake;
+        lock (_outLock)
+        {
+            wake = _wake;
+            _wake = null;
+            _reliable = null;
+            _video = null;
+            _queuedVideoBytes = 0;
+            _queuedFileBytes = 0;
+        }
+        wake?.Writer.TryComplete();
     }
 
     private async Task RunLoop(CancellationToken ct)
@@ -107,13 +185,13 @@ public class WsClient : IDisposable
                 // and a connection killed without a FIN/RST reaching us (sleep/wake,
                 // router reboot, ISP re-IP) leaves ReceiveAsync blocked forever with
                 // the app still reporting "connected" while the relay has already
-                // reaped its side. Matches OkHttp's pingInterval on Android.
+                // reaped its side. Matches OkHttp pingInterval on Android.
                 _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
                 _ws.Options.KeepAliveTimeout = TimeSpan.FromSeconds(20);
                 await _ws.ConnectAsync(new Uri(_url), ct);
 
-                _outbox = Channel.CreateUnbounded<OutFrame>(new UnboundedChannelOptions { SingleReader = true });
-                Interlocked.Exchange(ref _queuedBinaryBytes, 0);
+                OpenOutbox();
+                var wake = _wake!.Reader;
 
                 // hello is cleartext and carries only the derived pairing id.
                 EnqueueText(new JsonObject
@@ -125,10 +203,10 @@ public class WsClient : IDisposable
                     ["uid"] = _deviceUid,
                 });
 
-                var pump = Task.Run(() => SendPump(_ws, _outbox, ct), ct);
+                var pump = Task.Run(() => SendPump(_ws, wake, ct), ct);
                 await ReceiveLoop(ct);
                 reason = _lastCloseReason ?? "connection closed";
-                _outbox.Writer.TryComplete();
+                CloseOutbox();
                 await pump;
             }
             catch (OperationCanceledException) { break; }
@@ -139,8 +217,7 @@ public class WsClient : IDisposable
             }
             finally
             {
-                _outbox?.Writer.TryComplete();
-                _outbox = null;
+                CloseOutbox();
                 try { _ws?.Dispose(); } catch { }
                 _ws = null;
                 MyId = null;
@@ -153,21 +230,95 @@ public class WsClient : IDisposable
         }
     }
 
-    private async Task SendPump(ClientWebSocket ws, Channel<OutFrame> outbox, CancellationToken ct)
+    private void Signal() => _wake?.Writer.TryWrite(true);
+
+    /// <summary>Queue on the ordered lane. File chunks are refused (rather than
+    /// dropped) once the lane is full so the caller can retry.</summary>
+    private bool EnqueueReliable(OutFrame frame)
+    {
+        lock (_outLock)
+        {
+            if (_reliable == null) return false;
+            if (frame.Kind == Lane.File)
+            {
+                if (_queuedFileBytes >= MaxQueuedFileBytes) return false;
+                _queuedFileBytes += frame.Data.Length;
+            }
+            _reliable.Enqueue(frame);
+        }
+        Signal();
+        return true;
+    }
+
+    private bool EnqueueVideo(byte[] wire)
+    {
+        lock (_outLock)
+        {
+            if (_video == null) return false;
+            _video.Enqueue(wire);
+            _queuedVideoBytes += wire.Length;
+            // Drop the oldest, never the newest: the freshest frame is the only
+            // one the viewer actually wants. One frame always survives, however
+            // large, so an oversized keyframe still gets through.
+            while (_video.Count > 1 &&
+                   (_video.Count > MaxQueuedVideoFrames || _queuedVideoBytes > MaxQueuedVideoBytes))
+            {
+                _queuedVideoBytes -= _video.Dequeue().Length;
+                _videoFramesDropped++;
+            }
+        }
+        Signal();
+        return true;
+    }
+
+    /// <summary>
+    /// Pick the next frame: a control message at the head of the reliable lane
+    /// first, then video, then a file chunk. Only ever taking the reliable lane
+    /// head preserves its internal ordering.
+    /// </summary>
+    private bool TryDequeue(out OutFrame frame)
+    {
+        lock (_outLock)
+        {
+            if (_reliable is { Count: > 0 } && _reliable.Peek().Kind == Lane.Control)
+            {
+                frame = _reliable.Dequeue();
+                return true;
+            }
+            if (_video is { Count: > 0 })
+            {
+                var data = _video.Dequeue();
+                _queuedVideoBytes -= data.Length;
+                frame = new OutFrame(data, Lane.Video);
+                return true;
+            }
+            if (_reliable is { Count: > 0 })
+            {
+                frame = _reliable.Dequeue();
+                _queuedFileBytes -= frame.Data.Length;
+                return true;
+            }
+        }
+        frame = default;
+        return false;
+    }
+
+    private async Task SendPump(ClientWebSocket ws, ChannelReader<bool> wake, CancellationToken ct)
     {
         try
         {
-            await foreach (var frame in outbox.Reader.ReadAllAsync(ct))
+            while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
             {
-                if (ws.State != WebSocketState.Open) break;
-                if (frame.Text != null)
+                await wake.ReadAsync(ct);
+                while (TryDequeue(out var frame))
                 {
-                    await ws.SendAsync(frame.Text, WebSocketMessageType.Text, true, ct);
-                }
-                else if (frame.Binary != null)
-                {
-                    Interlocked.Add(ref _queuedBinaryBytes, -frame.Binary.Length);
-                    await ws.SendAsync(frame.Binary, WebSocketMessageType.Binary, true, ct);
+                    if (ws.State != WebSocketState.Open) return;
+                    await ws.SendAsync(
+                        frame.Data,
+                        frame.Kind == Lane.Control ? WebSocketMessageType.Text : WebSocketMessageType.Binary,
+                        true, ct);
+                    if (frame.Kind == Lane.Video)
+                        lock (_outLock) _videoBytesSent += frame.Data.Length;
                 }
             }
         }
@@ -263,11 +414,10 @@ public class WsClient : IDisposable
     }
 
     private void EnqueueText(JsonObject obj)
-    {
-        _outbox?.Writer.TryWrite(new OutFrame(Encoding.UTF8.GetBytes(obj.ToJsonString()), null));
-    }
+        => EnqueueReliable(new OutFrame(Encoding.UTF8.GetBytes(obj.ToJsonString()), Lane.Control));
 
-    /// <summary>Queue a JSON message, encrypted end-to-end. Ordered with all other sends.</summary>
+    /// <summary>Queue a JSON message, encrypted end-to-end. Ordered against
+    /// other control messages and file chunks; overtakes queued video.</summary>
     public void SendJson(JsonObject obj)
     {
         var blob = Crypto.Encrypt(_encKey, Encoding.UTF8.GetBytes(obj.ToJsonString()), Crypto.ChJson);
@@ -278,28 +428,23 @@ public class WsClient : IDisposable
     }
 
     /// <summary>
-    /// Queue an encrypted binary frame (frameType 1 = video, 2 = file chunk).
-    /// Returns false (frame dropped) if the socket backlog is too large — callers
-    /// that must deliver (file chunks) should retry.
+    /// Queue an encrypted binary frame. Video (1 = full frame, 3 = dirty-rect
+    /// patch) goes to the droppable lane and always returns true; file chunks
+    /// (2) go to the ordered lane and return false when it is full, which is the
+    /// cue for the caller to retry.
     /// </summary>
     public bool SendBinary(byte frameType, byte[] payload)
     {
-        var outbox = _outbox;
-        if (outbox == null || _ws?.State != WebSocketState.Open) return false;
-        if (IsVideoBacklogged) return false;
+        if (_ws?.State != WebSocketState.Open) return false;
 
         var blob = Crypto.Encrypt(_encKey, payload, frameType);
         var wire = new byte[1 + blob.Length];
         wire[0] = frameType;
         Buffer.BlockCopy(blob, 0, wire, 1, blob.Length);
 
-        Interlocked.Add(ref _queuedBinaryBytes, wire.Length);
-        if (!outbox.Writer.TryWrite(new OutFrame(null, wire)))
-        {
-            Interlocked.Add(ref _queuedBinaryBytes, -wire.Length);
-            return false;
-        }
-        return true;
+        return frameType == Crypto.ChFile
+            ? EnqueueReliable(new OutFrame(wire, Lane.File))
+            : EnqueueVideo(wire);
     }
 
     public void Dispose() => Stop();

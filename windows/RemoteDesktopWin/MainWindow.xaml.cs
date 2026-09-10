@@ -467,9 +467,12 @@ public partial class MainWindow : Window
                         ["type"] = "diagnostic-pong",
                         ["nonce"] = msg["nonce"]?.GetValue<long>() ?? -1,
                         ["hostQueueBytes"] = _ws.QueuedBinaryBytes,
-                        ["targetFps"] = _streamer.Fps,
-                        ["jpegQuality"] = _streamer.JpegQuality,
-                        ["maxWidth"] = _streamer.MaxWidth,
+                        // Report what the stream is actually doing after
+                        // adaptation, not the configured ceiling — the whole
+                        // point of the panel is to show where it settled.
+                        ["targetFps"] = _streamer.ActiveFps,
+                        ["jpegQuality"] = _streamer.ActiveQuality,
+                        ["maxWidth"] = _streamer.ActiveWidth,
                         ["to"] = from,
                     });
                 }

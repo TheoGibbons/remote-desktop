@@ -111,8 +111,14 @@ class ViewerActivity : AppCompatActivity() {
             val rectCount = buf.short.toInt() and 0xFFFF
 
             var bmp = compose
+            var retired: Bitmap? = null
             if (bmp == null || bmp.width != w || bmp.height != h) {
                 if (!keyframe) { requestKeyframe(); return } // can't composite yet
+                // The host adapts its output resolution while streaming, so this
+                // now happens mid-session rather than once. A stitched desktop
+                // canvas is tens of MB, so hand the old one back explicitly
+                // instead of leaving several for the collector to notice.
+                retired = bmp
                 bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 compose = bmp
                 composeCanvas = android.graphics.Canvas(bmp)
@@ -148,6 +154,9 @@ class ViewerActivity : AppCompatActivity() {
                 }
             }
             screen.setFrame(bmp, dirtyRects)
+            // setFrame has already swapped the view onto the new bitmap, and
+            // recycling on the view's own thread cannot race a draw in progress.
+            retired?.let { old -> screen.post { old.recycle() } }
             streamStats.recordFrame(
                 bytes = data.size,
                 rectCount = dirtyRects.size,

@@ -10,20 +10,27 @@ namespace RemoteDesktopWin;
 /// Streams the Windows virtual desktop (all monitors stitched, exactly as
 /// Windows arranges them) as **dirty-rect patches**: only changed regions are
 /// sent, as JPEG tiles (binary frame type 3). A static screen costs (near)
-/// zero bandwidth, which in turn makes native resolution and higher JPEG
-/// quality affordable.
+/// zero bandwidth.
 ///
 /// Capture comes from an <see cref="ICaptureSource"/>: DXGI Desktop
 /// Duplication when available (the OS reports dirty rects, frames stay on the
 /// GPU until mapped), with automatic fallback to GDI + frame diffing — and a
 /// periodic retry of DXGI while on the fallback.
 ///
-/// Recovery model: every patch carries a sequence number; patches may be
-/// dropped under backpressure (sender backlog or a slow relay peer), which
-/// only leaves regions stale — tiles are absolute pixel content, so there is
-/// no codec-style corruption. Viewers detect the gap and ask for a keyframe
-/// (`request-keyframe`); keyframes also go out on start, on resize, and
-/// periodically as a safety net while changes are being streamed.
+/// **Congestion is answered with damage, not keyframes.** When the socket lane
+/// is still busy the tick is captured but not encoded, and the regions that
+/// changed are accumulated in a <see cref="DamageMap"/>; the next frame that
+/// does go out repaints their union. Answering a full lane with a full-screen
+/// keyframe — the single most expensive frame there is — is what turns a brief
+/// backlog into a permanent one, because the keyframe refills the lane it was
+/// waiting on. Keyframes are therefore reserved for the cases that genuinely
+/// need one: stream start, a surface or output-size change, an explicit
+/// `request-keyframe`, a periodic safety net, and accumulated damage large
+/// enough that one JPEG beats many tiles.
+///
+/// A <see cref="Ladder">quality ladder</see> then keeps frames inside what the
+/// link can actually carry, stepping resolution and JPEG quality down under
+/// sustained pressure and back up when the lane stays clear.
 /// </summary>
 public class ScreenStreamer
 {
@@ -33,6 +40,35 @@ public class ScreenStreamer
     // beats many tiles, and it resets staleness for free.
     private const double KeyframeAreaFraction = 0.5;
     private const int MaxRects = 64;
+
+    /// <summary>
+    /// Output scale and JPEG quality by congestion level. Resolution goes
+    /// before frame rate: on a desktop, a smaller sharp image that keeps up
+    /// beats a native-resolution one that arrives late.
+    /// </summary>
+    private static readonly (double Scale, int Quality)[] Ladder =
+    {
+        (1.00, 95),
+        (1.00, 75),
+        (0.66, 75),
+        (0.50, 70),
+        (0.33, 65),
+        (0.25, 55),
+    };
+
+    // Start partway down: the first frame goes out before any measurement
+    // exists, and on a 7680x2160 desktop a native keyframe is ~1.5 MB — enough
+    // on its own to bury a modest uplink for a second. Climbing up from here
+    // costs a few seconds; recovering from that first stall costs far more.
+    private const int StartLevel = 3;
+
+    private const int StepDownSkips = 4;      // consecutive stalled ticks before easing off
+    private const int StepUpClearSeconds = 6; // sustained clear time before trying harder
+    private const int LevelDwellMs = 2500;    // every change costs a keyframe, so settle first
+
+    // Two keyframe requests inside this window mean a viewer keeps detecting
+    // gaps, i.e. something between here and there is discarding frames.
+    private const int RepeatKeyframeRequestMs = 5000;
 
     private readonly WsClient _ws;
     private CancellationTokenSource? _cts;
@@ -47,10 +83,20 @@ public class ScreenStreamer
     public long JpegQuality { get; set; } = 80;
     public int MaxWidth { get; set; } = 0; // 0 = stream at native resolution
 
+    // What the stream is actually doing right now, after adaptation — this is
+    // what the viewer diagnostics should show, not the configured ceiling.
+    public int ActiveFps => Math.Max(1, Fps / Math.Max(1, _fpsDivider));
+    public int ActiveQuality => _activeQuality;
+    public int ActiveWidth => _activeWidth;
+
     public event Action<bool>? StreamingChanged;
 
     private uint _seq;
     private volatile bool _keyframeRequested;
+    private long _keyframeRequestCount;
+    private volatile int _activeQuality = 80;
+    private volatile int _activeWidth;
+    private volatile int _fpsDivider = 1;
 
     public ScreenStreamer(WsClient ws)
     {
@@ -59,7 +105,11 @@ public class ScreenStreamer
     }
 
     /// <summary>Ask for a full frame (new viewer joined or one detected a seq gap).</summary>
-    public void RequestKeyframe() => _keyframeRequested = true;
+    public void RequestKeyframe()
+    {
+        _keyframeRequested = true;
+        Interlocked.Increment(ref _keyframeRequestCount);
+    }
 
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int nIndex);
@@ -113,19 +163,27 @@ public class ScreenStreamer
     {
         Rectangle lastBounds = Rectangle.Empty;
         Bitmap? surface = null;      // native stitched desktop, kept current by the source
-        Bitmap? scaled = null;       // downscaled copy when MaxWidth clamps
+        Bitmap? scaled = null;       // downscaled copy when the output is clamped
         ICaptureSource? source = null;
         bool sourceIsDxgi = false;
         long lastDxgiRetry = 0;
         long lastKeyframeAt = 0;
         bool deltaSinceKeyframe = false;
         bool forceKeyframe = true;
+        double lastScale = -1;
         var dirty = new List<Rectangle>();
+        var damage = new DamageMap();
 
-        using var encParams = new EncoderParameters(1);
-        // Tiles are small, so quality is affordable; below ~70 text smears.
-        encParams.Param[0] = new EncoderParameter(
-            System.Drawing.Imaging.Encoder.Quality, Math.Clamp(JpegQuality, 70, 95));
+        // Congestion state.
+        int level = StartLevel;
+        long lastLevelChange = 0;
+        int skipStreak = 0, clearStreak = 0;
+        long lastDrops = _ws.VideoFramesDropped;
+        long seenKeyframeRequests = Interlocked.Read(ref _keyframeRequestCount);
+        long lastKeyframeRequestAt = 0;
+
+        EncoderParameters? encParams = null;
+        int encQuality = -1;
 
         try
         {
@@ -133,17 +191,16 @@ public class ScreenStreamer
             {
                 if (Gate is { } gate && !gate())
                 {
-                    forceKeyframe = true; // resume with a full frame
+                    // Stream paused: the viewer state is unknown, so resume with
+                    // a full frame rather than deltas against a stale canvas.
+                    forceKeyframe = true;
                     await Task.Delay(250, ct);
                     continue;
                 }
 
                 var frameStart = Environment.TickCount64;
+                var now = frameStart;
                 var vs = VirtualScreen();
-
-                double scale = MaxWidth > 0 && vs.Width > MaxWidth ? (double)MaxWidth / vs.Width : 1.0;
-                int outW = (int)(vs.Width * scale);
-                int outH = (int)(vs.Height * scale);
 
                 if (vs != lastBounds || source == null || surface == null)
                 {
@@ -152,10 +209,77 @@ public class ScreenStreamer
                     scaled?.Dispose();
                     scaled = null;
                     surface = new Bitmap(vs.Width, vs.Height, PixelFormat.Format32bppRgb);
-                    if (scale < 1.0) scaled = new Bitmap(outW, outH, PixelFormat.Format32bppRgb);
                     source = CreateSource(vs, out sourceIsDxgi);
-                    lastDxgiRetry = Environment.TickCount64;
+                    damage.Resize(vs.Width, vs.Height);
+                    lastDxgiRetry = now;
                     lastBounds = vs;
+                    lastScale = -1; // force the output size to be re-evaluated
+                    forceKeyframe = true;
+                }
+
+                // ---- adaptation ------------------------------------------------
+                // Decided from the streaks the previous ticks recorded. Only a
+                // tick that actually tried to move a frame counts as evidence:
+                // an idle desktop proves nothing about the link, and letting it
+                // climb the ladder just guarantees a stall the moment the user
+                // does something.
+                long drops = _ws.VideoFramesDropped;
+                if (drops != lastDrops)
+                {
+                    // The lane had to discard a frame outright: treat it as a
+                    // hard congestion signal, not a gentle one.
+                    lastDrops = drops;
+                    skipStreak = StepDownSkips;
+                    clearStreak = 0;
+                }
+
+                long kfRequests = Interlocked.Read(ref _keyframeRequestCount);
+                if (kfRequests != seenKeyframeRequests)
+                {
+                    // A viewer only asks out of band when it detected a sequence
+                    // gap. Repeat requests are the only evidence we get that the
+                    // relay is dropping video for a backed-up peer — those drops
+                    // happen past our socket and never reach our own counters, so
+                    // without this the ladder would happily climb while the far
+                    // end saw nothing. One request is just a viewer attaching.
+                    if (lastKeyframeRequestAt != 0 && now - lastKeyframeRequestAt < RepeatKeyframeRequestMs)
+                    {
+                        skipStreak = StepDownSkips;
+                        clearStreak = 0;
+                    }
+                    seenKeyframeRequests = kfRequests;
+                    lastKeyframeRequestAt = now;
+                }
+
+                if (now - lastLevelChange > LevelDwellMs)
+                {
+                    if (skipStreak >= StepDownSkips)
+                    {
+                        if (level < Ladder.Length - 1) { level++; lastLevelChange = now; skipStreak = 0; }
+                        else if (_fpsDivider < 4) { _fpsDivider *= 2; lastLevelChange = now; skipStreak = 0; }
+                    }
+                    else if (clearStreak >= Math.Max(1, ActiveFps) * StepUpClearSeconds)
+                    {
+                        if (_fpsDivider > 1) { _fpsDivider /= 2; lastLevelChange = now; clearStreak = 0; }
+                        else if (level > 0) { level--; lastLevelChange = now; clearStreak = 0; }
+                    }
+                }
+
+                // ---- output sizing ---------------------------------------------
+                double userScale = MaxWidth > 0 && vs.Width > MaxWidth ? (double)MaxWidth / vs.Width : 1.0;
+                double scale = Math.Min(userScale, Ladder[level].Scale);
+                int outW = Math.Max(1, (int)(vs.Width * scale));
+                int outH = Math.Max(1, (int)(vs.Height * scale));
+
+                if (Math.Abs(scale - lastScale) > 0.0001)
+                {
+                    scaled?.Dispose();
+                    scaled = scale < 1.0 ? new Bitmap(outW, outH, PixelFormat.Format32bppRgb) : null;
+                    lastScale = scale;
+                    _activeWidth = outW;
+                    // The viewer sizes its compose canvas from the patch header,
+                    // so a resize invalidates it: it can only resume from a
+                    // keyframe. Announce the new geometry alongside.
                     forceKeyframe = true;
                     _ws.SendJson(new JsonObject
                     {
@@ -165,11 +289,22 @@ public class ScreenStreamer
                     });
                 }
 
+                int quality = Math.Clamp((int)Math.Min(JpegQuality, Ladder[level].Quality), 40, 95);
+                if (quality != encQuality)
+                {
+                    encParams?.Dispose();
+                    encParams = new EncoderParameters(1);
+                    encParams.Param[0] = new EncoderParameter(
+                        System.Drawing.Imaging.Encoder.Quality, (long)quality);
+                    encQuality = quality;
+                    _activeQuality = quality;
+                }
+
                 // Prefer DXGI: while on the GDI fallback, retry it occasionally
                 // (e.g. after leaving the secure desktop).
-                if (!sourceIsDxgi && Environment.TickCount64 - lastDxgiRetry > DxgiRetryMs)
+                if (!sourceIsDxgi && now - lastDxgiRetry > DxgiRetryMs)
                 {
-                    lastDxgiRetry = Environment.TickCount64;
+                    lastDxgiRetry = now;
                     try
                     {
                         var dxgi = new DxgiCaptureSource(vs);
@@ -181,6 +316,7 @@ public class ScreenStreamer
                     catch { }
                 }
 
+                // ---- capture ---------------------------------------------------
                 dirty.Clear();
                 bool captured;
                 try
@@ -203,9 +339,31 @@ public class ScreenStreamer
                     continue;
                 }
 
-                var now = Environment.TickCount64;
+                // Fold this tick into the outstanding damage. Everything below
+                // may decline to send; nothing below may discard this.
+                foreach (var d in dirty) damage.Add(d);
+
+                // The lane still holds a frame the network has not taken. Skip
+                // the encode — the damage stays queued and the next frame that
+                // does go out will carry it.
+                if (_ws.VideoLaneBusy)
+                {
+                    skipStreak++;
+                    clearStreak = 0;
+                    await PaceAsync(frameStart, ct);
+                    continue;
+                }
+
+                // ---- frame selection -------------------------------------------
                 bool keyframe = forceKeyframe || _keyframeRequested
                     || (deltaSinceKeyframe && now - lastKeyframeAt > KeyframeIntervalMs);
+
+                if (!keyframe && !damage.Any)
+                {
+                    // Nothing changed: send nothing, wait for the next tick.
+                    await PaceAsync(frameStart, ct);
+                    continue;
+                }
 
                 var fullRect = new Rectangle(0, 0, vs.Width, vs.Height);
                 List<Rectangle> rects;
@@ -215,18 +373,15 @@ public class ScreenStreamer
                 }
                 else
                 {
-                    rects = Normalize(dirty, vs.Size);
-                    if (rects.Count == 0)
-                    {
-                        // Nothing changed: send nothing, wait for the next tick.
-                        await PaceAsync(frameStart, ct);
-                        continue;
-                    }
-                    if (rects.Sum(r => (long)r.Width * r.Height) >
-                        (long)vs.Width * vs.Height * KeyframeAreaFraction)
+                    if (damage.MarkedPixels > (long)vs.Width * vs.Height * KeyframeAreaFraction)
                     {
                         keyframe = true;
                         rects = new List<Rectangle> { fullRect };
+                    }
+                    else
+                    {
+                        rects = damage.ToRects(MaxRects);
+                        if (rects.Count == 0) { await PaceAsync(frameStart, ct); continue; }
                     }
                 }
 
@@ -238,26 +393,22 @@ public class ScreenStreamer
                     if (rects.Count == 0) { await PaceAsync(frameStart, ct); continue; }
                 }
 
-                // Avoid burning CPU on JPEG encoding while the network still
-                // has a stale burst queued. The next deliverable update must be
-                // a keyframe because one or more deltas were skipped.
-                if (_ws.IsVideoBacklogged)
-                {
-                    forceKeyframe = true;
-                    await PaceAsync(frameStart, ct);
-                    continue;
-                }
-
-                // Seq increments even if the send is dropped: the resulting gap
-                // is what tells the viewer to request a keyframe.
-                var payload = BuildPatch(sendSurface, rects, keyframe, encParams);
+                // Seq increments per built patch; the lane can still drop one
+                // under extreme pressure, and the resulting gap is what tells
+                // the viewer to ask for a keyframe.
+                var payload = BuildPatch(sendSurface, rects, keyframe, encParams!);
                 if (!_ws.SendBinary(Crypto.ChPatch, payload))
                 {
+                    // Socket is gone. Keep the damage: it is still owed to the
+                    // viewer, and reconnecting forces a keyframe anyway.
                     forceKeyframe = true;
                     await PaceAsync(frameStart, ct);
                     continue;
                 }
 
+                damage.Clear();
+                clearStreak++;
+                skipStreak = 0;
                 if (keyframe)
                 {
                     lastKeyframeAt = now;
@@ -276,6 +427,7 @@ public class ScreenStreamer
         catch (OperationCanceledException) { }
         finally
         {
+            encParams?.Dispose();
             source?.Dispose();
             surface?.Dispose();
             scaled?.Dispose();
@@ -284,34 +436,135 @@ public class ScreenStreamer
 
     private async Task PaceAsync(long frameStart, CancellationToken ct)
     {
-        int delay = Math.Max(1, 1000 / Math.Max(1, Fps) - (int)(Environment.TickCount64 - frameStart));
+        int delay = Math.Max(1, 1000 / ActiveFps - (int)(Environment.TickCount64 - frameStart));
         await Task.Delay(delay, ct);
     }
 
-    /// <summary>Clip to bounds, drop empties/duplicates, cap the rect count
-    /// (DXGI can report many small accumulated rects).</summary>
-    private static List<Rectangle> Normalize(List<Rectangle> dirty, Size bounds)
+    /// <summary>
+    /// Regions changed since the last patch actually went out, on a block grid.
+    /// Accumulating here rather than in a rect list is what lets an arbitrary
+    /// number of skipped ticks collapse into one bounded repaint set: the union
+    /// of N frames of damage costs no more to represent than one.
+    /// </summary>
+    private sealed class DamageMap
     {
-        var full = new Rectangle(Point.Empty, bounds);
-        var rects = new List<Rectangle>(dirty.Count);
-        foreach (var d in dirty)
+        private const int BaseBlock = 64;
+
+        private int _w, _h, _cols, _rows, _marked;
+        private bool[] _bits = Array.Empty<bool>();
+
+        public bool Any => _marked > 0;
+
+        /// <summary>Upper bound on changed pixels (block-aligned).</summary>
+        public long MarkedPixels => (long)_marked * BaseBlock * BaseBlock;
+
+        public void Resize(int w, int h)
         {
-            var r = d;
-            r.Intersect(full);
-            if (r.Width > 0 && r.Height > 0 && !rects.Contains(r)) rects.Add(r);
+            if (w == _w && h == _h) return;
+            _w = w; _h = h;
+            _cols = Math.Max(1, (w + BaseBlock - 1) / BaseBlock);
+            _rows = Math.Max(1, (h + BaseBlock - 1) / BaseBlock);
+            _bits = new bool[_cols * _rows];
+            _marked = 0;
         }
-        if (rects.Count > MaxRects)
+
+        public void Clear()
         {
-            int minX = rects.Min(r => r.X), minY = rects.Min(r => r.Y);
-            int maxX = rects.Max(r => r.Right), maxY = rects.Max(r => r.Bottom);
-            rects.Clear();
-            rects.Add(new Rectangle(minX, minY, maxX - minX, maxY - minY));
+            if (_marked == 0) return;
+            Array.Clear(_bits);
+            _marked = 0;
         }
-        return rects;
+
+        public void Add(Rectangle r)
+        {
+            if (r.Width <= 0 || r.Height <= 0 || _bits.Length == 0) return;
+            int c0 = Math.Max(0, r.Left / BaseBlock);
+            int c1 = Math.Min(_cols - 1, (r.Right - 1) / BaseBlock);
+            int r0 = Math.Max(0, r.Top / BaseBlock);
+            int r1 = Math.Min(_rows - 1, (r.Bottom - 1) / BaseBlock);
+            for (int row = r0; row <= r1; row++)
+            {
+                int rowBase = row * _cols;
+                for (int col = c0; col <= c1; col++)
+                {
+                    int i = rowBase + col;
+                    if (!_bits[i]) { _bits[i] = true; _marked++; }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Merge the marked blocks into at most <paramref name="maxRects"/>
+        /// rectangles. When the greedy merge still leaves too many, the grid is
+        /// coarsened and retried — unlike collapsing to one bounding box, that
+        /// keeps two changes on opposite monitors from dragging the whole
+        /// stitched desktop into the patch.
+        /// </summary>
+        public List<Rectangle> ToRects(int maxRects)
+        {
+            var bits = _bits;
+            int cols = _cols, rows = _rows, block = BaseBlock;
+            while (true)
+            {
+                var rects = Merge(bits, cols, rows, block, _w, _h);
+                if (rects.Count <= maxRects || (cols <= 1 && rows <= 1)) return rects;
+                (bits, cols, rows) = Coarsen(bits, cols, rows);
+                block *= 2;
+            }
+        }
+
+        private static (bool[] Bits, int Cols, int Rows) Coarsen(bool[] bits, int cols, int rows)
+        {
+            int nc = Math.Max(1, (cols + 1) / 2), nr = Math.Max(1, (rows + 1) / 2);
+            var next = new bool[nc * nr];
+            for (int r = 0; r < rows; r++)
+                for (int c = 0; c < cols; c++)
+                    if (bits[r * cols + c]) next[(r / 2) * nc + (c / 2)] = true;
+            return (next, nc, nr);
+        }
+
+        /// <summary>Greedy merge: horizontal runs, extended downward while the
+        /// identical run repeats. Produces few, reasonably tight rectangles.</summary>
+        private static List<Rectangle> Merge(bool[] bits, int cols, int rows, int block, int w, int h)
+        {
+            var rects = new List<Rectangle>();
+            var consumed = new bool[cols * rows];
+            for (int r = 0; r < rows; r++)
+            {
+                for (int c = 0; c < cols; c++)
+                {
+                    int i = r * cols + c;
+                    if (!bits[i] || consumed[i]) continue;
+
+                    int c2 = c;
+                    while (c2 + 1 < cols && bits[r * cols + c2 + 1] && !consumed[r * cols + c2 + 1]) c2++;
+                    int r2 = r;
+                    while (r2 + 1 < rows && RunIsSet(bits, consumed, cols, r2 + 1, c, c2)) r2++;
+
+                    for (int rr = r; rr <= r2; rr++)
+                        for (int cc = c; cc <= c2; cc++)
+                            consumed[rr * cols + cc] = true;
+
+                    int x = c * block, y = r * block;
+                    int rw = Math.Min((c2 - c + 1) * block, w - x);
+                    int rh = Math.Min((r2 - r + 1) * block, h - y);
+                    if (rw > 0 && rh > 0) rects.Add(new Rectangle(x, y, rw, rh));
+                }
+            }
+            return rects;
+        }
+
+        private static bool RunIsSet(bool[] bits, bool[] consumed, int cols, int row, int c1, int c2)
+        {
+            int rowBase = row * cols;
+            for (int c = c1; c <= c2; c++)
+                if (!bits[rowBase + c] || consumed[rowBase + c]) return false;
+            return true;
+        }
     }
 
     /// <summary>
-    /// MaxWidth clamp: re-render the changed regions (slightly inflated so
+    /// Output clamp: re-render the changed regions (slightly inflated so
     /// bilinear edges stay seamless) from the native surface into the scaled
     /// one and return the scaled-space rects to encode.
     /// </summary>

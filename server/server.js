@@ -14,6 +14,17 @@ const HELLO_MAX_PER_WINDOW = 20;
 const BAN_MS = 60 * 60_000;
 const MIN_SESSION_KEY_LEN = 16;
 
+// Per-peer send buffering, by frame type (byte 0 is cleartext — see PROTOCOL.md).
+// Video is droppable and latency-critical: buffering it is actively harmful,
+// because every queued byte delays the input and control messages sharing the
+// same TCP connection. A few hundred KB is roughly one frame in flight; past
+// that the newest frame is worth more than the queue, and the sender resends
+// the affected regions anyway. File chunks cannot be dropped without silently
+// corrupting the transfer, so they keep a generous ceiling.
+const MAX_VIDEO_BUFFER = 256 * 1024;
+const MAX_FILE_BUFFER = 8 * 1024 * 1024;
+const CH_FILE = 2;
+
 /** sessionKeyHash -> Map<peerId, client> */
 const sessions = new Map();
 /** ip -> { attempts: number[], bannedUntil: number, conns: number } */
@@ -215,9 +226,12 @@ function relayJson(client, msg) {
 function relayBinary(client, data) {
   const peers = sessions.get(client.sessionHash);
   if (!peers) return;
+  const limit = data.length > 0 && data[0] === CH_FILE ? MAX_FILE_BUFFER : MAX_VIDEO_BUFFER;
   for (const p of peers.values()) {
-    // Skip peers with a large backlog so a slow viewer doesn't balloon memory.
-    if (p !== client && p.ws.readyState === p.ws.OPEN && p.ws.bufferedAmount < 8 * 1024 * 1024) {
+    // Skip peers already backed up: for video that keeps the relay from
+    // becoming the buffer that makes the link feel slow, and it bounds memory
+    // for a slow viewer either way.
+    if (p !== client && p.ws.readyState === p.ws.OPEN && p.ws.bufferedAmount < limit) {
       p.ws.send(data);
     }
   }
