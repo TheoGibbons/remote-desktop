@@ -40,12 +40,18 @@ class H264Decoder(surface: Surface, val width: Int, val height: Int) {
     }
 
     /**
-     * Queue one access unit and render whatever comes out. Returns true if a
-     * frame reached the surface. A decoder legitimately produces nothing for
-     * the first unit or two while it configures itself from the in-band SPS.
+     * Queue one access unit and render whatever comes out. Returns the
+     * presentation timestamp of the frame that reached the surface, or -1 if
+     * none did.
+     *
+     * The timestamp matters: decoders pipeline, so the frame that comes out
+     * here is usually an *earlier* one than the unit just queued. The caller
+     * needs to know which, because each frame covers a different part of the
+     * desktop and drawing one at another's position puts it in the wrong
+     * place until the next frame corrects it.
      */
-    fun decode(accessUnit: ByteArray, presentationUs: Long, keyframe: Boolean): Boolean {
-        if (!started) return false
+    fun decode(accessUnit: ByteArray, presentationUs: Long, keyframe: Boolean): Long {
+        if (!started) return -1L
         try {
             val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
             if (index >= 0) {
@@ -58,24 +64,25 @@ class H264Decoder(surface: Surface, val width: Int, val height: Int) {
                 }
             }
 
-            var rendered = false
+            var renderedPts = -1L
             while (true) {
                 val out = codec.dequeueOutputBuffer(info, 0)
                 when {
                     out >= 0 -> {
+                        // The last one out is what ends up on the surface.
+                        renderedPts = info.presentationTimeUs
                         // true = hand it to the surface rather than discard it.
                         codec.releaseOutputBuffer(out, true)
-                        rendered = true
                     }
                     // Format and buffer changes need no action when decoding to
                     // a surface; the surface follows the stream.
-                    else -> return rendered
+                    else -> return renderedPts
                 }
             }
         } catch (e: IllegalStateException) {
             // The codec has gone (device lost, app backgrounded mid-frame).
             started = false
-            return false
+            return -1L
         }
     }
 

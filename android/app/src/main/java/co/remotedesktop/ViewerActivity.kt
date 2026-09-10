@@ -84,6 +84,10 @@ class ViewerActivity : AppCompatActivity() {
     @Volatile private var videoSurface: Surface? = null
     private var decoder: H264Decoder? = null
     private var videoPtsUs = 0L
+    // Which desktop rect each queued access unit covers, keyed by its
+    // timestamp. A decoder hands frames back later than they went in, and the
+    // region has to travel with the frame rather than with the call.
+    private val pendingRegions = LinkedHashMap<Long, Rect>()
     private var hostCodec: String? = null
 
     private val binaryListener: (ByteArray) -> Unit = { data ->
@@ -150,8 +154,19 @@ class ViewerActivity : AppCompatActivity() {
             val au = ByteArray(buf.remaining())
             buf.get(au)
             videoPtsUs += 1_000_000L / 30
-            val rendered = dec.decode(au, videoPtsUs, keyframe)
-            if (rendered) runOnUiThread { screen.setVideoFrame(w, h, region) }
+            pendingRegions[videoPtsUs] = region
+            while (pendingRegions.size > MAX_PENDING_REGIONS) {
+                pendingRegions.remove(pendingRegions.keys.first())
+            }
+
+            val renderedPts = dec.decode(au, videoPtsUs, keyframe)
+            if (renderedPts >= 0) {
+                // Place the frame that actually reached the surface, not the
+                // one just queued.
+                val shown = pendingRegions[renderedPts] ?: region
+                pendingRegions.keys.filter { it <= renderedPts }.forEach { pendingRegions.remove(it) }
+                runOnUiThread { screen.setVideoFrame(w, h, shown) }
+            }
 
             streamStats.recordFrame(
                 bytes = data.size,
@@ -167,6 +182,7 @@ class ViewerActivity : AppCompatActivity() {
             streamStats.recordDecodeError()
             decoder?.release()
             decoder = null
+            pendingRegions.clear()
             haveKeyframe = false
             requestKeyframe()
         }
@@ -337,6 +353,7 @@ class ViewerActivity : AppCompatActivity() {
     private fun releaseVideo() {
         val dec = decoder ?: return
         decoder = null
+        pendingRegions.clear()
         dec.release()
         runOnUiThread { screen.clearVideo() }
     }
@@ -883,6 +900,8 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private companion object {
+        // Decoder pipeline depth is ~1 in low-latency mode; this is slack.
+        const val MAX_PENDING_REGIONS = 8
         const val DEBUG_PREFS = "viewer_debug"
         const val PREF_HIGHLIGHT_DIRTY = "highlight_dirty_rects"
         const val STATS_REFRESH_MS = 1_000L

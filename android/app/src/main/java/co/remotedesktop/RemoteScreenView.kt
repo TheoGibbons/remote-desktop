@@ -185,7 +185,15 @@ class RemoteScreenView @JvmOverloads constructor(
             cursorX = deskW / 2f
             cursorY = deskH / 2f
         }
-        if (!matrixInitialized) post { resetToFit() } else postInvalidate()
+        if (!matrixInitialized) {
+            post { resetToFit() }
+        } else {
+            // Place the surface now rather than on the next draw. The frame is
+            // already latched, so any gap here shows it at the previous
+            // frame's position for a compositor frame or two.
+            videoView?.let { syncVideoTransform(it, frameRect) }
+            invalidate()
+        }
     }
 
     /** Back to the tile path; the surface is no longer what is on screen. */
