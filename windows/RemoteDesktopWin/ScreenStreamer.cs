@@ -186,6 +186,9 @@ public class ScreenStreamer
         bool forceKeyframe = true;
         Rectangle lastRegion = Rectangle.Empty;
         int lastOutW = -1, lastOutH = -1;
+        // The geometry the viewer actually holds, advanced only on a send.
+        Rectangle sentRegion = Rectangle.Empty;
+        int sentOutW = -1, sentOutH = -1;
         bool lastRegionMode = false;
         var dirty = new List<Rectangle>();
         var damage = new DamageMap();
@@ -314,12 +317,22 @@ public class ScreenStreamer
                 double scale = Math.Min(userScale, Ladder[level].Scale);
                 // Never encode more pixels than the source region holds: past
                 // 1:1 the extra pixels are interpolation, not detail.
-                int outW = Math.Clamp((int)(reqOutW * scale), 16, srcRegion.Width);
-                int outH = Math.Clamp((int)(reqOutH * scale), 16, srcRegion.Height);
+                int targetOutW = Math.Clamp((int)(reqOutW * scale), 16, srcRegion.Width);
+
+                // Quantize to an integer number of source pixels per output
+                // pixel, and snap the crop to that grid. That is what makes a
+                // pan expressible as a whole-pixel shift of the image, so the
+                // viewer can carry the overlap forward instead of being sent a
+                // fresh keyframe every time it moves. Integer-factor downscaling
+                // is also cleaner than an arbitrary bilinear ratio.
+                int k = Math.Max(1, (int)Math.Round((double)srcRegion.Width / targetOutW));
+                if (regionMode) srcRegion = SnapToGrid(srcRegion, k, vs.Width, vs.Height);
+                int outW = Math.Max(1, srcRegion.Width / k);
+                int outH = Math.Max(1, srcRegion.Height / k);
 
                 if (srcRegion != lastRegion || outW != lastOutW || outH != lastOutH)
                 {
-                    output?.Dispose();
+                    bool sizeChanged = outW != lastOutW || outH != lastOutH;
                     // Only the whole desktop at native size can skip the
                     // intermediate: BuildPatch takes surfW/surfH from the
                     // bitmap it encodes, so any crop has to go through a
@@ -329,18 +342,21 @@ public class ScreenStreamer
                         srcRegion.X == 0 && srcRegion.Y == 0 &&
                         srcRegion.Width == vs.Width && srcRegion.Height == vs.Height &&
                         outW == vs.Width && outH == vs.Height;
-                    output = wholeDesktopNative
-                        ? null
-                        : new Bitmap(outW, outH, PixelFormat.Format32bppRgb);
-                    bool geometryChanged = outW != lastOutW || outH != lastOutH;
+                    bool wantNoOutput = wholeDesktopNative;
+                    if (sizeChanged || (output == null) != wantNoOutput)
+                    {
+                        output?.Dispose();
+                        output = wantNoOutput
+                            ? null
+                            : new Bitmap(outW, outH, PixelFormat.Format32bppRgb);
+                    }
+
                     lastRegion = srcRegion;
                     lastOutW = outW;
                     lastOutH = outH;
                     _activeWidth = outW;
-                    // A new region or size means the viewer canvas no longer
-                    // describes what we are sending: it can only resume from a
-                    // keyframe.
-                    forceKeyframe = true;
+
+                    bool geometryChanged = sizeChanged;
                     if (geometryChanged || regionMode != lastRegionMode)
                     {
                         lastRegionMode = regionMode;
@@ -426,6 +442,29 @@ public class ScreenStreamer
                     continue;
                 }
 
+                // ---- carry or repaint ------------------------------------------
+                // Measured against what the viewer actually holds, not against
+                // the last geometry we computed. A tick can be captured and
+                // then skipped, and the viewport can move twice before a patch
+                // goes out; both would leave strips computed from a region the
+                // viewer never received, which is silent corruption rather
+                // than a visible glitch.
+                bool geometryMoved = srcRegion != sentRegion || outW != sentOutW || outH != sentOutH;
+                bool canScroll = geometryMoved && regionMode && !sentRegion.IsEmpty
+                    && outW == sentOutW && outH == sentOutH
+                    && srcRegion.Size == sentRegion.Size
+                    && srcRegion.IntersectsWith(sentRegion);
+                if (canScroll)
+                {
+                    // Everything the move brought into view is new. Re-adding
+                    // these on a later tick is harmless: damage is a set.
+                    foreach (var strip in Expose(srcRegion, sentRegion)) damage.Add(strip);
+                }
+                else if (geometryMoved)
+                {
+                    forceKeyframe = true;
+                }
+
                 // ---- frame selection -------------------------------------------
                 bool keyframe = forceKeyframe || _keyframeRequested
                     || (deltaSinceKeyframe && now - lastKeyframeAt > KeyframeIntervalMs);
@@ -463,6 +502,10 @@ public class ScreenStreamer
 
                     if (changed > (long)srcRegion.Width * srcRegion.Height * KeyframeAreaFraction)
                     {
+                        // Too much of the region is new for a scroll to be
+                        // worth it; a keyframe is self-sufficient anyway.
+                        // Too much of the region is new for a scroll to be
+                        // worth it; a keyframe is self-sufficient anyway.
                         keyframe = true;
                         rects = new List<Rectangle> { srcRegion };
                     }
@@ -483,8 +526,9 @@ public class ScreenStreamer
                 // Seq increments per built patch; the lane can still drop one
                 // under extreme pressure, and the resulting gap is what tells
                 // the viewer to ask for a keyframe.
+                bool scrollThisFrame = canScroll && !keyframe;
                 var payload = BuildPatch(sendSurface, rects, keyframe, encParams!,
-                    regionMode ? srcRegion : null);
+                    regionMode ? srcRegion : null, scrollThisFrame);
                 if (!_ws.SendBinary(Crypto.ChPatch, payload))
                 {
                     // Socket is gone. Keep the damage: it is still owed to the
@@ -494,6 +538,9 @@ public class ScreenStreamer
                     continue;
                 }
 
+                sentRegion = srcRegion;
+                sentOutW = outW;
+                sentOutH = outH;
                 damage.Clear();
                 clearStreak++;
                 skipStreak = 0;
@@ -652,6 +699,45 @@ public class ScreenStreamer
     }
 
     /// <summary>
+    /// Snap a crop to a grid of <paramref name="k"/> desktop pixels — one
+    /// output pixel — so the output is an exact integer division of the crop
+    /// and any move between two snapped crops is a whole number of output
+    /// pixels. Clamping at the desktop edge can leave a partial cell, which is
+    /// dropped rather than allowed to break that division.
+    /// </summary>
+    private static Rectangle SnapToGrid(Rectangle r, int k, int deskW, int deskH)
+    {
+        if (k <= 1) return r;
+        int x = r.X / k * k;
+        int y = r.Y / k * k;
+        int right = Math.Min(deskW, (r.Right + k - 1) / k * k);
+        int bottom = Math.Min(deskH, (r.Bottom + k - 1) / k * k);
+        int w = Math.Max(k, (right - x) / k * k);
+        int h = Math.Max(k, (bottom - y) / k * k);
+        w = Math.Min(w, deskW - x);
+        h = Math.Min(h, deskH - y);
+        return new Rectangle(x, y, w, h);
+    }
+
+    /// <summary>The parts of <paramref name="now"/> that <paramref name="before"/>
+    /// did not cover — up to four strips around the overlap.</summary>
+    private static List<Rectangle> Expose(Rectangle now, Rectangle before)
+    {
+        var strips = new List<Rectangle>(4);
+        var overlap = Rectangle.Intersect(now, before);
+        if (overlap.IsEmpty) { strips.Add(now); return strips; }
+        if (overlap.Top > now.Top)
+            strips.Add(Rectangle.FromLTRB(now.Left, now.Top, now.Right, overlap.Top));
+        if (overlap.Bottom < now.Bottom)
+            strips.Add(Rectangle.FromLTRB(now.Left, overlap.Bottom, now.Right, now.Bottom));
+        if (overlap.Left > now.Left)
+            strips.Add(Rectangle.FromLTRB(now.Left, overlap.Top, overlap.Left, overlap.Bottom));
+        if (overlap.Right < now.Right)
+            strips.Add(Rectangle.FromLTRB(overlap.Right, overlap.Top, now.Right, overlap.Bottom));
+        return strips;
+    }
+
+    /// <summary>
     /// Crop and scale: re-render the changed regions (slightly inflated so
     /// bilinear edges stay seamless) from the native surface into the output
     /// frame, mapping desktop coordinates to output coordinates through
@@ -685,7 +771,7 @@ public class ScreenStreamer
 
     /// <summary>
     /// Patch payload (before encryption):
-    /// [seq u32][flags u8: bit0 keyframe, bit1 region][surfW u16][surfH u16][rectCount u16]
+    /// [seq u32][flags u8: bit0 keyframe, bit1 region, bit2 scrolled][surfW u16][surfH u16][rectCount u16]
     /// then, when bit 1 is set, [regionX u16][regionY u16][regionW u16][regionH u16]
     /// giving the desktop rect this frame covers; then per rect:
     /// [x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes].
@@ -696,14 +782,14 @@ public class ScreenStreamer
     /// it already parses.
     /// </summary>
     private byte[] BuildPatch(Bitmap surface, List<Rectangle> rects, bool keyframe,
-        EncoderParameters encParams, Rectangle? region)
+        EncoderParameters encParams, Rectangle? region, bool scrolled)
     {
         using var ms = new MemoryStream();
         void W16(int v) { ms.WriteByte((byte)(v >> 8)); ms.WriteByte((byte)v); }
         void W32(uint v) { ms.WriteByte((byte)(v >> 24)); ms.WriteByte((byte)(v >> 16)); ms.WriteByte((byte)(v >> 8)); ms.WriteByte((byte)v); }
 
         W32(_seq++);
-        ms.WriteByte((byte)((keyframe ? 1 : 0) | (region.HasValue ? 2 : 0)));
+        ms.WriteByte((byte)((keyframe ? 1 : 0) | (region.HasValue ? 2 : 0) | (scrolled ? 4 : 0)));
         W16(surface.Width);
         W16(surface.Height);
         W16(rects.Count);

@@ -127,12 +127,50 @@ class ViewerActivity : AppCompatActivity() {
                 Rect(0, 0, w, h) // whole desktop, image pixels are desktop pixels
             }
 
+            // Bit 2: the host moved the crop and expects the overlapping
+            // pixels to be carried across, so only the newly exposed edge is
+            // in this patch. Without it a pan costs a full repaint.
+            val scrolled = (flags and 4) != 0
+
             var bmp = compose
             var retired: Bitmap? = null
-            // A new region invalidates the canvas even at the same size: the
-            // pixels now mean somewhere else.
-            if (region != composeRegion) {
-                haveKeyframe = false
+            val prevRegion = composeRegion
+            if (region != prevRegion) {
+                if (scrolled && haveKeyframe && prevRegion != null && bmp != null &&
+                    bmp.width == w && bmp.height == h && canCarry(prevRegion, region, w, h)
+                ) {
+                    val kx = region.width() / w
+                    val ky = region.height() / h
+                    val overlap = Rect(prevRegion)
+                    overlap.intersect(region)
+                    val moved = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    val movedCanvas = android.graphics.Canvas(moved)
+                    movedCanvas.drawBitmap(
+                        bmp,
+                        Rect(
+                            (overlap.left - prevRegion.left) / kx, (overlap.top - prevRegion.top) / ky,
+                            (overlap.right - prevRegion.left) / kx, (overlap.bottom - prevRegion.top) / ky,
+                        ),
+                        Rect(
+                            (overlap.left - region.left) / kx, (overlap.top - region.top) / ky,
+                            (overlap.right - region.left) / kx, (overlap.bottom - region.top) / ky,
+                        ),
+                        null,
+                    )
+                    retired = bmp
+                    bmp = moved
+                    compose = moved
+                    composeCanvas = movedCanvas
+                    // The canvas still describes the desktop correctly, so this
+                    // is not a gap and needs no keyframe.
+                } else if (!keyframe) {
+                    // A new region we cannot carry into: the pixels we hold now
+                    // mean somewhere else.
+                    requestKeyframe()
+                    return
+                } else {
+                    haveKeyframe = false
+                }
                 composeRegion = region
             }
             if (bmp == null || bmp.width != w || bmp.height != h) {
@@ -203,6 +241,23 @@ class ViewerActivity : AppCompatActivity() {
             streamStats.recordDecodeError()
             requestKeyframe()
         }
+    }
+
+    /**
+     * Whether the pixels held for [prev] can be shifted to describe [now].
+     * Requires the same crop size, an exact whole number of desktop pixels per
+     * image pixel, a move that lands on whole image pixels, and something left
+     * to carry. The host snaps its crop to that grid precisely so this holds
+     * for a pan; anything else falls back to a keyframe.
+     */
+    private fun canCarry(prev: Rect, now: Rect, w: Int, h: Int): Boolean {
+        if (w <= 0 || h <= 0) return false
+        if (prev.width() != now.width() || prev.height() != now.height()) return false
+        if (now.width() % w != 0 || now.height() % h != 0) return false
+        val kx = now.width() / w
+        val ky = now.height() / h
+        if ((now.left - prev.left) % kx != 0 || (now.top - prev.top) % ky != 0) return false
+        return Rect.intersects(prev, now)
     }
 
     private fun requestKeyframe() {

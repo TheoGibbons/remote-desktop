@@ -163,7 +163,7 @@ byte). After decryption the payload is:
 |------|-------------|-------------------|
 | `1`  | video frame | `JPEG bytes` — one full JPEG image of the streamed screen. (Still used by the Android host; the Windows host streams type `3`.) |
 | `2`  | file chunk  | `[xferId: uint32 BE][data bytes]` — sequential chunks (≤ 256 KiB) for the transfer announced by `fs-begin`. |
-| `3`  | screen patch | Dirty-rect update, all integers big-endian: `[seq u32][flags u8][surfW u16][surfH u16][rectCount u16]`, then — only when `flags` bit 1 is set — `[regionX u16][regionY u16][regionW u16][regionH u16]`, then `rectCount` × `[x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes]`. `flags` bit 0 = keyframe (a single rect covering the whole image); bit 1 = the image covers only the given desktop rect (see [Viewport streaming](#viewport-streaming)). |
+| `3`  | screen patch | Dirty-rect update, all integers big-endian: `[seq u32][flags u8][surfW u16][surfH u16][rectCount u16]`, then — only when `flags` bit 1 is set — `[regionX u16][regionY u16][regionW u16][regionH u16]`, then `rectCount` × `[x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes]`. `flags` bit 0 = keyframe (a single rect covering the whole image); bit 1 = the image covers only the given desktop rect; bit 2 = scrolled, i.e. the crop moved and the overlapping pixels are to be carried across rather than resent (see [Viewport streaming](#viewport-streaming)). |
 
 **Dirty-rect streaming (type 3).** The host compares each captured frame to the
 previous one on a 64 px block grid and sends only the changed regions as JPEG
@@ -225,6 +225,27 @@ Because the streamed image is no longer the whole desktop, a viewer must treat
 `desktopWidth`/`desktopHeight` from `screen-info` as its coordinate space —
 normalized input coordinates are relative to the desktop, not to the region it
 happens to be receiving.
+
+**Panning carries pixels rather than resending them.** When the crop moves but
+keeps its size and pixel density and still overlaps what the viewer holds, the
+host sets `flags` bit 2 and sends only the newly exposed strips. The viewer
+shifts its existing canvas by the difference and paints those strips into the
+gap. Without this a pan costs a full keyframe of the region every time it
+settles, which is what took the keyframe rate from ~4% to ~27%.
+
+For the shift to be exact, the host quantizes: it picks an integer number of
+desktop pixels per output pixel and snaps the crop to that grid, so any move
+between two crops is a whole number of output pixels and nothing drifts.
+Integer-factor downscaling is also cleaner than an arbitrary bilinear ratio.
+A viewer must verify the arithmetic before trusting it — same crop size, exact
+integer ratio, whole-pixel move, non-empty overlap, and a canvas that was valid
+to begin with — and ask for a keyframe if any of that fails.
+
+The scroll is decided against the geometry the viewer last *received*, not the
+last one computed: a tick can be captured and then skipped for congestion, and
+the viewport can move twice before a patch goes out. Measuring against computed
+geometry would send strips relative to a crop the viewer never had, which is
+silent corruption rather than a visible glitch.
 
 The host also skips capturing outputs the streamed region does not touch. On
 the DXGI path that saves a full-resolution GPU copy per monitor per frame, so

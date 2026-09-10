@@ -244,6 +244,10 @@ class RemoteScreenView @JvmOverloads constructor(
 
     private val viewportReporter = Runnable { emitViewport() }
 
+    // Zoom at the moment of the last request, so a pinch re-asks (the pixel
+    // density it was sized for no longer applies) while a pan does not.
+    private var lastRequestScale = 0f
+
     private fun reportViewport() {
         if (onViewportChanged == null) return
         removeCallbacks(viewportReporter)
@@ -256,10 +260,23 @@ class RemoteScreenView @JvmOverloads constructor(
         val inv = Matrix()
         if (!matrix.invert(inv)) return
 
-        val r = RectF(0f, 0f, width.toFloat(), visibleHeight())
-        inv.mapRect(r)
-        // Ask for a margin around the visible area so a small pan is already
-        // covered and costs no round trip.
+        val scale = currentScale()
+        val visible = RectF(0f, 0f, width.toFloat(), visibleHeight())
+        inv.mapRect(visible)
+
+        // The margin exists so a short pan needs no round trip — so honour it:
+        // while what the user can see is still inside what the host is already
+        // sending, at the zoom we asked for, say nothing. Every request costs a
+        // keyframe, and re-asking on each settled pan is what pushed the
+        // keyframe rate from 4% to 27%.
+        val streamed = frameRect
+        if (lastRequestScale > 0f && streamed.width() > 0 && streamed.height() > 0 &&
+            abs(scale / lastRequestScale - 1f) < VIEWPORT_SCALE_TOLERANCE &&
+            streamed.left <= visible.left && streamed.top <= visible.top &&
+            streamed.right >= visible.right && streamed.bottom >= visible.bottom
+        ) return
+
+        val r = RectF(visible)
         r.inset(-r.width() * VIEWPORT_MARGIN, -r.height() * VIEWPORT_MARGIN)
         r.left = r.left.coerceIn(0f, deskW.toFloat())
         r.top = r.top.coerceIn(0f, deskH.toFloat())
@@ -268,7 +285,6 @@ class RemoteScreenView @JvmOverloads constructor(
         if (r.width() < 1f || r.height() < 1f) return
 
         // One image pixel per screen pixel is the most this display can use.
-        val scale = currentScale()
         val outW = (r.width() * scale).toInt().coerceIn(16, r.width().toInt().coerceAtLeast(16))
         val outH = (r.height() * scale).toInt().coerceIn(16, r.height().toInt().coerceAtLeast(16))
         cb(
@@ -276,6 +292,7 @@ class RemoteScreenView @JvmOverloads constructor(
             r.width() / deskW.toDouble(), r.height() / deskH.toDouble(),
             outW, outH,
         )
+        lastRequestScale = scale
     }
 
     private fun currentScale(): Float {
@@ -555,6 +572,7 @@ class RemoteScreenView @JvmOverloads constructor(
         // need no round trip, and a settle delay so a gesture reports once.
         const val VIEWPORT_MARGIN = 0.15f
         const val VIEWPORT_SETTLE_MS = 150L
+        const val VIEWPORT_SCALE_TOLERANCE = 0.15f
         const val TAP_MS = 300L
         const val HOLD_MS = 320L
         const val WHEEL_PX_PER_NOTCH = 90.0
