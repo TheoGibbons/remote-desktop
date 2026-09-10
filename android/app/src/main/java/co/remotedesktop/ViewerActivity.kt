@@ -88,6 +88,13 @@ class ViewerActivity : AppCompatActivity() {
     // timestamp. A decoder hands frames back later than they went in, and the
     // region has to travel with the frame rather than with the call.
     private val pendingRegions = LinkedHashMap<Long, Rect>()
+    // Handed to the surface but not yet shown. The TextureView latches frames
+    // on its own schedule, so the placement has to wait for the latch: setting
+    // it when the decoder returns draws the *previous* frame at the new
+    // position until the new one appears.
+    @Volatile private var latchedFrameW = 0
+    @Volatile private var latchedFrameH = 0
+    @Volatile private var latchedRegion: Rect? = null
     private var hostCodec: String? = null
 
     private val binaryListener: (ByteArray) -> Unit = { data ->
@@ -162,10 +169,13 @@ class ViewerActivity : AppCompatActivity() {
             val renderedPts = dec.decode(au, videoPtsUs, keyframe)
             if (renderedPts >= 0) {
                 // Place the frame that actually reached the surface, not the
-                // one just queued.
+                // one just queued — and only once the surface shows it, which
+                // is onSurfaceTextureUpdated below.
                 val shown = pendingRegions[renderedPts] ?: region
                 pendingRegions.keys.filter { it <= renderedPts }.forEach { pendingRegions.remove(it) }
-                runOnUiThread { screen.setVideoFrame(w, h, shown) }
+                latchedFrameW = w
+                latchedFrameH = h
+                latchedRegion = shown
             }
 
             streamStats.recordFrame(
@@ -354,6 +364,7 @@ class ViewerActivity : AppCompatActivity() {
         val dec = decoder ?: return
         decoder = null
         pendingRegions.clear()
+        latchedRegion = null
         dec.release()
         runOnUiThread { screen.clearVideo() }
     }
@@ -439,7 +450,12 @@ class ViewerActivity : AppCompatActivity() {
                 return true
             }
 
-            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
+                // The surface is now showing the frame the decoder handed it,
+                // so this is the moment its placement becomes true.
+                val region = latchedRegion ?: return
+                screen.setVideoFrame(latchedFrameW, latchedFrameH, region)
+            }
         }
         root.addView(videoView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
