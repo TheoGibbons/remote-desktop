@@ -114,7 +114,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `start-view`  | `to`   | Ask peer to start streaming its screen to me. |
 | `stop-view`   | `to`   | Stop streaming. |
 | `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. Sent when streaming starts and whenever the geometry changes. |
-| `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH` | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. See [Viewport streaming](#viewport-streaming). |
+| `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH`, `h264`? | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. `h264: true` additionally advertises that the viewer can decode binary frame type `4`. See [Viewport streaming](#viewport-streaming). |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
 | `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. |
 | `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | RTT response plus the desktop sender's queued binary backlog. The three stream fields report what the host has **adapted to**, not what the user configured, so they move during a session. |
@@ -163,6 +163,7 @@ byte). After decryption the payload is:
 |------|-------------|-------------------|
 | `1`  | video frame | `JPEG bytes` — one full JPEG image of the streamed screen. (Still used by the Android host; the Windows host streams type `3`.) |
 | `2`  | file chunk  | `[xferId: uint32 BE][data bytes]` — sequential chunks (≤ 256 KiB) for the transfer announced by `fs-begin`. |
+| `4`  | H.264 frame | `[seq u32][flags u8: bit0 keyframe][surfW u16][surfH u16][regionX u16][regionY u16][regionW u16][regionH u16]` followed by one Annex B access unit. The region is always present: this path runs only in region mode. See [Hardware video](#hardware-video). |
 | `3`  | screen patch | Dirty-rect update, all integers big-endian: `[seq u32][flags u8][surfW u16][surfH u16][rectCount u16]`, then — only when `flags` bit 1 is set — `[regionX u16][regionY u16][regionW u16][regionH u16]`, then `rectCount` × `[x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes]`. `flags` bit 0 = keyframe (a single rect covering the whole image); bit 1 = the image covers only the given desktop rect; bit 2 = scrolled, i.e. the crop moved and the overlapping pixels are to be carried across rather than resent (see [Viewport streaming](#viewport-streaming)). |
 
 **Dirty-rect streaming (type 3).** The host compares each captured frame to the
@@ -253,6 +254,37 @@ viewing one monitor of a two-monitor desktop costs about half what it used to.
 An output that comes back into view is repainted in full, since the dirty
 metadata accumulated while it was ignored no longer describes the gap — the
 region change that brought it back forces a keyframe anyway.
+
+## Hardware video
+
+JPEG tiles re-encode every changed pixel from scratch. A window playing video
+is one large rectangle changing every frame, which is the worst case for that
+and the best case for inter-frame prediction, so the host can instead stream
+H.264 (binary frame type `4`) through whatever encoder the GPU registers.
+
+Like region mode this is negotiated and all-or-nothing: the host uses it only
+while **every** viewer has set `h264: true` on its `view-region`, because one
+stream is broadcast to the session. It also rides on region mode, since the
+encoder needs a fixed frame size and a well-defined crop, and a whole
+7680-wide desktop is past what most hardware encoders accept at all.
+
+Three consequences worth knowing:
+
+- **A pan needs no keyframe.** The encoder sees a shifted picture and codes it
+  as motion, which is what it is good at. The scroll flag on type `3` exists
+  because JPEG tiles have no such mechanism; it is not used here.
+- **A zoom does.** Encoders will not take a mid-stream resolution change, so
+  the host disposes and recreates the encoder, and the new one must lead with
+  an IDR.
+- **Frame dimensions are even**, and the crop is trimmed to match rather than
+  the frame alone — 4:2:0 chroma is sampled in 2x2 blocks, and trimming only
+  the frame would leave the region no longer describing the pixels in it.
+
+A viewer must be able to start from any frame with `flags` bit 0, which the
+host sets when the access unit carries SPS or an IDR slice. The host asks its
+encoder for one on demand, but not every encoder honours that, so it also
+configures a GOP of about two seconds to bound how long a viewer that joined
+late or lost a frame stays broken.
 
 ## Queueing and priority
 

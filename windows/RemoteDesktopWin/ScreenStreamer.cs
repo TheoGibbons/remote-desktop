@@ -40,6 +40,8 @@ public class ScreenStreamer
     // beats many tiles, and it resets staleness for free.
     private const double KeyframeAreaFraction = 0.5;
     private const int MaxRects = 64;
+    // Most hardware H.264 encoders top out at 4096 in either direction.
+    private const int MaxEncodedDimension = 4096;
 
     /// <summary>
     /// Output scale and JPEG quality by congestion level. Resolution goes
@@ -96,6 +98,8 @@ public class ScreenStreamer
     public int ActiveFps => Math.Max(1, Fps / Math.Max(1, _fpsDivider));
     public int ActiveQuality => _activeQuality;
     public int ActiveWidth => _activeWidth;
+    /// <summary>"h264" or "jpeg" — which path the stream is actually on.</summary>
+    public string ActiveCodec => _activeCodec;
 
     public event Action<bool>? StreamingChanged;
 
@@ -108,6 +112,7 @@ public class ScreenStreamer
     private volatile int _activeQuality = 80;
     private volatile int _activeWidth;
     private volatile int _fpsDivider = 1;
+    private volatile string _activeCodec = "jpeg";
 
     public ScreenStreamer(WsClient ws)
     {
@@ -189,6 +194,8 @@ public class ScreenStreamer
         // The geometry the viewer actually holds, advanced only on a send.
         Rectangle sentRegion = Rectangle.Empty;
         int sentOutW = -1, sentOutH = -1;
+        H264Encoder? encoder = null;
+        int encoderW = 0, encoderH = 0;
         bool lastRegionMode = false;
         var dirty = new List<Rectangle>();
         var damage = new DamageMap();
@@ -313,6 +320,11 @@ public class ScreenStreamer
                 bool regionMode = Regions.TryResolve(vs.Width, vs.Height,
                     out var srcRegion, out int reqOutW, out int reqOutH);
 
+                // H.264 needs a well-defined crop and a fixed frame size, so it
+                // rides on region mode only. A whole 7680-wide desktop is past
+                // what most hardware encoders will take anyway.
+                bool wantH264 = regionMode && Regions.AllSupportH264;
+
                 double userScale = MaxWidth > 0 && reqOutW > MaxWidth ? (double)MaxWidth / reqOutW : 1.0;
                 double scale = Math.Min(userScale, Ladder[level].Scale);
                 // Never encode more pixels than the source region holds: past
@@ -330,6 +342,22 @@ public class ScreenStreamer
                 int outW = Math.Max(1, srcRegion.Width / k);
                 int outH = Math.Max(1, srcRegion.Height / k);
 
+                if (wantH264)
+                {
+                    // 4:2:0 chroma is sampled in 2x2 blocks, so an odd edge has
+                    // no meaning. Trim the crop with it rather than the frame
+                    // alone, or the region would stop describing the pixels.
+                    int evenW = Math.Max(2, outW & ~1);
+                    int evenH = Math.Max(2, outH & ~1);
+                    if (evenW != outW || evenH != outH)
+                    {
+                        outW = evenW;
+                        outH = evenH;
+                        srcRegion = new Rectangle(srcRegion.X, srcRegion.Y, outW * k, outH * k);
+                    }
+                    if (outW > MaxEncodedDimension || outH > MaxEncodedDimension) wantH264 = false;
+                }
+
                 if (srcRegion != lastRegion || outW != lastOutW || outH != lastOutH)
                 {
                     bool sizeChanged = outW != lastOutW || outH != lastOutH;
@@ -342,7 +370,7 @@ public class ScreenStreamer
                         srcRegion.X == 0 && srcRegion.Y == 0 &&
                         srcRegion.Width == vs.Width && srcRegion.Height == vs.Height &&
                         outW == vs.Width && outH == vs.Height;
-                    bool wantNoOutput = wholeDesktopNative;
+                    bool wantNoOutput = wholeDesktopNative && !wantH264;
                     if (sizeChanged || (output == null) != wantNoOutput)
                     {
                         output?.Dispose();
@@ -438,6 +466,106 @@ public class ScreenStreamer
                 {
                     skipStreak++;
                     clearStreak = 0;
+                    await PaceAsync(frameStart, ct);
+                    continue;
+                }
+
+                // ---- codec ------------------------------------------------------
+                if (wantH264 && (encoder == null || encoderW != outW || encoderH != outH))
+                {
+                    encoder?.Dispose();
+                    // Roughly a tenth of a bit per pixel per frame, which is
+                    // generous for desktop content and still a fraction of what
+                    // the same region costs as fresh JPEG every frame.
+                    int bitrate = (int)Math.Clamp((long)outW * outH * ActiveFps / 10, 800_000, 12_000_000);
+                    encoder = H264Encoder.TryCreate(outW, outH, bitrate, ActiveFps);
+                    encoderW = outW;
+                    encoderH = outH;
+                    // A new encoder has no reference frame; it must lead with an IDR.
+                    forceKeyframe = true;
+                }
+                else if (!wantH264 && encoder != null)
+                {
+                    encoder.Dispose();
+                    encoder = null;
+                }
+                bool h264 = wantH264 && encoder != null && output != null;
+                _activeCodec = h264 ? "h264" : "jpeg";
+
+                if (h264)
+                {
+                    bool moved = srcRegion != sentRegion || outW != sentOutW || outH != sentOutH;
+                    // The crop buffer persists between frames, so normally only
+                    // the damaged parts need re-rendering into it. A move
+                    // invalidates all of it.
+                    List<Rectangle> renderRects;
+                    if (moved || forceKeyframe)
+                    {
+                        renderRects = new List<Rectangle> { srcRegion };
+                    }
+                    else
+                    {
+                        renderRects = new List<Rectangle>();
+                        foreach (var r in damage.ToRects(MaxRects))
+                        {
+                            var c = r;
+                            c.Intersect(srcRegion);
+                            if (c.Width > 0 && c.Height > 0) renderRects.Add(c);
+                        }
+                        if (renderRects.Count == 0)
+                        {
+                            // An encoder would happily emit a tiny inter frame
+                            // for an unchanged screen; sending nothing is cheaper.
+                            await PaceAsync(frameStart, ct);
+                            continue;
+                        }
+                    }
+
+                    RenderRegion(surface, output!, renderRects, srcRegion);
+
+                    byte[]? au;
+                    try { au = encoder!.Encode(output!, forceKeyframe || _keyframeRequested); }
+                    catch
+                    {
+                        // Lost the encoder (device reset, driver update): drop
+                        // back to tiles this tick and rebuild it on the next.
+                        encoder!.Dispose();
+                        encoder = null;
+                        await PaceAsync(frameStart, ct);
+                        continue;
+                    }
+                    if (au == null)
+                    {
+                        // Taken, but nothing to emit yet.
+                        await PaceAsync(frameStart, ct);
+                        continue;
+                    }
+
+                    bool isKey = ContainsIdr(au);
+                    if (!_ws.SendBinary(Crypto.ChH264, BuildH264Frame(isKey, outW, outH, srcRegion, au)))
+                    {
+                        forceKeyframe = true;
+                        await PaceAsync(frameStart, ct);
+                        continue;
+                    }
+
+                    damage.Clear();
+                    sentRegion = srcRegion;
+                    sentOutW = outW;
+                    sentOutH = outH;
+                    clearStreak++;
+                    skipStreak = 0;
+                    if (isKey)
+                    {
+                        lastKeyframeAt = now;
+                        deltaSinceKeyframe = false;
+                        _keyframeRequested = false;
+                        forceKeyframe = false;
+                    }
+                    else
+                    {
+                        deltaSinceKeyframe = true;
+                    }
                     await PaceAsync(frameStart, ct);
                     continue;
                 }
@@ -563,6 +691,7 @@ public class ScreenStreamer
         finally
         {
             encParams?.Dispose();
+            encoder?.Dispose();
             source?.Dispose();
             surface?.Dispose();
             output?.Dispose();
@@ -696,6 +825,39 @@ public class ScreenStreamer
                 if (!bits[rowBase + c] || consumed[rowBase + c]) return false;
             return true;
         }
+    }
+
+    /// <summary>Does this access unit carry a recovery point? SPS or an IDR
+    /// slice means a viewer can start (or resume) decoding here.</summary>
+    private static bool ContainsIdr(byte[] au)
+    {
+        for (int i = 0; i + 3 < au.Length; i++)
+        {
+            if (au[i] != 0 || au[i + 1] != 0 || au[i + 2] != 1) continue;
+            int type = au[i + 3] & 0x1F;
+            if (type == 5 || type == 7) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// H.264 frame payload (before encryption):
+    /// [seq u32][flags u8: bit0 keyframe][surfW u16][surfH u16]
+    /// [regionX u16][regionY u16][regionW u16][regionH u16][Annex B bytes].
+    /// The region is always present: this path only runs in region mode.
+    /// </summary>
+    private byte[] BuildH264Frame(bool keyframe, int outW, int outH, Rectangle region, byte[] au)
+    {
+        using var ms = new MemoryStream(au.Length + 19);
+        void W16(int v) { ms.WriteByte((byte)(v >> 8)); ms.WriteByte((byte)v); }
+        void W32(uint v) { ms.WriteByte((byte)(v >> 24)); ms.WriteByte((byte)(v >> 16)); ms.WriteByte((byte)(v >> 8)); ms.WriteByte((byte)v); }
+
+        W32(_seq++);
+        ms.WriteByte((byte)(keyframe ? 1 : 0));
+        W16(outW); W16(outH);
+        W16(region.X); W16(region.Y); W16(region.Width); W16(region.Height);
+        ms.Write(au, 0, au.Length);
+        return ms.ToArray();
     }
 
     /// <summary>

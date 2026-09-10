@@ -479,6 +479,7 @@ public partial class MainWindow : Window
                         ["targetFps"] = _streamer.ActiveFps,
                         ["jpegQuality"] = _streamer.ActiveQuality,
                         ["maxWidth"] = _streamer.ActiveWidth,
+                        ["codec"] = _streamer.ActiveCodec,
                         ["to"] = from,
                     });
                 }
@@ -506,6 +507,7 @@ public partial class MainWindow : Window
                         msg["h"]?.GetValue<double>() ?? 1,
                         msg["outW"]?.GetValue<int>() ?? 0,
                         msg["outH"]?.GetValue<int>() ?? 0));
+                    _streamer.Regions.SetH264(from, msg["h264"]?.GetValue<bool>() ?? false);
                 }
                 break;
 

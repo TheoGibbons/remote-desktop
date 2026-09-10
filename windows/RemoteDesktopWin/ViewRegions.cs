@@ -28,6 +28,29 @@ public sealed class ViewRegionTracker
 {
     private readonly object _lock = new();
     private readonly Dictionary<string, ViewRegion?> _viewers = new();
+    private readonly HashSet<string> _h264 = new();
+
+    /// <summary>
+    /// Every viewer can decode H.264. Like region mode this is all-or-nothing:
+    /// one stream is broadcast to the session, so a single viewer that cannot
+    /// decode it keeps everyone on JPEG tiles.
+    /// </summary>
+    public bool AllSupportH264
+    {
+        get
+        {
+            lock (_lock) return _viewers.Count > 0 && _viewers.Keys.All(_h264.Contains);
+        }
+    }
+
+    public void SetH264(string peerId, bool supported)
+    {
+        lock (_lock)
+        {
+            if (supported) _h264.Add(peerId);
+            else _h264.Remove(peerId);
+        }
+    }
 
     public void AddViewer(string peerId)
     {
@@ -39,12 +62,20 @@ public sealed class ViewRegionTracker
 
     public void RemoveViewer(string peerId)
     {
-        lock (_lock) _viewers.Remove(peerId);
+        lock (_lock)
+        {
+            _viewers.Remove(peerId);
+            _h264.Remove(peerId);
+        }
     }
 
     public void Clear()
     {
-        lock (_lock) _viewers.Clear();
+        lock (_lock)
+        {
+            _viewers.Clear();
+            _h264.Clear();
+        }
     }
 
     /// <summary>A viewer reported its viewport. Implies it is viewing.</summary>
