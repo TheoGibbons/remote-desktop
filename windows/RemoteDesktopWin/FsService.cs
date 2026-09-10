@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 
 namespace RemoteDesktopWin;
@@ -28,8 +29,38 @@ public class FsService
     // Straight into Downloads, not a subfolder of it: received files should
     // land where the user already looks for downloads. UniquePath below keeps
     // them from colliding with what is already there.
-    public string IncomingDir { get; set; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+    public string IncomingDir { get; set; } = DefaultDownloadsDir();
+
+    // FOLDERID_Downloads. There is no Environment.SpecialFolder for it, and
+    // assuming %USERPROFILE%\Downloads is wrong for anyone who has relocated
+    // the folder — files would land somewhere they never look.
+    private static readonly Guid FolderIdDownloads = new("374DE290-123F-4565-9164-39C4925E467B");
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHGetKnownFolderPath(in Guid rfid, uint dwFlags, IntPtr hToken, out IntPtr path);
+
+    private static string DefaultDownloadsDir()
+    {
+        try
+        {
+            if (SHGetKnownFolderPath(FolderIdDownloads, 0, IntPtr.Zero, out IntPtr path) == 0)
+            {
+                try
+                {
+                    var resolved = Marshal.PtrToStringUni(path);
+                    if (!string.IsNullOrWhiteSpace(resolved)) return resolved;
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(path);
+                }
+            }
+        }
+        catch { /* fall through to the profile-relative guess */ }
+
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+    }
 
     public event Action<string>? TransferStatus;
 

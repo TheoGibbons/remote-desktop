@@ -74,7 +74,8 @@ unapproved device is present in the session, streaming and file serving pause.
     long-press, mouse wheel = pinch zoom in/out; Back/Home/Recents buttons included.
 - **Browse files** → a file explorer to download from / upload to the selected
   device (a PC or a phone). Downloads are saved to
-  `%USERPROFILE%\Downloads`; uploads land in the peer's `Downloads` folder on
+  your Downloads folder — asked of Windows rather than assumed, so a relocated
+  Downloads is honoured; uploads land in the peer's `Downloads` folder on
   Windows or Android alike. A name that clashes with a file already there gets
   a counter appended — nothing is overwritten.
 - **QR code** (next to *Generate*) → shows the server URL + session key as a QR
