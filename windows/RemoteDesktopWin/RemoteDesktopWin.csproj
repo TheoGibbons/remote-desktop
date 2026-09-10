@@ -36,7 +36,8 @@
   <ItemGroup>
     <PackageReference Include="QRCoder" Version="1.6.0" />
     <!-- DXGI Desktop Duplication capture (ScreenStreamer/DxgiCaptureSource). -->
-    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
   </ItemGroup>
 
   <ItemGroup>
