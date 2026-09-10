@@ -67,9 +67,13 @@ class ViewerActivity : AppCompatActivity() {
     // Touched only on the network thread that delivers binary frames.
     private var compose: Bitmap? = null
     private var composeCanvas: android.graphics.Canvas? = null
+    private var composeRegion: Rect? = null
     private var lastSeq = -1L
     private var haveKeyframe = false
     @Volatile private var lastKeyframeRequestAt = 0L
+    // Last viewport reported to the host, so an unchanged one is not re-sent —
+    // every region change costs the host a keyframe.
+    private var lastSentRegion: String? = null
 
     private val binaryListener: (ByteArray) -> Unit = { data ->
         if (data.isNotEmpty()) when (data[0].toInt()) {
@@ -77,7 +81,7 @@ class ViewerActivity : AppCompatActivity() {
                 val started = SystemClock.elapsedRealtimeNanos()
                 val bmp = BitmapFactory.decodeByteArray(data, 1, data.size - 1)
                 if (bmp != null) {
-                    screen.setFrame(bmp)
+                    screen.setFrame(bmp, Rect(0, 0, bmp.width, bmp.height))
                     streamStats.recordFrame(
                         bytes = data.size,
                         rectCount = 1,
@@ -105,13 +109,32 @@ class ViewerActivity : AppCompatActivity() {
         try {
             val buf = java.nio.ByteBuffer.wrap(data, 1, data.size - 1)
             val seq = buf.int.toLong() and 0xFFFFFFFFL
-            val keyframe = (buf.get().toInt() and 1) != 0
+            val flags = buf.get().toInt()
+            val keyframe = (flags and 1) != 0
             val w = buf.short.toInt() and 0xFFFF
             val h = buf.short.toInt() and 0xFFFF
             val rectCount = buf.short.toInt() and 0xFFFF
 
+            // Bit 1: this frame covers only part of the desktop, and the header
+            // says which part. Only sent to viewers that asked for a region.
+            val region = if ((flags and 2) != 0) {
+                val rx = buf.short.toInt() and 0xFFFF
+                val ry = buf.short.toInt() and 0xFFFF
+                val rw = buf.short.toInt() and 0xFFFF
+                val rh = buf.short.toInt() and 0xFFFF
+                Rect(rx, ry, rx + rw, ry + rh)
+            } else {
+                Rect(0, 0, w, h) // whole desktop, image pixels are desktop pixels
+            }
+
             var bmp = compose
             var retired: Bitmap? = null
+            // A new region invalidates the canvas even at the same size: the
+            // pixels now mean somewhere else.
+            if (region != composeRegion) {
+                haveKeyframe = false
+                composeRegion = region
+            }
             if (bmp == null || bmp.width != w || bmp.height != h) {
                 if (!keyframe) { requestKeyframe(); return } // can't composite yet
                 // The host adapts its output resolution while streaming, so this
@@ -131,6 +154,10 @@ class ViewerActivity : AppCompatActivity() {
             lastSeq = seq
 
             val canvas = composeCanvas!!
+            // The view works in desktop coordinates, so map tile rects out of
+            // image space through the region this frame covers.
+            val toDeskX = region.width().toDouble() / w
+            val toDeskY = region.height().toDouble() / h
             val dirtyRects = ArrayList<Rect>(rectCount)
             var changedPixels = 0L
             repeat(rectCount) {
@@ -149,11 +176,16 @@ class ViewerActivity : AppCompatActivity() {
                 val right = (x + tileW).coerceAtMost(w)
                 val bottom = (y + tileH).coerceAtMost(h)
                 if (x < right && y < bottom) {
-                    dirtyRects.add(Rect(x, y, right, bottom))
+                    dirtyRects.add(Rect(
+                        region.left + (x * toDeskX).toInt(),
+                        region.top + (y * toDeskY).toInt(),
+                        region.left + Math.ceil(right * toDeskX).toInt(),
+                        region.top + Math.ceil(bottom * toDeskY).toInt(),
+                    ))
                     changedPixels += (right - x).toLong() * (bottom - y)
                 }
             }
-            screen.setFrame(bmp, dirtyRects)
+            screen.setFrame(bmp, region, dirtyRects)
             // setFrame has already swapped the view onto the new bitmap, and
             // recycling on the view's own thread cannot race a draw in progress.
             retired?.let { old -> screen.post { old.recycle() } }
@@ -195,6 +227,14 @@ class ViewerActivity : AppCompatActivity() {
                     winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)) }
                 "denied", "revoked", "disconnected" -> finish()
             }
+        }
+        if (msg.optString("type") == "screen-info" && msg.optString("from") == winId) {
+            // desktopWidth/Height are the coordinate space region patches and
+            // input are expressed in. Older hosts send only the streamed size,
+            // which for them is the whole desktop anyway.
+            val dw = msg.optInt("desktopWidth", msg.optInt("width", 0))
+            val dh = msg.optInt("desktopHeight", msg.optInt("height", 0))
+            if (dw > 0 && dh > 0) screen.setDesktopSize(dw, dh)
         }
         if (msg.optString("type") == "diagnostic-pong" && msg.optString("from") == winId &&
             msg.optLong("nonce", -1L) == pendingPingNonce
@@ -319,6 +359,17 @@ class ViewerActivity : AppCompatActivity() {
             send(JSONObject().put("type", "mouse").put("action", action).put("button", button).put("x", x).put("y", y))
         }
         screen.onWheel = { dx, dy -> send(JSONObject().put("type", "scroll").put("dx", dx).put("dy", dy)) }
+        screen.onViewportChanged = { x, y, w, h, outW, outH ->
+            // Round before comparing so sub-pixel drift from a settling gesture
+            // does not cost the host a keyframe for a region it is already on.
+            val key = "%.3f,%.3f,%.3f,%.3f,%d,%d".format(Locale.US, x, y, w, h, outW, outH)
+            if (key != lastSentRegion) {
+                lastSentRegion = key
+                send(JSONObject().put("type", "view-region")
+                    .put("x", x).put("y", y).put("w", w).put("h", h)
+                    .put("outW", outW).put("outH", outH))
+            }
+        }
     }
 
     private fun showGestureHelp() {

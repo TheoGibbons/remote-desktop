@@ -47,10 +47,14 @@ class RemoteScreenView @JvmOverloads constructor(
     var onWheel: ((Double, Double) -> Unit)? = null
 
     private var bitmap: Bitmap? = null
-    private var imgW = 0
-    private var imgH = 0
+    // Which desktop rectangle `bitmap` covers. Replaced wholesale rather than
+    // mutated: it is written on the network thread and read while drawing.
+    @Volatile private var frameRect: Rect = Rect()
+    private var deskW = 0
+    private var deskH = 0
 
     private val matrix = Matrix()
+    private val drawMatrix = Matrix()
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private var fitScale = 1f
     private var matrixInitialized = false
@@ -78,37 +82,58 @@ class RemoteScreenView @JvmOverloads constructor(
 
     // ---------------- frame / viewport ----------------
 
-    fun setFrame(bmp: Bitmap, dirtyRects: List<Rect>? = null) {
-        val prevW = imgW
-        val prevH = imgH
-        val sizeChanged = bmp.width != prevW || bmp.height != prevH
-        bitmap = bmp
-        imgW = bmp.width
-        imgH = bmp.height
+    /**
+     * The desktop size everything here is measured in. The view works in
+     * desktop pixels rather than image pixels, so the host changing its output
+     * resolution — or cropping to a viewport — moves no furniture: only the
+     * transform from the incoming frame onto the desktop changes.
+     */
+    fun setDesktopSize(w: Int, h: Int) {
+        if (w <= 0 || h <= 0 || (w == deskW && h == deskH)) return
+        val prevW = deskW
+        val prevH = deskH
+        deskW = w
+        deskH = h
         if (cursorX < 0) {
-            cursorX = imgW / 2f
-            cursorY = imgH / 2f
+            cursorX = deskW / 2f
+            cursorY = deskH / 2f
         }
-        if (sizeChanged || !matrixInitialized) {
-            // The host rescales its output mid-stream to fit the link, so a size
-            // change is normally the same desktop at a new pixel size — not a
-            // new desktop. Fitting to the window there would throw away the pan
-            // and zoom at unpredictable moments, which reads as the view
-            // randomly jumping out. Remap instead, and keep the fit-to-window
-            // reset for a genuine layout change (a monitor came or went).
-            val rescaledOnly = matrixInitialized && prevW > 0 && prevH > 0 &&
-                sameAspect(prevW, prevH, imgW, imgH)
+        // A genuine desktop change. Same shape means a resolution change we can
+        // carry the pan and zoom across; a different shape means a monitor came
+        // or went, and fitting to the window is the honest answer.
+        val rescaledOnly = matrixInitialized && prevW > 0 && prevH > 0 &&
+            sameAspect(prevW, prevH, w, h)
+        post {
+            if (rescaledOnly) remapAfterRescale(prevW, prevH) else resetToFit()
+        }
+    }
+
+    /**
+     * A decoded frame and the desktop rectangle it covers — the whole desktop
+     * in legacy mode, or just the streamed viewport. [dirtyRects] are in
+     * desktop coordinates, like everything else the view draws.
+     */
+    fun setFrame(bmp: Bitmap, srcRect: Rect, dirtyRects: List<Rect>? = null) {
+        bitmap = bmp
+        frameRect = Rect(srcRect)
+        // No screen-info yet: the first frame defines the desktop.
+        if (deskW == 0 || deskH == 0) setDesktopSize(srcRect.right, srcRect.bottom)
+        if (cursorX < 0) {
+            cursorX = deskW / 2f
+            cursorY = deskH / 2f
+        }
+        if (!matrixInitialized) {
             post {
-                if (rescaledOnly) remapAfterRescale(prevW, prevH) else resetToFit()
+                resetToFit()
                 dirtyRects?.let {
                     addDirtyHighlights(it)
                     invalidateImageRegions(it)
                 }
             }
         } else if (dirtyRects != null) {
-            // Preserve image-space damage for Android 8's partial invalidation
-            // and for the optional debug overlay. Newer Android versions may
-            // promote partial damage to a whole-View redraw internally.
+            // Preserve desktop-space damage for Android 8's partial
+            // invalidation and for the optional debug overlay. Newer Android
+            // versions may promote partial damage to a whole-View redraw.
             post {
                 addDirtyHighlights(dirtyRects)
                 invalidateImageRegions(dirtyRects)
@@ -126,6 +151,7 @@ class RemoteScreenView @JvmOverloads constructor(
         if (matrixInitialized) {
             clampTranslation()
             keepPointerVisible()
+            reportViewport()
         }
         invalidate()
     }
@@ -146,16 +172,17 @@ class RemoteScreenView @JvmOverloads constructor(
     }
 
     private fun resetToFit() {
-        if (imgW == 0 || imgH == 0 || width == 0 || height == 0) return
-        fitScale = min(width.toFloat() / imgW, height.toFloat() / imgH)
+        if (deskW == 0 || deskH == 0 || width == 0 || height == 0) return
+        fitScale = min(width.toFloat() / deskW, height.toFloat() / deskH)
         matrix.reset()
-        val dx = (width - imgW * fitScale) / 2f
-        val dy = (height - imgH * fitScale) / 2f
+        val dx = (width - deskW * fitScale) / 2f
+        val dy = (height - deskH * fitScale) / 2f
         matrix.postScale(fitScale, fitScale)
         matrix.postTranslate(dx, dy)
         matrixInitialized = true
         clampTranslation()
         keepPointerVisible()
+        reportViewport()
         invalidate()
     }
 
@@ -174,19 +201,20 @@ class RemoteScreenView @JvmOverloads constructor(
      * under the same part of the screen, at the same apparent magnification.
      */
     private fun remapAfterRescale(prevW: Int, prevH: Int) {
-        if (imgW == 0 || imgH == 0 || prevW == 0 || prevH == 0) return
+        if (deskW == 0 || deskH == 0 || prevW == 0 || prevH == 0) return
         if (width == 0 || height == 0) return
-        matrix.preScale(prevW.toFloat() / imgW, prevH.toFloat() / imgH)
+        matrix.preScale(prevW.toFloat() / deskW, prevH.toFloat() / deskH)
         // fitScale is the zoom floor and scales the same way, so the zoom level
         // relative to it — and the pinch clamp built on it — is preserved.
-        fitScale = min(width.toFloat() / imgW, height.toFloat() / imgH)
+        fitScale = min(width.toFloat() / deskW, height.toFloat() / deskH)
         if (cursorX >= 0) {
             // The pointer is tracked in image pixels, so it moves with the surface.
-            cursorX = (cursorX * imgW / prevW).coerceIn(0f, imgW.toFloat())
-            cursorY = (cursorY * imgH / prevH).coerceIn(0f, imgH.toFloat())
+            cursorX = (cursorX * deskW / prevW).coerceIn(0f, deskW.toFloat())
+            cursorY = (cursorY * deskH / prevH).coerceIn(0f, deskH.toFloat())
         }
         clampTranslation()
         keepPointerVisible()
+        reportViewport()
         invalidate()
     }
 
@@ -194,6 +222,52 @@ class RemoteScreenView @JvmOverloads constructor(
         super.onSizeChanged(w, h, oldw, oldh)
         matrixInitialized = false
         resetToFit()
+    }
+
+    /**
+     * The desktop region the user can currently see, normalized 0..1, plus the
+     * pixel size worth sending it at. The host streams this instead of the
+     * whole desktop: a phone showing a 7680x2160 desktop displays about 1080
+     * columns of it, so most of what it would otherwise encode can never be
+     * seen. Fired on a short delay so a pan or pinch reports once it settles,
+     * not on every touch move.
+     */
+    var onViewportChanged: ((x: Double, y: Double, w: Double, h: Double, outW: Int, outH: Int) -> Unit)? = null
+
+    private val viewportReporter = Runnable { emitViewport() }
+
+    private fun reportViewport() {
+        if (onViewportChanged == null) return
+        removeCallbacks(viewportReporter)
+        postDelayed(viewportReporter, VIEWPORT_SETTLE_MS)
+    }
+
+    private fun emitViewport() {
+        val cb = onViewportChanged ?: return
+        if (!matrixInitialized || deskW == 0 || deskH == 0 || width == 0 || height == 0) return
+        val inv = Matrix()
+        if (!matrix.invert(inv)) return
+
+        val r = RectF(0f, 0f, width.toFloat(), visibleHeight())
+        inv.mapRect(r)
+        // Ask for a margin around the visible area so a small pan is already
+        // covered and costs no round trip.
+        r.inset(-r.width() * VIEWPORT_MARGIN, -r.height() * VIEWPORT_MARGIN)
+        r.left = r.left.coerceIn(0f, deskW.toFloat())
+        r.top = r.top.coerceIn(0f, deskH.toFloat())
+        r.right = r.right.coerceIn(r.left, deskW.toFloat())
+        r.bottom = r.bottom.coerceIn(r.top, deskH.toFloat())
+        if (r.width() < 1f || r.height() < 1f) return
+
+        // One image pixel per screen pixel is the most this display can use.
+        val scale = currentScale()
+        val outW = (r.width() * scale).toInt().coerceIn(16, r.width().toInt().coerceAtLeast(16))
+        val outH = (r.height() * scale).toInt().coerceIn(16, r.height().toInt().coerceAtLeast(16))
+        cb(
+            r.left / deskW.toDouble(), r.top / deskH.toDouble(),
+            r.width() / deskW.toDouble(), r.height() / deskH.toDouble(),
+            outW, outH,
+        )
     }
 
     private fun currentScale(): Float {
@@ -210,8 +284,8 @@ class RemoteScreenView @JvmOverloads constructor(
         val v = FloatArray(9)
         matrix.getValues(v)
         val scale = v[Matrix.MSCALE_X]
-        v[Matrix.MTRANS_X] = clampAxis(v[Matrix.MTRANS_X], imgW * scale, width.toFloat())
-        v[Matrix.MTRANS_Y] = clampAxis(v[Matrix.MTRANS_Y], imgH * scale, visibleHeight())
+        v[Matrix.MTRANS_X] = clampAxis(v[Matrix.MTRANS_X], deskW * scale, width.toFloat())
+        v[Matrix.MTRANS_Y] = clampAxis(v[Matrix.MTRANS_Y], deskH * scale, visibleHeight())
         matrix.setValues(v)
     }
 
@@ -241,15 +315,15 @@ class RemoteScreenView @JvmOverloads constructor(
     private var cursorY = -1f
     private var lastMoveSentAt = 0L
 
-    private fun cursorNormX() = (cursorX / imgW).toDouble().coerceIn(0.0, 1.0)
-    private fun cursorNormY() = (cursorY / imgH).toDouble().coerceIn(0.0, 1.0)
+    private fun cursorNormX() = (cursorX / deskW).toDouble().coerceIn(0.0, 1.0)
+    private fun cursorNormY() = (cursorY / deskH).toDouble().coerceIn(0.0, 1.0)
 
     /** Move the pointer by a finger delta given in view pixels. */
     private fun movePointerBy(dxView: Float, dyView: Float) {
-        if (imgW == 0 || imgH == 0) return
+        if (deskW == 0 || deskH == 0) return
         val scale = currentScale()
-        cursorX = (cursorX + dxView / scale).coerceIn(0f, imgW.toFloat())
-        cursorY = (cursorY + dyView / scale).coerceIn(0f, imgH.toFloat())
+        cursorX = (cursorX + dxView / scale).coerceIn(0f, deskW.toFloat())
+        cursorY = (cursorY + dyView / scale).coerceIn(0f, deskH.toFloat())
         keepPointerVisible()
         sendPointer()
         invalidate()
@@ -290,6 +364,10 @@ class RemoteScreenView @JvmOverloads constructor(
         if (dx != 0f || dy != 0f) {
             matrix.postTranslate(dx, dy)
             clampTranslation()
+            // Dragging the pointer to an edge auto-pans, which moves the
+            // viewport as surely as a two-finger pan does. Without this the
+            // host would keep streaming the region we have already left.
+            reportViewport()
         }
     }
 
@@ -298,8 +376,8 @@ class RemoteScreenView @JvmOverloads constructor(
         val (dx, dy) = pointerEdgeOverflow()
         if (dx != 0f || dy != 0f) {
             val scale = currentScale()
-            cursorX = (cursorX + dx / scale).coerceIn(0f, imgW.toFloat())
-            cursorY = (cursorY + dy / scale).coerceIn(0f, imgH.toFloat())
+            cursorX = (cursorX + dx / scale).coerceIn(0f, deskW.toFloat())
+            cursorY = (cursorY + dy / scale).coerceIn(0f, deskH.toFloat())
             sendPointer()
         }
     }
@@ -317,7 +395,16 @@ class RemoteScreenView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         canvas.drawColor(Color.BLACK)
-        bitmap?.let { canvas.drawBitmap(it, matrix, paint) }
+        val bmp = bitmap
+        val src = frameRect
+        if (bmp != null && !bmp.isRecycled && src.width() > 0 && src.height() > 0) {
+            // matrix is desktop -> view, so compose the frame's own
+            // image -> desktop mapping under it.
+            drawMatrix.set(matrix)
+            drawMatrix.preTranslate(src.left.toFloat(), src.top.toFloat())
+            drawMatrix.preScale(src.width().toFloat() / bmp.width, src.height().toFloat() / bmp.height)
+            canvas.drawBitmap(bmp, drawMatrix, paint)
+        }
         drawDirtyHighlights(canvas)
         drawCursor(canvas)
     }
@@ -367,7 +454,7 @@ class RemoteScreenView @JvmOverloads constructor(
     }
 
     private fun drawCursor(canvas: Canvas) {
-        if (cursorX < 0 || imgW == 0) return
+        if (cursorX < 0 || deskW == 0) return
         val pts = floatArrayOf(cursorX, cursorY)
         matrix.mapPoints(pts)
         val s = density * 1.5f // arrow size, independent of zoom
@@ -456,6 +543,10 @@ class RemoteScreenView @JvmOverloads constructor(
             abs(prevDist - downDist) > touchSlop
 
     private companion object {
+        // Viewport reporting: a margin around the visible area so small pans
+        // need no round trip, and a settle delay so a gesture reports once.
+        const val VIEWPORT_MARGIN = 0.15f
+        const val VIEWPORT_SETTLE_MS = 150L
         const val TAP_MS = 300L
         const val HOLD_MS = 320L
         const val WHEEL_PX_PER_NOTCH = 90.0
@@ -491,7 +582,7 @@ class RemoteScreenView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (imgW == 0 || imgH == 0) return true // no frame yet, nothing to control
+        if (deskW == 0 || deskH == 0) return true // no frame yet, nothing to control
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downTime = System.currentTimeMillis()
@@ -633,6 +724,9 @@ class RemoteScreenView @JvmOverloads constructor(
                 clampTranslation()
                 // If the pan pushed the pointer to the edge, drag it along.
                 keepPointerInView()
+                // Debounced, so this reports once the gesture settles rather
+                // than on every touch move.
+                reportViewport()
                 invalidate()
             }
             else -> {}

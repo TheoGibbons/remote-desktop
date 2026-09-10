@@ -99,6 +99,9 @@ public class ScreenStreamer
 
     public event Action<bool>? StreamingChanged;
 
+    /// <summary>Who is viewing and what part of the desktop each one can show.</summary>
+    public ViewRegionTracker Regions { get; } = new();
+
     private uint _seq;
     private volatile bool _keyframeRequested;
     private long _keyframeRequestCount;
@@ -147,6 +150,9 @@ public class ScreenStreamer
     {
         _cts?.Cancel();
         _cts = null;
+        // Viewports belong to a streaming session; a later viewer must ask
+        // again rather than inherit whatever the last one was looking at.
+        Regions.Clear();
         StreamingChanged?.Invoke(false);
     }
 
@@ -171,14 +177,16 @@ public class ScreenStreamer
     {
         Rectangle lastBounds = Rectangle.Empty;
         Bitmap? surface = null;      // native stitched desktop, kept current by the source
-        Bitmap? scaled = null;       // downscaled copy when the output is clamped
+        Bitmap? output = null;       // cropped/scaled frame when it differs from the surface
         ICaptureSource? source = null;
         bool sourceIsDxgi = false;
         long lastDxgiRetry = 0;
         long lastKeyframeAt = 0;
         bool deltaSinceKeyframe = false;
         bool forceKeyframe = true;
-        double lastScale = -1;
+        Rectangle lastRegion = Rectangle.Empty;
+        int lastOutW = -1, lastOutH = -1;
+        bool lastRegionMode = false;
         var dirty = new List<Rectangle>();
         var damage = new DamageMap();
 
@@ -217,14 +225,15 @@ public class ScreenStreamer
                 {
                     source?.Dispose();
                     surface?.Dispose();
-                    scaled?.Dispose();
-                    scaled = null;
+                    output?.Dispose();
+                    output = null;
                     surface = new Bitmap(vs.Width, vs.Height, PixelFormat.Format32bppRgb);
                     source = CreateSource(vs, out sourceIsDxgi);
                     damage.Resize(vs.Width, vs.Height);
                     lastDxgiRetry = now;
                     lastBounds = vs;
-                    lastScale = -1; // force the output size to be re-evaluated
+                    lastRegion = Rectangle.Empty; // force the geometry to be re-evaluated
+                    lastOutW = lastOutH = -1;
                     forceKeyframe = true;
                 }
 
@@ -294,28 +303,58 @@ public class ScreenStreamer
                     }
                 }
 
-                // ---- output sizing ---------------------------------------------
-                double userScale = MaxWidth > 0 && vs.Width > MaxWidth ? (double)MaxWidth / vs.Width : 1.0;
-                double scale = Math.Min(userScale, Ladder[level].Scale);
-                int outW = Math.Max(1, (int)(vs.Width * scale));
-                int outH = Math.Max(1, (int)(vs.Height * scale));
+                // ---- region and output sizing -----------------------------------
+                // What the viewers can actually see, and how many pixels they
+                // asked for. Whole-desktop mode resolves to the full surface at
+                // native size, which is exactly the pre-region behaviour.
+                bool regionMode = Regions.TryResolve(vs.Width, vs.Height,
+                    out var srcRegion, out int reqOutW, out int reqOutH);
 
-                if (Math.Abs(scale - lastScale) > 0.0001)
+                double userScale = MaxWidth > 0 && reqOutW > MaxWidth ? (double)MaxWidth / reqOutW : 1.0;
+                double scale = Math.Min(userScale, Ladder[level].Scale);
+                // Never encode more pixels than the source region holds: past
+                // 1:1 the extra pixels are interpolation, not detail.
+                int outW = Math.Clamp((int)(reqOutW * scale), 16, srcRegion.Width);
+                int outH = Math.Clamp((int)(reqOutH * scale), 16, srcRegion.Height);
+
+                if (srcRegion != lastRegion || outW != lastOutW || outH != lastOutH)
                 {
-                    scaled?.Dispose();
-                    scaled = scale < 1.0 ? new Bitmap(outW, outH, PixelFormat.Format32bppRgb) : null;
-                    lastScale = scale;
+                    output?.Dispose();
+                    // Only the whole desktop at native size can skip the
+                    // intermediate: BuildPatch takes surfW/surfH from the
+                    // bitmap it encodes, so any crop has to go through a
+                    // correctly-sized frame or the header would describe the
+                    // full surface while the rects describe the region.
+                    bool wholeDesktopNative =
+                        srcRegion.X == 0 && srcRegion.Y == 0 &&
+                        srcRegion.Width == vs.Width && srcRegion.Height == vs.Height &&
+                        outW == vs.Width && outH == vs.Height;
+                    output = wholeDesktopNative
+                        ? null
+                        : new Bitmap(outW, outH, PixelFormat.Format32bppRgb);
+                    bool geometryChanged = outW != lastOutW || outH != lastOutH;
+                    lastRegion = srcRegion;
+                    lastOutW = outW;
+                    lastOutH = outH;
                     _activeWidth = outW;
-                    // The viewer sizes its compose canvas from the patch header,
-                    // so a resize invalidates it: it can only resume from a
-                    // keyframe. Announce the new geometry alongside.
+                    // A new region or size means the viewer canvas no longer
+                    // describes what we are sending: it can only resume from a
+                    // keyframe.
                     forceKeyframe = true;
-                    _ws.SendJson(new JsonObject
+                    if (geometryChanged || regionMode != lastRegionMode)
                     {
-                        ["type"] = "screen-info",
-                        ["width"] = outW,
-                        ["height"] = outH,
-                    });
+                        lastRegionMode = regionMode;
+                        _ws.SendJson(new JsonObject
+                        {
+                            ["type"] = "screen-info",
+                            ["width"] = outW,
+                            ["height"] = outH,
+                            // The desktop the region coordinates are expressed
+                            // in, so a viewer can normalize input against it.
+                            ["desktopWidth"] = vs.Width,
+                            ["desktopHeight"] = vs.Height,
+                        });
+                    }
                 }
 
                 int quality = Math.Clamp((int)Math.Min(JpegQuality, Ladder[level].Quality), 40, 95);
@@ -394,38 +433,54 @@ public class ScreenStreamer
                     continue;
                 }
 
-                var fullRect = new Rectangle(0, 0, vs.Width, vs.Height);
                 List<Rectangle> rects;
                 if (keyframe)
                 {
-                    rects = new List<Rectangle> { fullRect };
+                    rects = new List<Rectangle> { srcRegion };
                 }
                 else
                 {
-                    if (damage.MarkedPixels > (long)vs.Width * vs.Height * KeyframeAreaFraction)
+                    // Only damage inside the streamed region counts, and the
+                    // keyframe threshold is measured against that region rather
+                    // than the whole desktop — with a small viewport, activity
+                    // on the far monitor is not this frame's problem.
+                    rects = damage.ToRects(MaxRects);
+                    long changed = 0;
+                    var clipped = new List<Rectangle>(rects.Count);
+                    foreach (var r in rects)
+                    {
+                        var c = r;
+                        c.Intersect(srcRegion);
+                        if (c.Width <= 0 || c.Height <= 0) continue;
+                        clipped.Add(c);
+                        changed += (long)c.Width * c.Height;
+                    }
+                    if (clipped.Count == 0) { await PaceAsync(frameStart, ct); continue; }
+
+                    if (changed > (long)srcRegion.Width * srcRegion.Height * KeyframeAreaFraction)
                     {
                         keyframe = true;
-                        rects = new List<Rectangle> { fullRect };
+                        rects = new List<Rectangle> { srcRegion };
                     }
                     else
                     {
-                        rects = damage.ToRects(MaxRects);
-                        if (rects.Count == 0) { await PaceAsync(frameStart, ct); continue; }
+                        rects = clipped;
                     }
                 }
 
                 var sendSurface = surface;
-                if (scaled != null)
+                if (output != null)
                 {
-                    rects = RescaleInto(surface, scaled, rects, scale);
-                    sendSurface = scaled;
+                    rects = RenderRegion(surface, output, rects, srcRegion);
+                    sendSurface = output;
                     if (rects.Count == 0) { await PaceAsync(frameStart, ct); continue; }
                 }
 
                 // Seq increments per built patch; the lane can still drop one
                 // under extreme pressure, and the resulting gap is what tells
                 // the viewer to ask for a keyframe.
-                var payload = BuildPatch(sendSurface, rects, keyframe, encParams!);
+                var payload = BuildPatch(sendSurface, rects, keyframe, encParams!,
+                    regionMode ? srcRegion : null);
                 if (!_ws.SendBinary(Crypto.ChPatch, payload))
                 {
                     // Socket is gone. Keep the damage: it is still owed to the
@@ -459,7 +514,7 @@ public class ScreenStreamer
             encParams?.Dispose();
             source?.Dispose();
             surface?.Dispose();
-            scaled?.Dispose();
+            output?.Dispose();
         }
     }
 
@@ -593,27 +648,30 @@ public class ScreenStreamer
     }
 
     /// <summary>
-    /// Output clamp: re-render the changed regions (slightly inflated so
-    /// bilinear edges stay seamless) from the native surface into the scaled
-    /// one and return the scaled-space rects to encode.
+    /// Crop and scale: re-render the changed regions (slightly inflated so
+    /// bilinear edges stay seamless) from the native surface into the output
+    /// frame, mapping desktop coordinates to output coordinates through
+    /// <paramref name="region"/>, and return the output-space rects to encode.
     /// </summary>
-    private static List<Rectangle> RescaleInto(Bitmap native, Bitmap scaled, List<Rectangle> rects, double scale)
+    private static List<Rectangle> RenderRegion(Bitmap native, Bitmap output, List<Rectangle> rects, Rectangle region)
     {
         var outRects = new List<Rectangle>(rects.Count);
-        var nativeBounds = new Rectangle(0, 0, native.Width, native.Height);
-        var scaledBounds = new Rectangle(0, 0, scaled.Width, scaled.Height);
-        using var g = Graphics.FromImage(scaled);
+        double sx = (double)output.Width / region.Width;
+        double sy = (double)output.Height / region.Height;
+        var outputBounds = new Rectangle(0, 0, output.Width, output.Height);
+        using var g = Graphics.FromImage(output);
         g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
         foreach (var r in rects)
         {
             var src = Rectangle.Inflate(r, 2, 2);
-            src.Intersect(nativeBounds);
+            src.Intersect(region);
+            if (src.Width <= 0 || src.Height <= 0) continue;
             var dest = Rectangle.FromLTRB(
-                (int)Math.Floor(src.Left * scale),
-                (int)Math.Floor(src.Top * scale),
-                (int)Math.Ceiling(src.Right * scale),
-                (int)Math.Ceiling(src.Bottom * scale));
-            dest.Intersect(scaledBounds);
+                (int)Math.Floor((src.Left - region.X) * sx),
+                (int)Math.Floor((src.Top - region.Y) * sy),
+                (int)Math.Ceiling((src.Right - region.X) * sx),
+                (int)Math.Ceiling((src.Bottom - region.Y) * sy));
+            dest.Intersect(outputBounds);
             if (dest.Width <= 0 || dest.Height <= 0) continue;
             g.DrawImage(native, dest, src, GraphicsUnit.Pixel);
             outRects.Add(dest);
@@ -623,21 +681,29 @@ public class ScreenStreamer
 
     /// <summary>
     /// Patch payload (before encryption):
-    /// [seq u32][flags u8: bit0 keyframe][surfW u16][surfH u16][rectCount u16]
-    /// then per rect: [x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes].
+    /// [seq u32][flags u8: bit0 keyframe, bit1 region][surfW u16][surfH u16][rectCount u16]
+    /// then, when bit 1 is set, [regionX u16][regionY u16][regionW u16][regionH u16]
+    /// giving the desktop rect this frame covers; then per rect:
+    /// [x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes].
     /// All integers big-endian.
+    ///
+    /// The region fields are only written for viewers that asked for a region,
+    /// so a viewer that never sends `view-region` keeps the exact byte layout
+    /// it already parses.
     /// </summary>
-    private byte[] BuildPatch(Bitmap surface, List<Rectangle> rects, bool keyframe, EncoderParameters encParams)
+    private byte[] BuildPatch(Bitmap surface, List<Rectangle> rects, bool keyframe,
+        EncoderParameters encParams, Rectangle? region)
     {
         using var ms = new MemoryStream();
         void W16(int v) { ms.WriteByte((byte)(v >> 8)); ms.WriteByte((byte)v); }
         void W32(uint v) { ms.WriteByte((byte)(v >> 24)); ms.WriteByte((byte)(v >> 16)); ms.WriteByte((byte)(v >> 8)); ms.WriteByte((byte)v); }
 
         W32(_seq++);
-        ms.WriteByte((byte)(keyframe ? 1 : 0));
+        ms.WriteByte((byte)((keyframe ? 1 : 0) | (region.HasValue ? 2 : 0)));
         W16(surface.Width);
         W16(surface.Height);
         W16(rects.Count);
+        if (region is { } rg) { W16(rg.X); W16(rg.Y); W16(rg.Width); W16(rg.Height); }
 
         foreach (var r in rects)
         {

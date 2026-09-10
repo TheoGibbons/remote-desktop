@@ -440,7 +440,13 @@ public partial class MainWindow : Window
             case "peer-left":
                 var leftId = msg["id"]?.GetValue<string>();
                 _peers.RemoveAll(p => p.Id == leftId);
-                if (leftId != null) _auth.OnPeerLeft(leftId);
+                if (leftId != null)
+                {
+                    _auth.OnPeerLeft(leftId);
+                    // Drop their viewport, or the stream stays cropped to a
+                    // region nobody is looking at any more.
+                    _streamer.Regions.RemoveViewer(leftId);
+                }
                 RefreshDeviceList();
                 if (_pcView != null && _pcView.PeerId == leftId) _pcView.Close();
                 if (_phoneView != null && _phoneView.PeerId == leftId) _phoneView.Close();
@@ -481,9 +487,25 @@ public partial class MainWindow : Window
             case "start-view":
                 if (controlAllowed)
                 {
+                    if (from != null) _streamer.Regions.AddViewer(from);
                     _streamer.Start();
                     _streamer.RequestKeyframe(); // joining mid-stream needs a full frame
                     Toast.Show($"{PeerName(from)} started viewing this screen");
+                }
+                break;
+
+            case "view-region":
+                // The viewer is telling us which part of the desktop it can
+                // actually show, so we stop encoding the rest.
+                if (_auth.IsTrusted(from) && from != null)
+                {
+                    _streamer.Regions.SetRegion(from, new ViewRegion(
+                        msg["x"]?.GetValue<double>() ?? 0,
+                        msg["y"]?.GetValue<double>() ?? 0,
+                        msg["w"]?.GetValue<double>() ?? 1,
+                        msg["h"]?.GetValue<double>() ?? 1,
+                        msg["outW"]?.GetValue<int>() ?? 0,
+                        msg["outH"]?.GetValue<int>() ?? 0));
                 }
                 break;
 
@@ -493,6 +515,7 @@ public partial class MainWindow : Window
 
             case "stop-view":
                 if (!_auth.IsTrusted(from)) break;
+                if (from != null) _streamer.Regions.RemoveViewer(from);
                 _streamer.Stop();
                 Toast.Show($"{PeerName(from)} stopped viewing this screen");
                 break;
@@ -571,6 +594,7 @@ public partial class MainWindow : Window
             case "disconnected":
                 if (_pcView != null && _pcView.PeerId == from) _pcView.Close();
                 if (_phoneView != null && _phoneView.PeerId == from) _phoneView.Close();
+                if (from != null) _streamer.Regions.RemoveViewer(from);
                 _streamer.Stop(); // a full hang-up: stop streaming to them too
                 Toast.Show(status == "revoked"
                     ? $"{PeerName(from)} revoked this device's access"

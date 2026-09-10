@@ -113,7 +113,8 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 |---------------|--------|-------|
 | `start-view`  | `to`   | Ask peer to start streaming its screen to me. |
 | `stop-view`   | `to`   | Stop streaming. |
-| `screen-info` | `width`, `height` | Pixel size of the streamed (stitched) surface. Sent by the host when streaming starts and whenever it changes. |
+| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. Sent when streaming starts and whenever the geometry changes. |
+| `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH` | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. See [Viewport streaming](#viewport-streaming). |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
 | `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. |
 | `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | RTT response plus the desktop sender's queued binary backlog. The three stream fields report what the host has **adapted to**, not what the user configured, so they move during a session. |
@@ -161,7 +162,7 @@ byte). After decryption the payload is:
 |------|-------------|-------------------|
 | `1`  | video frame | `JPEG bytes` — one full JPEG image of the streamed screen. (Still used by the Android host; the Windows host streams type `3`.) |
 | `2`  | file chunk  | `[xferId: uint32 BE][data bytes]` — sequential chunks (≤ 256 KiB) for the transfer announced by `fs-begin`. |
-| `3`  | screen patch | Dirty-rect update, all integers big-endian: `[seq u32][flags u8][surfW u16][surfH u16][rectCount u16]` followed by `rectCount` × `[x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes]`. `flags` bit 0 = keyframe (a single rect covering the whole surface). |
+| `3`  | screen patch | Dirty-rect update, all integers big-endian: `[seq u32][flags u8][surfW u16][surfH u16][rectCount u16]`, then — only when `flags` bit 1 is set — `[regionX u16][regionY u16][regionW u16][regionH u16]`, then `rectCount` × `[x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes]`. `flags` bit 0 = keyframe (a single rect covering the whole image); bit 1 = the image covers only the given desktop rect (see [Viewport streaming](#viewport-streaming)). |
 
 **Dirty-rect streaming (type 3).** The host compares each captured frame to the
 previous one on a 64 px block grid and sends only the changed regions as JPEG
@@ -190,6 +191,39 @@ stale — there is no codec-style corruption. Recovery rules:
 So the wire layout is `[frameType(1)][nonce(12)][ciphertext][tag(16)]`. Binary
 frames are broadcast by the server to all other peers in the session (sessions
 are expected to hold 2 devices; the design tolerates more).
+
+## Viewport streaming
+
+A phone showing a 7680×2160 desktop displays about 1080 columns of it. Encoding
+the rest is work nobody can see, so a viewer reports what it is actually looking
+at and the host sends that instead.
+
+The viewer sends `view-region` with the desktop rect it can display, normalized
+0..1, plus `outW`/`outH` — the pixel size worth delivering it at, which is
+however many screen pixels that region occupies, since one image pixel per
+screen pixel is the most a display can use. Viewers should ask for a small
+margin around the visible area so that a short pan needs no round trip, report
+once a gesture settles rather than on every touch move, and skip a report that
+matches the last one: **every region change costs a keyframe.**
+
+The host replies with patches carrying `flags` bit 1 and the region rect in
+desktop pixels. It also applies its own limits on top of the request — the
+congestion ladder and the configured `MaxStreamWidth` can both deliver fewer
+pixels than asked for — and never sends more than the region natively holds,
+because past 1:1 the extra pixels are interpolation rather than detail.
+
+Region mode is used only while **every** viewer has requested a region. Patches
+are broadcast, so a session has one stream and it must be one that every viewer
+can read: a viewer that never sends `view-region` (an older build, or the
+Windows PC viewer) keeps the whole-desktop stream, and its presence puts the
+session back on that path for everyone. With several region viewers the host
+streams the union of their requests at the densest resolution any of them asked
+for.
+
+Because the streamed image is no longer the whole desktop, a viewer must treat
+`desktopWidth`/`desktopHeight` from `screen-info` as its coordinate space —
+normalized input coordinates are relative to the desktop, not to the region it
+happens to be receiving.
 
 ## Queueing and priority
 
