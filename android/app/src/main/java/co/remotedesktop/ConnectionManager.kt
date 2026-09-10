@@ -228,6 +228,7 @@ object ConnectionManager {
                 1 -> binaryListeners.forEach { it(full) }   // full video frame from a peer
                 2 -> fs.handleFileChunk(full)               // file chunk
                 3 -> binaryListeners.forEach { it(full) }   // dirty-rect screen patch
+                4 -> binaryListeners.forEach { it(full) }   // H.264 access unit
             }
         }
 

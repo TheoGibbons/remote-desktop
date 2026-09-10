@@ -27,6 +27,7 @@ object Crypto {
     const val CH_VIDEO: Byte = 1
     const val CH_FILE: Byte = 2
     const val CH_PATCH: Byte = 3 // dirty-rect screen patch
+    const val CH_H264: Byte = 4  // H.264 access unit
 
     private fun hmac(key: ByteArray, data: ByteArray): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")

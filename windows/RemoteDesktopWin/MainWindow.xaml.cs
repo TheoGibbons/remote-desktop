@@ -636,6 +636,9 @@ public partial class MainWindow : Window
             case 3: // dirty-rect screen patch (Windows host)
                 Dispatcher.BeginInvoke(() => _pcView?.OnPatch(data));
                 break;
+            // No case 4: this viewer does not decode H.264, so it never sets
+            // h264 on its view-region, and a host will not put a session on
+            // that path unless every viewer in it has.
         }
     }
 
