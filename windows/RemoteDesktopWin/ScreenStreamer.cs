@@ -70,6 +70,14 @@ public class ScreenStreamer
     // gaps, i.e. something between here and there is discarding frames.
     private const int RepeatKeyframeRequestMs = 5000;
 
+    // A level we just fell out of rarely works again a few seconds later, so
+    // each retry of the same one waits longer. Without this the ladder hunts:
+    // step up, stall, step down, wait out the dwell, step up again, on a ~10 s
+    // cycle. Every one of those costs a keyframe and visibly changes the
+    // picture, which is worse than simply sitting one rung lower.
+    private const int MinLevelRetryMs = 8_000;
+    private const int MaxLevelRetryMs = 60_000;
+
     private readonly WsClient _ws;
     private CancellationTokenSource? _cts;
     private readonly ImageCodecInfo _jpegCodec;
@@ -181,6 +189,9 @@ public class ScreenStreamer
         long lastDrops = _ws.VideoFramesDropped;
         long seenKeyframeRequests = Interlocked.Read(ref _keyframeRequestCount);
         long lastKeyframeRequestAt = 0;
+        int failedLevel = -1;
+        int levelRetryMs = MinLevelRetryMs;
+        long levelRetryAt = 0;
 
         EncoderParameters? encParams = null;
         int encQuality = -1;
@@ -255,13 +266,31 @@ public class ScreenStreamer
                 {
                     if (skipStreak >= StepDownSkips)
                     {
-                        if (level < Ladder.Length - 1) { level++; lastLevelChange = now; skipStreak = 0; }
+                        if (level < Ladder.Length - 1)
+                        {
+                            // Remember which rung just failed, and back off
+                            // further each time the same one fails again.
+                            levelRetryMs = level == failedLevel
+                                ? Math.Min(levelRetryMs * 2, MaxLevelRetryMs)
+                                : MinLevelRetryMs;
+                            failedLevel = level;
+                            levelRetryAt = now + levelRetryMs;
+
+                            level++;
+                            lastLevelChange = now;
+                            skipStreak = 0;
+                        }
                         else if (_fpsDivider < 4) { _fpsDivider *= 2; lastLevelChange = now; skipStreak = 0; }
                     }
                     else if (clearStreak >= Math.Max(1, ActiveFps) * StepUpClearSeconds)
                     {
                         if (_fpsDivider > 1) { _fpsDivider /= 2; lastLevelChange = now; clearStreak = 0; }
-                        else if (level > 0) { level--; lastLevelChange = now; clearStreak = 0; }
+                        else if (level > 0 && (level - 1 != failedLevel || now >= levelRetryAt))
+                        {
+                            level--;
+                            lastLevelChange = now;
+                            clearStreak = 0;
+                        }
                     }
                 }
 

@@ -79,7 +79,9 @@ class RemoteScreenView @JvmOverloads constructor(
     // ---------------- frame / viewport ----------------
 
     fun setFrame(bmp: Bitmap, dirtyRects: List<Rect>? = null) {
-        val sizeChanged = bmp.width != imgW || bmp.height != imgH
+        val prevW = imgW
+        val prevH = imgH
+        val sizeChanged = bmp.width != prevW || bmp.height != prevH
         bitmap = bmp
         imgW = bmp.width
         imgH = bmp.height
@@ -88,8 +90,16 @@ class RemoteScreenView @JvmOverloads constructor(
             cursorY = imgH / 2f
         }
         if (sizeChanged || !matrixInitialized) {
+            // The host rescales its output mid-stream to fit the link, so a size
+            // change is normally the same desktop at a new pixel size — not a
+            // new desktop. Fitting to the window there would throw away the pan
+            // and zoom at unpredictable moments, which reads as the view
+            // randomly jumping out. Remap instead, and keep the fit-to-window
+            // reset for a genuine layout change (a monitor came or went).
+            val rescaledOnly = matrixInitialized && prevW > 0 && prevH > 0 &&
+                sameAspect(prevW, prevH, imgW, imgH)
             post {
-                resetToFit()
+                if (rescaledOnly) remapAfterRescale(prevW, prevH) else resetToFit()
                 dirtyRects?.let {
                     addDirtyHighlights(it)
                     invalidateImageRegions(it)
@@ -144,6 +154,37 @@ class RemoteScreenView @JvmOverloads constructor(
         matrix.postScale(fitScale, fitScale)
         matrix.postTranslate(dx, dy)
         matrixInitialized = true
+        clampTranslation()
+        keepPointerVisible()
+        invalidate()
+    }
+
+    /** Same desktop shape, allowing for the host rounding each axis to a pixel. */
+    private fun sameAspect(w1: Int, h1: Int, w2: Int, h2: Int): Boolean {
+        if (h1 == 0 || h2 == 0) return false
+        val a1 = w1.toFloat() / h1
+        val a2 = w2.toFloat() / h2
+        return abs(a1 - a2) <= 0.02f * a1
+    }
+
+    /**
+     * Carry the current pan/zoom across a change in the streamed surface size.
+     * The matrix maps image pixels to view pixels, so pre-scaling it by the
+     * ratio of old to new dimensions leaves exactly the same desktop region
+     * under the same part of the screen, at the same apparent magnification.
+     */
+    private fun remapAfterRescale(prevW: Int, prevH: Int) {
+        if (imgW == 0 || imgH == 0 || prevW == 0 || prevH == 0) return
+        if (width == 0 || height == 0) return
+        matrix.preScale(prevW.toFloat() / imgW, prevH.toFloat() / imgH)
+        // fitScale is the zoom floor and scales the same way, so the zoom level
+        // relative to it — and the pinch clamp built on it — is preserved.
+        fitScale = min(width.toFloat() / imgW, height.toFloat() / imgH)
+        if (cursorX >= 0) {
+            // The pointer is tracked in image pixels, so it moves with the surface.
+            cursorX = (cursorX * imgW / prevW).coerceIn(0f, imgW.toFloat())
+            cursorY = (cursorY * imgH / prevH).coerceIn(0f, imgH.toFloat())
+        }
         clampTranslation()
         keepPointerVisible()
         invalidate()
