@@ -194,30 +194,6 @@ class RemoteScreenView @JvmOverloads constructor(
         invalidate()
     }
 
-    /**
-     * Fit one desktop rectangle to the window — the monitor picker. fitScale
-     * stays tied to the whole desktop, so this is a jump rather than a mode:
-     * the user can still pinch back out to everything.
-     */
-    fun showDesktopRect(r: Rect) {
-        if (deskW == 0 || deskH == 0 || width == 0 || height == 0) return
-        if (r.width() <= 0 || r.height() <= 0) return
-        val vh = visibleHeight()
-        val s = min(width.toFloat() / r.width(), vh / r.height())
-        matrix.reset()
-        matrix.postScale(s, s)
-        matrix.postTranslate(
-            -r.left * s + (width - r.width() * s) / 2f,
-            -r.top * s + (vh - r.height() * s) / 2f,
-        )
-        matrixInitialized = true
-        fitScale = min(width.toFloat() / deskW, height.toFloat() / deskH)
-        clampTranslation()
-        keepPointerVisible()
-        reportViewport()
-        invalidate()
-    }
-
     /** Same desktop shape, allowing for the host rounding each axis to a pixel. */
     private fun sameAspect(w1: Int, h1: Int, w2: Int, h2: Int): Boolean {
         if (h1 == 0 || h2 == 0) return false
