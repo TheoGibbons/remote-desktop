@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -34,12 +34,24 @@ public class WsClient : IDisposable
     private volatile bool _running;
     private Channel<OutFrame>? _outbox;
     private long _queuedBinaryBytes;
+    private int _backoffMs = MinBackoffMs;
+    private string? _lastCloseReason;
 
     // Interactive screen updates become actively misleading when several
     // seconds of old patches sit in front of the latest input response. Keep at
     // most a small burst; ScreenStreamer then replaces dropped deltas with a
     // fresh keyframe as soon as the sender catches up.
     private const long MaxQueuedBinaryBytes = 2 * 1024 * 1024;
+
+    // Reconnect backoff. The reset lives in the "welcome" handler, not next to
+    // ConnectAsync: the relay rejects a connection (rate limit, ban, too many
+    // connections) by accepting the WebSocket upgrade and then closing it, so
+    // "the socket opened" is not evidence that we are getting anywhere. Resetting
+    // on connect turned every such rejection into a 2s hammer loop, which is
+    // exactly the traffic that earns the ban in the first place. Keep this in
+    // sync with ConnectionManager.kt (Android).
+    private const int MinBackoffMs = 2000;
+    private const int MaxBackoffMs = 30000;
 
     public string? MyId { get; private set; }
 
@@ -64,6 +76,7 @@ public class WsClient : IDisposable
         (_encKey, _pairId) = Crypto.DeriveKeys(sessionKey);
         _deviceName = deviceName;
         _deviceUid = deviceUid;
+        _backoffMs = MinBackoffMs;
         _running = true;
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => RunLoop(_cts.Token));
@@ -81,14 +94,22 @@ public class WsClient : IDisposable
 
     private async Task RunLoop(CancellationToken ct)
     {
-        int backoffMs = 2000;
         while (_running && !ct.IsCancellationRequested)
         {
+            var reason = "connection closed";
             try
             {
                 StateChanged?.Invoke("connecting");
+                _lastCloseReason = null;
                 _ws = new ClientWebSocket();
+                // Ping every 20s AND require a pong. Without KeepAliveTimeout the
+                // default is infinite: pings go out, unanswered pings are ignored,
+                // and a connection killed without a FIN/RST reaching us (sleep/wake,
+                // router reboot, ISP re-IP) leaves ReceiveAsync blocked forever with
+                // the app still reporting "connected" while the relay has already
+                // reaped its side. Matches OkHttp's pingInterval on Android.
                 _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+                _ws.Options.KeepAliveTimeout = TimeSpan.FromSeconds(20);
                 await _ws.ConnectAsync(new Uri(_url), ct);
 
                 _outbox = Channel.CreateUnbounded<OutFrame>(new UnboundedChannelOptions { SingleReader = true });
@@ -105,14 +126,15 @@ public class WsClient : IDisposable
                 });
 
                 var pump = Task.Run(() => SendPump(_ws, _outbox, ct), ct);
-                backoffMs = 2000;
                 await ReceiveLoop(ct);
+                reason = _lastCloseReason ?? "connection closed";
                 _outbox.Writer.TryComplete();
                 await pump;
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                reason = ex.Message;
                 StateChanged?.Invoke("disconnected: " + ex.Message);
             }
             finally
@@ -125,9 +147,9 @@ public class WsClient : IDisposable
             }
 
             if (!_running) break;
-            StateChanged?.Invoke("disconnected: retrying...");
-            try { await Task.Delay(backoffMs, ct); } catch { break; }
-            backoffMs = Math.Min(backoffMs * 2, 30000);
+            StateChanged?.Invoke($"disconnected: {reason} — retrying in {_backoffMs / 1000}s");
+            try { await Task.Delay(_backoffMs, ct); } catch { break; }
+            _backoffMs = Math.Min(_backoffMs * 2, MaxBackoffMs);
         }
     }
 
@@ -167,7 +189,8 @@ public class WsClient : IDisposable
                 result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    StateChanged?.Invoke("disconnected: closed by server");
+                    _lastCloseReason = DescribeClose(result);
+                    StateChanged?.Invoke("disconnected: " + _lastCloseReason);
                     return;
                 }
                 ms.Write(buffer, 0, result.Count);
@@ -208,10 +231,35 @@ public class WsClient : IDisposable
             if (type == "welcome")
             {
                 MyId = node["id"]?.GetValue<string>();
+                _backoffMs = MinBackoffMs; // joined the session: this URL is working
                 StateChanged?.Invoke("connected");
+            }
+            else if (type == "error")
+            {
+                // The relay sends this immediately before closing, so hold on to it:
+                // it is more specific than the close code that follows.
+                var code = node["code"]?.GetValue<string>();
+                var message = node["message"]?.GetValue<string>();
+                _lastCloseReason = string.IsNullOrWhiteSpace(message) ? code : $"{code}: {message}";
             }
             JsonReceived?.Invoke(node);
         }
+    }
+
+    /// <summary>
+    /// Why the relay hung up. It rejects connections with application close codes
+    /// (4001 banned, 4002 too-many-connections, 4000 + an "error" message for a
+    /// bad or missing hello); without surfacing them a rejection is
+    /// indistinguishable from an ordinary network drop.
+    /// </summary>
+    private string DescribeClose(WebSocketReceiveResult result)
+    {
+        var code = result.CloseStatus.HasValue ? ((int)result.CloseStatus.Value).ToString() : "no code";
+        var reason = result.CloseStatusDescription;
+        if (string.IsNullOrWhiteSpace(reason)) reason = _lastCloseReason;
+        return string.IsNullOrWhiteSpace(reason)
+            ? $"closed by server ({code})"
+            : $"closed by server ({code}: {reason})";
     }
 
     private void EnqueueText(JsonObject obj)

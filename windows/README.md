@@ -1,6 +1,6 @@
 # Windows app (RemoteDesktopWin)
 
-C# / WPF app targeting **.NET 8 (Windows)**. It:
+C# / WPF app targeting **.NET 10 (Windows)**. It:
 
 - streams the whole virtual desktop — **all monitors stitched** into one image —
   as dirty-rect JPEG tiles when a phone **or another PC** asks to view it;
@@ -12,7 +12,7 @@ C# / WPF app targeting **.NET 8 (Windows)**. It:
 
 ## Build & run
 
-Prerequisites: [.NET 8 SDK](https://dotnet.microsoft.com/download) on Windows.
+Prerequisites: [.NET 10 SDK](https://dotnet.microsoft.com/download) on Windows.
 
 ```powershell
 cd windows\RemoteDesktopWin
@@ -24,7 +24,7 @@ To produce a single self-contained exe:
 ```powershell
 dotnet publish -c Release -r win-x64 --self-contained ^
   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-# output in bin\Release\net8.0-windows\win-x64\publish\
+# output in bin\Release\net10.0-windows\win-x64\publish\
 ```
 
 For a public build with the production relay pre-filled for new installations,

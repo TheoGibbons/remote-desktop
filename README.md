@@ -182,7 +182,7 @@ Three components share one small WebSocket protocol ([PROTOCOL.md](PROTOCOL.md))
 | Component | Folder | Tech | Role |
 |-----------|--------|------|------|
 | Relay server | [`server/`](server/) | Node.js + `ws` | Pairs devices by a shared **session key** and relays traffic. The only always-on, internet-facing piece. |
-| Windows app | [`windows/`](windows/) | C# / WPF (.NET 8) | Streams all monitors (stitched) and injects mouse/keyboard; can also **view & control another PC** (full keyboard + mouse); serves & receives files. |
+| Windows app | [`windows/`](windows/) | C# / WPF (.NET 10) | Streams all monitors (stitched) and injects mouse/keyboard; can also **view & control another PC** (full keyboard + mouse); serves & receives files. |
 | Android app | [`android/`](android/) | Kotlin | Views & controls the PC (zoom, full keyboard incl. Win/Ctrl/Alt/Shift); shares its own screen so the PC can tap it; serves & receives files. |
 
 A fourth piece, [`site/`](site/), is the static download page the LIVE deployments
@@ -332,7 +332,7 @@ remote-desktop/
 ├── server/                     # Node relay (build & run here)
 ├── site/                       # static download page served on LIVE
 ├── scripts/                    # deployment entry points
-├── windows/RemoteDesktopWin/   # .NET 8 WPF app
+├── windows/RemoteDesktopWin/   # .NET 10 WPF app
 └── android/                    # Gradle/Kotlin app (open in Android Studio)
 ```
 
