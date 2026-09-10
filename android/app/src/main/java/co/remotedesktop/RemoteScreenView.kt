@@ -12,6 +12,7 @@ import android.graphics.RectF
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
+import android.view.TextureView
 import android.view.View
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -63,6 +64,17 @@ class RemoteScreenView @JvmOverloads constructor(
 
     private val matrix = Matrix()
     private val drawMatrix = Matrix()
+
+    // Video path: the frame lives on a TextureView underneath this one, and
+    // this view becomes a transparent overlay carrying only the pointer and
+    // the debug rectangles. Keeping the decoder's output off the CPU is the
+    // entire reason for the codec path, so it must never come back as a Bitmap.
+    private var videoView: TextureView? = null
+    private var videoW = 0
+    private var videoH = 0
+    private val videoMatrix = Matrix()
+    private val videoValues = FloatArray(9)
+    private val lastVideoValues = FloatArray(9)
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private var fitScale = 1f
     private var matrixInitialized = false
@@ -149,6 +161,45 @@ class RemoteScreenView @JvmOverloads constructor(
         } else {
             postInvalidate()
         }
+    }
+
+    /** The TextureView the decoder renders into, positioned by this view. */
+    fun attachVideo(view: TextureView?) {
+        videoView = view
+        invalidate()
+    }
+
+    /**
+     * A decoded video frame is on the surface, covering [srcRect] of the
+     * desktop. No pixels pass through here — only the geometry needed to place
+     * the surface and to keep input mapped to the right desktop coordinates.
+     */
+    fun setVideoFrame(frameW: Int, frameH: Int, srcRect: Rect) {
+        if (frameW <= 0 || frameH <= 0) return
+        videoW = frameW
+        videoH = frameH
+        bitmap = null // the tile path is not what is on screen any more
+        frameRect = Rect(srcRect)
+        if (deskW == 0 || deskH == 0) setDesktopSize(srcRect.right, srcRect.bottom)
+        if (cursorX < 0) {
+            cursorX = deskW / 2f
+            cursorY = deskH / 2f
+        }
+        if (!matrixInitialized) post { resetToFit() } else postInvalidate()
+    }
+
+    /** Back to the tile path; the surface is no longer what is on screen. */
+    fun clearVideo() {
+        videoW = 0
+        videoH = 0
+        invalidate()
+    }
+
+    /** Re-send the viewport even if it has not moved — used when a capability
+     *  the host cares about, such as the decoder being ready, changes. */
+    fun resendViewport() {
+        lastRequestScale = 0f
+        reportViewport()
     }
 
     /** Pixels at the bottom currently covered by a custom keyboard or IME. */
@@ -419,9 +470,20 @@ class RemoteScreenView @JvmOverloads constructor(
     private val cursorPath = Path()
 
     override fun onDraw(canvas: Canvas) {
+        val src = frameRect
+        val tv = videoView
+        if (videoW > 0 && tv != null) {
+            // The frame is on the surface below; this view only overlays. The
+            // letterbox around it is the parent's background, so painting
+            // black here would hide the video entirely.
+            syncVideoTransform(tv, src)
+            drawDirtyHighlights(canvas)
+            drawCursor(canvas)
+            return
+        }
+
         canvas.drawColor(Color.BLACK)
         val bmp = bitmap
-        val src = frameRect
         if (bmp != null && !bmp.isRecycled && src.width() > 0 && src.height() > 0) {
             // matrix is desktop -> view, so compose the frame's own
             // image -> desktop mapping under it.
@@ -432,6 +494,25 @@ class RemoteScreenView @JvmOverloads constructor(
         }
         drawDirtyHighlights(canvas)
         drawCursor(canvas)
+    }
+
+    /**
+     * Place the video surface. A TextureView stretches its content to its own
+     * bounds, so the transform has to undo that stretch before applying the
+     * pan/zoom — otherwise the frame is scaled twice.
+     */
+    private fun syncVideoTransform(tv: TextureView, src: Rect) {
+        if (src.width() <= 0 || src.height() <= 0 || tv.width == 0 || tv.height == 0) return
+        videoMatrix.set(matrix)
+        videoMatrix.preTranslate(src.left.toFloat(), src.top.toFloat())
+        // src.width()/tv.width folds together "image to desktop" and the undo
+        // of the TextureView stretch; the frame size cancels out of both.
+        videoMatrix.preScale(src.width().toFloat() / tv.width, src.height().toFloat() / tv.height)
+        videoMatrix.getValues(videoValues)
+        if (videoValues.contentEquals(lastVideoValues)) return
+        videoValues.copyInto(lastVideoValues)
+        tv.setTransform(videoMatrix)
+        tv.invalidate()
     }
 
     private fun addDirtyHighlights(rects: List<Rect>) {

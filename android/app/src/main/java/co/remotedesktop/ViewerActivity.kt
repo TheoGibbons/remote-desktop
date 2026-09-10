@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Rect
+import android.graphics.SurfaceTexture
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -15,6 +16,8 @@ import android.text.InputType
 import android.text.TextWatcher
 import android.graphics.Typeface
 import android.view.Gravity
+import android.view.Surface
+import android.view.TextureView
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
@@ -75,6 +78,14 @@ class ViewerActivity : AppCompatActivity() {
     // every region change costs the host a keyframe.
     private var lastSentRegion: String? = null
 
+    // H.264 path. The decoder renders onto videoView's surface; nothing here
+    // ever holds a decoded frame.
+    private lateinit var videoView: TextureView
+    @Volatile private var videoSurface: Surface? = null
+    private var decoder: H264Decoder? = null
+    private var videoPtsUs = 0L
+    private var hostCodec: String? = null
+
     private val binaryListener: (ByteArray) -> Unit = { data ->
         if (data.isNotEmpty()) when (data[0].toInt()) {
             1 -> { // legacy full-frame JPEG
@@ -94,7 +105,70 @@ class ViewerActivity : AppCompatActivity() {
                     )
                 } else streamStats.recordDecodeError()
             }
-            3 -> handlePatch(data)
+            3 -> { releaseVideo(); handlePatch(data) }
+            4 -> handleH264(data)
+        }
+    }
+
+    /**
+     * [seq u32][flags u8: bit0 keyframe][surfW u16][surfH u16]
+     * [regionX u16][regionY u16][regionW u16][regionH u16][Annex B access unit]
+     */
+    private fun handleH264(data: ByteArray) {
+        val started = SystemClock.elapsedRealtimeNanos()
+        try {
+            val buf = java.nio.ByteBuffer.wrap(data, 1, data.size - 1)
+            val seq = buf.int.toLong() and 0xFFFFFFFFL
+            val keyframe = (buf.get().toInt() and 1) != 0
+            val w = buf.short.toInt() and 0xFFFF
+            val h = buf.short.toInt() and 0xFFFF
+            val rx = buf.short.toInt() and 0xFFFF
+            val ry = buf.short.toInt() and 0xFFFF
+            val rw = buf.short.toInt() and 0xFFFF
+            val rh = buf.short.toInt() and 0xFFFF
+            val region = Rect(rx, ry, rx + rw, ry + rh)
+            if (w <= 0 || h <= 0 || buf.remaining() <= 0) return
+
+            val surface = videoSurface ?: return
+            var dec = decoder
+            if (dec == null || dec.width != w || dec.height != h) {
+                // A zoom changed the frame size; encoders cannot change
+                // resolution mid-stream and neither can decoders.
+                dec?.release()
+                if (!keyframe) { requestKeyframe(); decoder = null; return }
+                dec = H264Decoder(surface, w, h)
+                decoder = dec
+            }
+
+            val hadSequenceGap = haveKeyframe && !keyframe &&
+                seq != ((lastSeq + 1L) and 0xFFFFFFFFL)
+            if (keyframe) haveKeyframe = true
+            else if (!haveKeyframe || hadSequenceGap) requestKeyframe()
+            lastSeq = seq
+            if (!haveKeyframe) return // nothing to decode from yet
+
+            val au = ByteArray(buf.remaining())
+            buf.get(au)
+            videoPtsUs += 1_000_000L / 30
+            val rendered = dec.decode(au, videoPtsUs, keyframe)
+            if (rendered) runOnUiThread { screen.setVideoFrame(w, h, region) }
+
+            streamStats.recordFrame(
+                bytes = data.size,
+                rectCount = 1,
+                changedPixels = w.toLong() * h,
+                decodeTimeNanos = SystemClock.elapsedRealtimeNanos() - started,
+                isKeyframe = keyframe,
+                hadSequenceGap = hadSequenceGap,
+                width = w,
+                height = h,
+            )
+        } catch (e: Exception) {
+            streamStats.recordDecodeError()
+            decoder?.release()
+            decoder = null
+            haveKeyframe = false
+            requestKeyframe()
         }
     }
 
@@ -260,6 +334,13 @@ class ViewerActivity : AppCompatActivity() {
         return Rect.intersects(prev, now)
     }
 
+    private fun releaseVideo() {
+        val dec = decoder ?: return
+        decoder = null
+        dec.release()
+        runOnUiThread { screen.clearVideo() }
+    }
+
     private fun requestKeyframe() {
         val now = System.currentTimeMillis()
         if (now - lastKeyframeRequestAt < 2000) return
@@ -299,6 +380,7 @@ class ViewerActivity : AppCompatActivity() {
             hostTargetFps = msg.optInt("targetFps", -1).takeIf { it > 0 }
             hostJpegQuality = msg.optInt("jpegQuality", -1).takeIf { it > 0 }
             hostMaxWidth = msg.optInt("maxWidth", -1).takeIf { it >= 0 }
+            hostCodec = msg.optString("codec").takeIf { it.isNotEmpty() }
             pendingPingNonce = -1L
             pingTimedOut = false
         }
@@ -316,7 +398,39 @@ class ViewerActivity : AppCompatActivity() {
         }
 
         root = FrameLayout(this)
+        root.setBackgroundColor(Color.BLACK)
+
+        // The decoder renders here. It sits under the overlay and is
+        // positioned entirely by RemoteScreenView's transform, so pan and zoom
+        // apply to video and to the pointer through the same matrix.
+        videoView = TextureView(this)
+        videoView.isOpaque = false
+        videoView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
+                videoSurface = Surface(st)
+                // The host only sends H.264 to viewers that said they could
+                // decode it, and until now this one could not.
+                screen.resendViewport()
+            }
+
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                releaseVideo()
+                videoSurface?.release()
+                videoSurface = null
+                return true
+            }
+
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+        root.addView(videoView, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+        ))
+
         screen = RemoteScreenView(this)
+        screen.attachVideo(videoView)
         val debugPrefs = getSharedPreferences(DEBUG_PREFS, Context.MODE_PRIVATE)
         screen.setDirtyRectHighlightsEnabled(debugPrefs.getBoolean(PREF_HIGHLIGHT_DIRTY, false))
         root.addView(screen, FrameLayout.LayoutParams(
@@ -422,7 +536,10 @@ class ViewerActivity : AppCompatActivity() {
                 lastSentRegion = key
                 send(JSONObject().put("type", "view-region")
                     .put("x", x).put("y", y).put("w", w).put("h", h)
-                    .put("outW", outW).put("outH", outH))
+                    .put("outW", outW).put("outH", outH)
+                    // Only once there is somewhere to decode onto, or the host
+                    // would stream frames we cannot show.
+                    .put("h264", videoSurface != null))
             }
         }
     }
@@ -680,10 +797,13 @@ class ViewerActivity : AppCompatActivity() {
         }
         val lastFrame = stream.lastFrameAgoMs?.let { formatAge(it) } ?: "never"
         val lastPacket = connection.lastReceiveAgoMs?.let { formatAge(it) } ?: "never"
-        val hostConfig = if (hostTargetFps != null) {
-            "${hostTargetFps} FPS • JPEG ${hostJpegQuality ?: "?"} • " +
-                (hostMaxWidth?.takeIf { it > 0 }?.let { "max ${it}px" } ?: "native width")
-        } else "unavailable"
+        val size = hostMaxWidth?.takeIf { it > 0 }?.let { "max ${it}px" } ?: "native width"
+        val hostConfig = when {
+            hostTargetFps == null -> "unavailable"
+            // JPEG quality means nothing on the codec path, so do not print it.
+            hostCodec == "h264" -> "${hostTargetFps} FPS • H.264 • $size"
+            else -> "${hostTargetFps} FPS • JPEG ${hostJpegQuality ?: "?"} • $size"
+        }
 
         return String.format(
             Locale.US,
@@ -753,6 +873,7 @@ class ViewerActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        releaseVideo()
         ConnectionManager.binaryListeners.remove(binaryListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
         if (::keyboard.isInitialized) keyboard.releaseAll()
