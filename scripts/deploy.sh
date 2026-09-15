@@ -50,6 +50,12 @@ fi
 
 git pull --ff-only
 
+# BuildKit's default provenance attestation gives every build a new image ID,
+# even from unchanged sources, so Compose would replace the relay and site on
+# every deploy and end every device's relay connection. Without it, an unchanged
+# service builds to the same image and its container is left running.
+export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+
 # Standalone publishes host ports, which two containers of one service cannot
 # share, so its releases are swapped with a plain `up` and briefly go down.
 if [[ "$use_traefik" == 0 ]]; then
@@ -105,10 +111,28 @@ fi
 # containers describe differently and serves 404 while both exist, so draining
 # would stretch that into a 20-second outage. Stop the old one immediately
 # instead and accept a sub-second blip.
+#
+# A service that did not change is not rolled at all. A rollout always replaces
+# the container, and replacing the relay ends every device's connection, while
+# most pushes change only the apps. Compose's own test decides: the running
+# containers carry the current config hash and were created from the image just
+# built.
 routing_labels() { { grep -o '"traefik\.[^"]*": *"[^"]*"' || true; } | sed 's/": *"/":"/' | sort; }
+up_to_date() {
+  local service="$1" hash image id
+  hash="$("${compose[@]}" config --hash "$service" | awk '{print $2}')"
+  image="$(docker image inspect --format '{{.Id}}' "$("${compose[@]}" config --images "$service")")"
+  for id in $2; do
+    [[ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.config-hash"}} {{.Image}}' "$id")" == "$hash $image" ]] || return 1
+  done
+}
 for service in "${rolled[@]}"; do
   rollout=(docker rollout "${compose_args[@]}" --timeout 90)
   running_ids="$("${compose[@]}" ps --quiet "$service")"
+  if [[ -n "$running_ids" ]] && up_to_date "$service" "$running_ids"; then
+    echo "$service is unchanged; leaving its running container in place."
+    continue
+  fi
   if [[ -n "$running_ids" ]]; then
     live_labels="$(docker inspect --format '{{json .Config.Labels}}' "${running_ids%%$'\n'*}" | routing_labels)"
     new_labels="$("${compose[@]}" config --format json "$service" | routing_labels)"
