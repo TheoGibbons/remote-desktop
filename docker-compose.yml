@@ -1,25 +1,35 @@
 name: remote-desktop
 
+# No container_name on any service: a LIVE deploy briefly runs the new release
+# beside the old one (scripts/deploy.sh), and two containers cannot share a fixed
+# name.
+#
+# Traefik routes only to a healthy container, so the health-check timings are what
+# make a LIVE deploy seamless. start_interval probes every second while booting,
+# so a new release takes traffic as soon as it answers. The short interval and the
+# /tmp/drain check let a deploy take the outgoing release out of rotation within
+# 15 seconds, before it is stopped.
+
 services:
   relay:
     build:
       context: ./server
     restart: unless-stopped
+    # Node ignores SIGTERM when it is PID 1, so without an init every stop waited
+    # out Docker's 10-second grace period and ended in SIGKILL.
+    init: true
     environment:
       PORT: '8090'
       TRUST_PROXY: '${RELAY_TRUST_PROXY:-0}'
     expose:
       - '8090'
     healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://127.0.0.1:8090/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-      interval: 10s
+      test: ['CMD-SHELL', 'test ! -f /tmp/drain && wget -q -O /dev/null http://127.0.0.1:8090/ || exit 1']
+      interval: 5s
       timeout: 3s
-      retries: 5
-      start_period: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
 
   site:
     build:
@@ -30,8 +40,9 @@ services:
     expose:
       - '80'
     healthcheck:
-      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1/healthz']
-      interval: 10s
+      test: ['CMD-SHELL', 'test ! -f /tmp/drain && wget -q -O /dev/null http://127.0.0.1/healthz || exit 1']
+      interval: 5s
       timeout: 3s
-      retries: 5
-      start_period: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s

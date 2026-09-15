@@ -33,6 +33,9 @@ nano .env
 bash scripts/deploy.sh
 ```
 
+Each deploy on this path briefly takes the site and relay down while their containers
+are replaced: the published host ports cannot be shared by an old and a new container.
+
 TLS is the operator's job on this path — nothing here terminates HTTPS. The usual
 options are Cloudflare in front of port 80, or an nginx or Caddy reverse proxy on the
 host that holds the certificate and forwards to these ports. If you do add a proxy, set
@@ -78,6 +81,23 @@ bash scripts/deploy.sh
 ```
 
 Both apps then connect to `wss://<RELAY_HOST>/ws`.
+
+Deploys on this path do not take the site or the relay down. `scripts/deploy.sh` starts
+each new release beside the running one, moves traffic to it once it passes its health
+check, and only then stops the old one. A release that never turns healthy is discarded,
+the previous release keeps serving, and the deploy fails with the new container's health
+log and output.
+
+Connected apps still reconnect once per deploy, about 2 seconds after the old relay
+stops, because pairing lives in the relay's memory. For the 20 seconds while the old
+relay is taken out of rotation, a device that connects may land on the new relay before
+its peers do, and does not see them until they reconnect.
+
+The release swap uses the [docker-rollout](https://github.com/wowu/docker-rollout) CLI
+plugin, which belongs to the host. Deploying hobby-traefik installs it for the deploying
+user. Where it is missing, `scripts/deploy.sh` stops before pulling and prints the
+install command. The plugin is per user, so run deploys as the user CI connects as, not
+with `sudo`.
 
 | TCP port | Allowed source | Purpose |
 |---|---|---|
@@ -174,6 +194,9 @@ gh secret set EC2_KNOWN_HOSTS     --env production \
 ```
 
 The deploy stops rather than overwrite tracked files edited directly on the server.
+
+A push runs the `scripts/deploy.sh` already on the server, which then pulls. A change to
+the deploy script therefore takes effect from the deploy after the one that ships it.
 
 ## What it is
 
@@ -281,6 +304,14 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.override.
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.traefik.yml \
   -f docker-compose.prod.yml logs -f --tail=100 relay
 ```
+
+Behind hobby-traefik, container names change on every deploy (`remote-desktop-relay-1`,
+then `-2`, then `-3`), so reach them through Compose with the service name, as above,
+rather than with `docker logs` or `docker exec` and a container name.
+
+Nothing the relay holds survives a deploy, any more than it survives a restart: device
+pairings, peer lists and the per-IP rate-limit and ban counters all live in its memory.
+Devices rebuild the pairings by reconnecting on their own.
 
 A manual redeploy is the same command the workflow runs:
 
