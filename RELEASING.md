@@ -58,13 +58,12 @@ The configuration is here `.github/workflows/release.yml`
 ## Publish a release
 
 Run from the repository root on `main`. Commit release changes first. Paste the
-entire block together: it stops before the version bump if there are staged,
-modified, or untracked files (ignored build output does not count). It also stops
-if any release command fails.
+entire block together: it stops before the version bump if tracked files have
+staged or unstaged changes. Untracked files are ignored.
 
 ```powershell
 & {
-    if (git status --porcelain) { throw "Working tree is dirty. Commit first." }
+    if (git status --porcelain --untracked-files=no) { throw "Working tree is dirty. Commit first." }
     cd server
     npm version patch --no-git-tag-version
     cd ..
