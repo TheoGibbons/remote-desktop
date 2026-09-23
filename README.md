@@ -320,11 +320,12 @@ ssh ubuntu@<ec2-public-dns> 'bash ~/projects/remote-desktop/scripts/deploy.sh'
 ```
 
 App binaries are released separately from the server. Pushing a tag such as `v1.0.0`
-triggers `.github/workflows/release.yml`, which publishes a self-contained Windows EXE,
+triggers `.github/workflows/release.yml`, which publishes an Azure-signed self-contained Windows EXE,
 a signed Android APK and a SHA-256 checksum file to GitHub Releases. The site links to
 stable `releases/latest/download/...` URLs, so publishing app binaries never requires
 committing them or redeploying the server. [RELEASING.md](RELEASING.md) covers the
-one-time signing secrets and the tagging steps.
+Android signing secrets, Windows Azure Artifact Signing setup, and the npm patch
+version, commit, and tagging steps.
 
 ## Security notes
 

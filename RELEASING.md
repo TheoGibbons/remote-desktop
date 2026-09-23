@@ -41,28 +41,41 @@ On PowerShell, encode a keystore without line breaks with:
 The release workflow refuses to publish an unsigned APK and verifies the APK
 signature before creating the GitHub Release.
 
-### Optional Windows signing
+### Windows signing with Azure Artifact Signing
 
-The workflow can publish the self-contained Windows EXE unsigned. To add
-Authenticode signing, configure both optional secrets:
+The release workflow signs the self-contained Windows EXE with Azure Artifact
+Signing, adds a timestamp, and verifies the Authenticode signature before
+publishing. Signing or verification failure stops the release; there is no
+unsigned fallback.
 
-| Secret | Value |
-|---|---|
-| `WINDOWS_SIGNING_CERTIFICATE_BASE64` | Base64-encoded code-signing `.pfx` |
-| `WINDOWS_SIGNING_CERTIFICATE_PASSWORD` | PFX password |
-
-When present, the workflow signs and verifies the EXE before release. Without
-them, Windows may show an unknown-publisher or SmartScreen warning.
+The configuration is here `.github/workflows/release.yml`
 
 ## Publish a release
 
-Before tagging, update release notes as needed and ensure `main` is green. Then
-create and push a semantic version tag:
+Before publishing, commit. The npm package is in `server/`,
+not the repository root.
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+cd server
+npm version patch --no-git-tag-version
+cd ..
 ```
+
+Run the remaining commands in PowerShell from the repository root:
+
+```powershell
+  $releaseVersion = node -p "require('./server/package.json').version"
+  git add -- server/package.json server/package-lock.json
+  git commit -m "Release v$releaseVersion"
+  git tag -a "v$releaseVersion" -m "Release v$releaseVersion"
+  git push --atomic origin main "v$releaseVersion"
+```
+
+Use a new version for each release; do not overwrite an existing release tag.
+Pushing `main` alone does not publish app binaries: the `v*` tag triggers the
+release workflow. The tag supplies the Windows app version and Android version
+name; the GitHub run number supplies the Android version code. This does not
+publish the relay package to the npm registry.
 
 GitHub Actions creates the release with these stable asset names:
 

@@ -29,7 +29,9 @@ dotnet publish -c Release -r win-x64 --self-contained ^
 
 For a public build with the production relay pre-filled for new installations,
 add `-p:DefaultRelayServerUrl=wss://relay.remote-desktop.co/ws`. Existing user settings are
-not overwritten. Tagged GitHub releases perform this build automatically; see
+not overwritten. Tagged GitHub releases build, sign through Azure Artifact
+Signing, timestamp, and verify the EXE automatically. Local `dotnet publish`
+does not perform that signing. For setup and publishing steps, see
 [`../RELEASING.md`](../RELEASING.md).
 
 (You can also open the folder in Visual Studio 2022 — it will detect the
