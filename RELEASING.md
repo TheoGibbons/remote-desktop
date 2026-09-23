@@ -48,28 +48,35 @@ Signing, adds a timestamp, and verifies the Authenticode signature before
 publishing. Signing or verification failure stops the release; there is no
 unsigned fallback.
 
+The workflow uses the `windows-app-signing-v3` certificate profile in the
+`theo-gibbons` signing account at `https://eus.codesigning.azure.net/`.
+If the active profile is replaced, update `certificate-profile-name` in
+`.github/workflows/release.yml` to match its exact name before tagging a release.
+
 The configuration is here `.github/workflows/release.yml`
 
 ## Publish a release
 
-Before publishing, commit. The npm package is in `server/`,
-not the repository root.
-
-```bash
-cd server
-npm version patch --no-git-tag-version
-cd ..
-```
-
-Run the remaining commands in PowerShell from the repository root:
+Run from the repository root on `main`. Commit release changes first. Paste the
+entire block together: it stops before the version bump if there are staged,
+modified, or untracked files (ignored build output does not count). It also stops
+if any release command fails.
 
 ```powershell
-  $releaseVersion = node -p "require('./server/package.json').version"
-  git add -- server/package.json server/package-lock.json
-  git commit -m "Release v$releaseVersion"
-  git tag -a "v$releaseVersion" -m "Release v$releaseVersion"
-  git push --atomic origin main "v$releaseVersion"
+& {
+    if (git status --porcelain) { throw "Working tree is dirty. Commit first." }
+    cd server
+    npm version patch --no-git-tag-version
+    cd ..
+    $release_version = node -p "require('./server/package.json').version"
+    git add -- server/package.json server/package-lock.json
+    git commit -m "Release v$release_version"
+    git tag -a "v$release_version" -m "Release v$release_version"
+    git push --atomic origin main "v$release_version"
+}
 ```
+
+The npm package is in `server/`, not the repository root.
 
 Use a new version for each release; do not overwrite an existing release tag.
 Pushing `main` alone does not publish app binaries: the `v*` tag triggers the

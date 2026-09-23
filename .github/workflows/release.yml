@@ -88,7 +88,7 @@ jobs:
         with:
           endpoint: https://eus.codesigning.azure.net/
           signing-account-name: theo-gibbons
-          certificate-profile-name: windows-app-signing
+          certificate-profile-name: windows-app-signing-v3
           files: ${{ github.workspace }}\dist\RemoteDesktop-Windows-x64.exe
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
