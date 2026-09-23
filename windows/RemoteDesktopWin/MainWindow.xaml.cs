@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -53,6 +54,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        var assembly = typeof(MainWindow).Assembly;
+        var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString(3)
+            ?? "Unknown";
+        VersionText.Text = version.Split('+')[0]; // Omit build metadata such as the Git commit hash.
         _streamer = new ScreenStreamer(_ws)
         {
             Fps = _settings.Fps,
