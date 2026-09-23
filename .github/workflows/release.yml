@@ -12,6 +12,10 @@ jobs:
   release:
     name: Build and publish release
     runs-on: windows-latest
+    environment: production
+    permissions:
+      contents: write
+      id-token: write
     env:
       RELAY_SERVER_URL: wss://relay.remote-desktop.co/ws
     steps:
@@ -72,25 +76,34 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true
           Move-Item dist/windows/RemoteDesktopWin.exe dist/RemoteDesktop-Windows-x64.exe
 
-      - name: Sign Windows app when a certificate is configured
+      - name: Authenticate to Azure for signing
+        uses: azure/login@v3
+        with:
+          client-id: 66d5c967-c366-4024-b695-ab4d3f473201
+          tenant-id: ed7b52d5-a4f8-4c29-bed1-b5c6cf7655dd
+          subscription-id: 99f62251-76d3-40ec-9bb3-70857da462f6
+
+      - name: Sign Windows app with Azure Artifact Signing
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: https://eus.codesigning.azure.net/
+          signing-account-name: theo-gibbons
+          certificate-profile-name: windows-app-signing
+          files: ${{ github.workspace }}\dist\RemoteDesktop-Windows-x64.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Verify Windows signature
         shell: pwsh
-        env:
-          WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
-          WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)) {
-            Write-Host 'No Windows signing certificate configured; publishing an unsigned EXE.'
-            exit 0
-          }
-          $certificatePath = Join-Path $env:RUNNER_TEMP 'windows-signing.pfx'
-          [IO.File]::WriteAllBytes($certificatePath, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERTIFICATE_BASE64))
           $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
             Where-Object FullName -Like '*\x64\signtool.exe' |
             Sort-Object FullName -Descending |
             Select-Object -First 1 -ExpandProperty FullName
           if (-not $signTool) { throw 'signtool.exe was not found on the runner.' }
-          & $signTool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $certificatePath /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD dist/RemoteDesktop-Windows-x64.exe
           & $signTool verify /pa /v dist/RemoteDesktop-Windows-x64.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows signature verification failed.' }
 
       - name: Build signed Android app
         shell: pwsh
