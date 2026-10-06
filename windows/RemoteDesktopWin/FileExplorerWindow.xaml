@@ -1,8 +1,9 @@
 <Window x:Class="RemoteDesktopWin.FileExplorerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Phone files" Height="540" Width="640">
-    <Grid Margin="10">
+        Title="Phone files" Height="540" Width="640"
+        AllowDrop="True" PreviewDragOver="Window_DragOver" PreviewDrop="Window_Drop">
+    <Grid Margin="10" Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -27,7 +28,7 @@
 
         <DockPanel Grid.Row="2">
             <Button Content="⬇ Download" Padding="10,4" Click="Download_Click"/>
-            <Button Content="⬆ Upload file to phone..." Padding="10,4" Margin="8,0,0,0" Click="Upload_Click"/>
+            <Button x:Name="UploadButton" Content="⬆ Upload files to phone..." Padding="10,4" Margin="8,0,0,0" Click="Upload_Click"/>
             <TextBlock x:Name="StatusText" VerticalAlignment="Center" Margin="12,0,0,0"/>
         </DockPanel>
     </Grid>

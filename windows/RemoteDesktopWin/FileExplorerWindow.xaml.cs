@@ -4,7 +4,7 @@ using System.Windows.Input;
 
 namespace RemoteDesktopWin;
 
-/// <summary>Browses the phone's filesystem; downloads land in Downloads\RemoteDesktop.</summary>
+/// <summary>Browses the phone's filesystem; transfers land in Downloads.</summary>
 public partial class FileExplorerWindow : Window
 {
     private readonly WsClient _ws;
@@ -12,9 +12,14 @@ public partial class FileExplorerWindow : Window
     private readonly string _phoneId;
     private string _path = "";
     private int _reqCounter;
-    private uint _uploadId;
+    private readonly HashSet<uint> _uploadIds = new();
     private string? _uploadStatus;
     private string? _uploadPath;
+    private string? _downloadsPath;
+    private string _requestedPath = "";
+    private bool _uploading;
+    private bool _navigateToDownloads;
+    private TaskCompletionSource<bool>? _downloadsNavigation;
 
     public class Entry
     {
@@ -57,14 +62,17 @@ public partial class FileExplorerWindow : Window
     public void OnUploadResult(JsonNode msg)
     {
         if (msg["from"]?.GetValue<string>() != _phoneId ||
-            msg["xferId"]?.GetValue<long>() != _uploadId) return;
+            msg["xferId"]?.GetValue<long>() is not long id ||
+            id < 0 || id > uint.MaxValue || !_uploadIds.Remove((uint)id)) return;
         _uploadPath = msg["path"]?.GetValue<string>();
         SetStatus(StatusText.Text);
+        if (_path == _downloadsPath) RequestList(_path);
     }
 
     private void RequestList(string path)
     {
-        SetStatus("Loading...");
+        _requestedPath = path;
+        if (!_uploading) SetStatus("Loading...");
         _ws.SendJson(new JsonObject
         {
             ["type"] = "fs-list",
@@ -76,13 +84,27 @@ public partial class FileExplorerWindow : Window
 
     public void OnListResult(JsonNode msg)
     {
+        if (msg["from"]?.GetValue<string>() != _phoneId ||
+            msg["reqId"]?.GetValue<string>() != _reqCounter.ToString()) return;
+        var downloadsPath = msg["downloadsPath"]?.GetValue<string>();
+        if (!string.IsNullOrEmpty(downloadsPath)) _downloadsPath = downloadsPath;
         var error = msg["error"]?.GetValue<string>();
         if (!string.IsNullOrEmpty(error))
         {
             SetStatus("Error: " + error);
+            _navigateToDownloads = false;
+            _downloadsNavigation?.TrySetException(new InvalidOperationException(error));
+            _downloadsNavigation = null;
             return;
         }
         _path = msg["path"]?.GetValue<string>() ?? "";
+        // Older phones don't advertise Downloads; their first listing is the storage root.
+        if (_downloadsPath == null && _requestedPath == "") _downloadsPath = Join(_path, "Download");
+        if (_navigateToDownloads && _downloadsPath != null)
+        {
+            _ = NavigateToDownloads();
+            return;
+        }
         PathBox.Text = _path;
         var entries = new List<Entry>();
         foreach (var e in msg["entries"]!.AsArray())
@@ -96,7 +118,7 @@ public partial class FileExplorerWindow : Window
             });
         }
         EntryList.ItemsSource = entries.OrderByDescending(x => x.Dir).ThenBy(x => x.Name).ToList();
-        SetStatus($"{entries.Count} items");
+        if (!_uploading) SetStatus($"{entries.Count} items");
     }
 
     private string Join(string dir, string name) =>
@@ -145,16 +167,83 @@ public partial class FileExplorerWindow : Window
 
     private async void Upload_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Send file to phone" };
-        if (dlg.ShowDialog() != true) return;
-        var xferId = _fs.NextXferId();
-        var name = System.IO.Path.GetFileName(dlg.FileName);
-        _uploadId = xferId;
-        _uploadStatus = $"Sent {name}";
-        _uploadPath = null;
-        StatusText.ToolTip = null;
-        if (await _fs.SendFileAsync(_phoneId, dlg.FileName, xferId))
-            Toast.Show($"“{name}” uploaded to the phone's Downloads folder " +
-                       "(not the folder you are browsing).");
+        if (_uploading) return;
+        var dlg = new Microsoft.Win32.OpenFileDialog { Title = "Send files to phone", Multiselect = true };
+        if (dlg.ShowDialog(this) == true) await UploadFilesAsync(dlg.FileNames);
+    }
+
+    private void Window_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = !_uploading && e.Data.GetDataPresent(DataFormats.FileDrop) &&
+                    e.Data.GetData(DataFormats.FileDrop) is string[] paths &&
+                    paths.Any(System.IO.File.Exists)
+            ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void Window_Drop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (!_uploading && e.Data.GetDataPresent(DataFormats.FileDrop) &&
+            e.Data.GetData(DataFormats.FileDrop) is string[] paths)
+            await UploadFilesAsync(paths);
+    }
+
+    private Task NavigateToDownloads()
+    {
+        _navigateToDownloads = _downloadsPath == null;
+        if (_downloadsPath == null)
+        {
+            _downloadsNavigation = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            RequestList("");
+            return _downloadsNavigation.Task;
+        }
+        _path = _downloadsPath;
+        PathBox.Text = _path;
+        EntryList.ItemsSource = null;
+        RequestList(_path);
+        _downloadsNavigation?.TrySetResult(true);
+        _downloadsNavigation = null;
+        return Task.CompletedTask;
+    }
+
+    private async Task UploadFilesAsync(IEnumerable<string> paths)
+    {
+        var files = paths.Where(System.IO.File.Exists).ToArray();
+        if (files.Length == 0)
+        {
+            SetStatus("Drop files to upload; folders are not supported.");
+            return;
+        }
+        _uploading = true;
+        UploadButton.IsEnabled = false;
+        try
+        {
+            await NavigateToDownloads().WaitAsync(TimeSpan.FromSeconds(15));
+            foreach (var file in files)
+            {
+                var xferId = _fs.NextXferId();
+                var name = System.IO.Path.GetFileName(file);
+                _uploadIds.Add(xferId);
+                _uploadStatus = $"Sent {name}";
+                _uploadPath = null;
+                SetStatus($"Uploading {name} to Downloads...");
+                if (await _fs.SendFileAsync(_phoneId, file, xferId))
+                    Toast.Show($"“{name}” uploaded to the phone's Downloads folder.");
+                else
+                    _uploadIds.Remove(xferId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _navigateToDownloads = false;
+            _downloadsNavigation = null;
+            SetStatus("Upload failed: " + ex.Message);
+        }
+        finally
+        {
+            _uploading = false;
+            UploadButton.IsEnabled = true;
+        }
     }
 }

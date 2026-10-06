@@ -80,6 +80,9 @@ unapproved device is present in the session, streaming and file serving pause.
   Downloads is honoured; uploads land in the peer's `Downloads` folder on
   Windows or Android alike. A name that clashes with a file already there gets
   a counter appended — nothing is overwritten.
+  Choose **Upload files to phone...** or drag files onto the **Phone files**
+  window to send them. The browser moves to the phone's Downloads folder as
+  the upload starts and refreshes after the phone confirms the saved files.
 - **QR code** (next to *Generate*) → shows the server URL + session key as a QR
   code the phone scans to pair in one step.
 - Closing the window hides the app to the **tray** — paired devices can still

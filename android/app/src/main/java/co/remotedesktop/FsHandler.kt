@@ -109,6 +109,7 @@ class FsHandler(private val context: Context) {
                 .put("to", from)
                 .put("reqId", reqId)
                 .put("path", if (pathStr.isEmpty()) root.path else pathStr)
+                .put("downloadsPath", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path)
                 .put("entries", entries)
                 .put("error", error ?: JSONObject.NULL)
         )
@@ -241,6 +242,7 @@ class FsHandler(private val context: Context) {
             )
             status("Saved $saved")
             t.onDone?.invoke(saved)
+            ReceivedFileNotification.show(context, saved, xferId)
         } catch (e: Exception) {
             status("Save failed: ${e.message}")
             t.onError?.invoke(e.message ?: "save failed")
