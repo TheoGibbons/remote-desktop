@@ -533,14 +533,13 @@ class ViewerActivity : AppCompatActivity() {
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            weightSum = 7f
             setBackgroundColor(Color.parseColor("#88000000"))
-            fun addToolbarButton(label: String, weight: Float = 1f, onClick: () -> Unit): Button {
+            fun addToolbarButton(label: String, onClick: () -> Unit): Button {
                 val button = tb(label, onClick)
                 addView(button, LinearLayout.LayoutParams(
                     0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
-                    weight,
+                    1f,
                 ))
                 return button
             }
@@ -556,7 +555,6 @@ class ViewerActivity : AppCompatActivity() {
             }
             addToolbarButton("Stats") { showDiagnostics() }
             addToolbarButton("?") { showGestureHelp() }
-            addToolbarButton("Ctrl+Alt+Del", weight = 2f) { ctrlAltDel() }
             addToolbarButton("✕") { finish() }
         }
     }
@@ -611,14 +609,6 @@ class ViewerActivity : AppCompatActivity() {
             )
             .setPositiveButton("OK", null)
             .show()
-    }
-
-    private fun ctrlAltDel() {
-        // The real Ctrl+Alt+Del is a secure sequence Windows won't let apps
-        // inject; the host answers `cad` with SendSAS when policy allows it
-        // and opens Task Manager otherwise.
-        send(JSONObject().put("type", "cad"))
-        Toast.makeText(this, "Sent Ctrl+Alt+Del (opens Task Manager on most PCs)", Toast.LENGTH_SHORT).show()
     }
 
     /** Hidden field that funnels the phone's native IME into remote text/keys. */

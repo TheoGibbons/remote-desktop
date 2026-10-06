@@ -230,7 +230,7 @@
 
             <TextBlock x:Name="TransferText" Style="{StaticResource RdCaption}" Margin="4,10,4,0"/>
 
-            <Border Style="{StaticResource RdCard}" Margin="0,12,0,0">
+            <Border x:Name="VersionCard" Style="{StaticResource RdCard}" Margin="0,12,0,0">
                 <StackPanel>
                     <TextBlock Text="Installed version" Style="{StaticResource RdOverline}"/>
                     <TextBlock x:Name="VersionText" Style="{StaticResource RdCaption}" Margin="0,4,0,0"/>

@@ -364,6 +364,7 @@ public partial class MainWindow : Window
         SessionCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
         StatusCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
         ComputerCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
+        VersionCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
 
         bool detail = !compact || _accessExpanded;
         AccessDetailPanel.Visibility = detail ? Visibility.Visible : Visibility.Collapsed;
