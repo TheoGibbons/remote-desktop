@@ -38,6 +38,7 @@ class DevicesActivity : AppCompatActivity() {
         prefs = Prefs(this)
         ConnectionManager.init(this)
         setContentView(R.layout.activity_devices)
+        Ui.applySystemBarInsets(this)
 
         findViewById<MaterialToolbar>(R.id.toolbar).setNavigationOnClickListener { finish() }
         pendingHeader = findViewById(R.id.pendingHeader)

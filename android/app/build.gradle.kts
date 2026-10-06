@@ -1,10 +1,17 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
-val releaseVersionCode = System.getenv("RELEASE_VERSION_CODE")?.toIntOrNull() ?: 1
-val releaseVersionName = System.getenv("RELEASE_VERSION_NAME") ?: "1.0"
+// APK and AAB always use the same version, including builds from Android Studio.
+val releaseVersionCode = System.getenv("RELEASE_VERSION_CODE")?.let { value ->
+    requireNotNull(value.toIntOrNull()?.takeIf { it in 9..2100000000 }) {
+        "RELEASE_VERSION_CODE must be an integer from 9 to 2100000000 (the v1.0.6 APK uses 8)."
+    }
+} ?: 9
+val releaseVersionName = System.getenv("RELEASE_VERSION_NAME") ?: "1.0.7"
 val defaultRelayServerUrl = System.getenv("DEFAULT_RELAY_SERVER_URL") ?: "wss://relay.remote-desktop.co/ws"
 val escapedDefaultRelayServerUrl = defaultRelayServerUrl
     .replace("\\", "\\\\")
@@ -12,12 +19,12 @@ val escapedDefaultRelayServerUrl = defaultRelayServerUrl
 
 android {
     namespace = "co.remotedesktop"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "co.remotedesktop"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 36
         versionCode = releaseVersionCode
         versionName = releaseVersionName
         buildConfigField("String", "DEFAULT_RELAY_SERVER_URL", "\"$escapedDefaultRelayServerUrl\"")
@@ -48,8 +55,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 

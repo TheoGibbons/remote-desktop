@@ -6,7 +6,7 @@ This repository has two independent delivery paths:
 - A tag such as `v1.2.3` builds the Windows and Android apps and publishes
   them as GitHub Release assets.
 
-Generated EXE and APK files are deliberately not committed to Git.
+Generated EXE, APK and AAB files are deliberately not committed to Git.
 
 The first path is documented in full in [README.md](README.md) — see
 **Deploying to LIVE**, **Deploying to LIVE with hobby-traefik** and **Setup
@@ -21,9 +21,10 @@ server URL.
 
 ### Android signing
 
-Create an Android upload/release keystore once and back it up outside Git. The
-same key must sign every future update. Encode the binary keystore as Base64 and
-add these repository secrets:
+Reuse the existing Android release keystore and back it up outside Git. The same
+key signs both the direct-download APK and Google Play AAB. Encode the binary
+keystore as Base64 and provide these repository secrets (already configured for
+the published APK):
 
 | Secret | Value |
 |---|---|
@@ -38,8 +39,33 @@ On PowerShell, encode a keystore without line breaks with:
 [Convert]::ToBase64String([IO.File]::ReadAllBytes('remote-desktop-release.jks'))
 ```
 
-The release workflow refuses to publish an unsigned APK and verifies the APK
-signature before creating the GitHub Release.
+The release workflow builds the APK and AAB together, runs Android lint and unit
+tests, and verifies both signatures before creating the GitHub Release. Both
+artifacts compile and target API 36, with Android 8.0 (API 26) as the minimum.
+
+For local builds, use JDK 21 and Android SDK Platform 36. Set
+`ANDROID_KEYSTORE_FILE` to the absolute path of the existing keystore, and set
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` in
+the build process environment. Then run from the repository root:
+
+```powershell
+.\android\gradlew.bat -p android :app:assembleRelease :app:bundleRelease
+```
+
+The outputs are `android/app/build/outputs/apk/release/app-release.apk` and
+`android/app/build/outputs/bundle/release/app-release.aab`. The same signing key
+and version values apply to both. Android Studio builds default to
+version `1.0.7` / version code `9`; `RELEASE_VERSION_NAME` and
+`RELEASE_VERSION_CODE` override those values. For a build matching a tagged
+release, use its tag version and GitHub release workflow run number. Version
+codes must increase for new releases; the `v1.0.6` public APK used code `8`.
+
+When setting up Google Play, use **Protected with Play → Play Store protection
+→ Manage Play app signing → Change key → Export and upload a key from Java
+keystore**. Follow the Console's PEPK instructions to import this existing app
+signing key, and use the same key for uploads. Verify Play's app signing
+certificate against the published APK before rollout. The GitHub workflow
+provides the AAB as a release asset; upload it to Play Console separately.
 
 ### Windows signing with Azure Artifact Signing
 
@@ -88,6 +114,7 @@ GitHub Actions creates the release with these stable asset names:
 ```text
 RemoteDesktop-Windows-x64.exe
 RemoteDesktop-Android.apk
+RemoteDesktop-Android.aab
 SHA256SUMS.txt
 ```
 

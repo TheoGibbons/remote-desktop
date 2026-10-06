@@ -3,5 +3,6 @@
     <string name="accessibility_description">Lets your paired computer tap and swipe on this phone during a remote session. Only devices that know your session key can send input.</string>
     <string name="close">Close</string>
     <string name="stats">Stats</string>
+    <string name="rotate_screen">Rotate screen between portrait and landscape</string>
     <string name="highlight_dirty_rectangles">Highlight updated rectangles in red</string>
 </resources>

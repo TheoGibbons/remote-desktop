@@ -2,6 +2,8 @@ package co.remotedesktop
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -531,14 +533,16 @@ class ViewerActivity : AppCompatActivity() {
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            weightSum = 6f
+            weightSum = 7f
             setBackgroundColor(Color.parseColor("#88000000"))
-            fun addToolbarButton(label: String, weight: Float = 1f, onClick: () -> Unit) {
-                addView(tb(label, onClick), LinearLayout.LayoutParams(
+            fun addToolbarButton(label: String, weight: Float = 1f, onClick: () -> Unit): Button {
+                val button = tb(label, onClick)
+                addView(button, LinearLayout.LayoutParams(
                     0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
                     weight,
                 ))
+                return button
             }
             addToolbarButton("⌨") {
                 keyboard.visibility = if (keyboard.visibility == View.VISIBLE) {
@@ -546,10 +550,24 @@ class ViewerActivity : AppCompatActivity() {
                 } else View.VISIBLE
                 keyboard.post { updateBottomOcclusion() }
             }
+            addToolbarButton("↻") { rotateScreen() }.apply {
+                contentDescription = getString(R.string.rotate_screen)
+                tooltipText = contentDescription
+            }
             addToolbarButton("Stats") { showDiagnostics() }
             addToolbarButton("?") { showGestureHelp() }
             addToolbarButton("Ctrl+Alt+Del", weight = 2f) { ctrlAltDel() }
             addToolbarButton("✕") { finish() }
+        }
+    }
+
+    private fun rotateScreen() {
+        // Keep the chosen orientation even when the phone's auto-rotate is off.
+        // Sensor variants allow either side of the phone within that orientation.
+        requestedOrientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
     }
 
@@ -656,10 +674,9 @@ class ViewerActivity : AppCompatActivity() {
 
     /** Keep the virtual cursor above whichever keyboard actually covers pixels. */
     private fun installVisibleAreaTracking() {
-        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+        Ui.applySystemBarInsets(root, includeIme = false) { insets ->
             imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             root.post { updateBottomOcclusion() }
-            insets
         }
         root.viewTreeObserver.addOnGlobalLayoutListener {
             ViewCompat.getRootWindowInsets(root)?.let {

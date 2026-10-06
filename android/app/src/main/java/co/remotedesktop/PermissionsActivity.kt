@@ -50,6 +50,7 @@ class PermissionsActivity : AppCompatActivity() {
         prefs = Prefs(this)
         ConnectionManager.init(this)
         setContentView(R.layout.activity_permissions)
+        Ui.applySystemBarInsets(this)
 
         findViewById<MaterialToolbar>(R.id.toolbar).setNavigationOnClickListener { finish() }
 

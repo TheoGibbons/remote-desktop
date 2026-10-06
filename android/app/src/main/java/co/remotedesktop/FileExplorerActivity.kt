@@ -112,6 +112,7 @@ class FileExplorerActivity : AppCompatActivity() {
         root.addView(statusText)
 
         setContentView(root)
+        Ui.applySystemBarInsets(this)
         requestList("")
     }
 

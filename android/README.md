@@ -1,6 +1,6 @@
 # Android app
 
-Kotlin app (min SDK 26 / Android 8.0). It:
+Kotlin app (min SDK 26 / Android 8.0, compile/target SDK 36 / Android 16). It:
 
 - views & controls the paired PC with an **always-visible mouse pointer**
   (touchpad-style): drag to move the pointer, tap = left click, two-finger tap =
@@ -14,8 +14,10 @@ Kotlin app (min SDK 26 / Android 8.0). It:
 
 ## Build
 
-Open the `android/` folder in **Android Studio** (Giraffe or newer) and press
-Run — it downloads the right Gradle/SDK automatically.
+Open the `android/` folder in **Android Studio** with support for Android Gradle
+Plugin 8.11 and press Run. Use JDK 21 for Gradle so the Android 16 unit tests can
+run. The app still targets Java 17 bytecode. Install Android SDK Platform 36 when
+prompted; the Gradle wrapper selects Gradle 8.13 automatically.
 
 Or from the command line (needs the Android SDK; set `sdk.dir` in
 `android/local.properties` or the `ANDROID_HOME` env var):
@@ -27,10 +29,21 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Public APKs use the Gradle `release` build and must be signed. Tagged GitHub
+Public APKs and Play App Bundles use the Gradle `release` build and must be signed. Tagged GitHub
 releases provide the signing values through secrets, compile the production
-relay URL into the app's first-run default, and verify the resulting APK. See
+relay URL into the app's first-run default, and verify both signatures. The APK
+and AAB share the same version and existing signing key. See
 [`../RELEASING.md`](../RELEASING.md). Existing installs retain their saved URL.
+
+Run build, compatibility tests and lint with:
+
+```powershell
+.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+```
+
+The inset tests cover Android 14, 15 and 16, including keyboard visibility and
+cutouts. Before publishing, also test pairing, remote input, screen-sharing
+consent, file transfers, and rotation on an Android 16 device or emulator.
 
 ## First-run setup (once)
 
@@ -70,7 +83,11 @@ pause.
 - **View desktop** → live PC view with the mouse/keyboard controls.
 - **Browse files** → download to `Downloads`, or upload.
 
-In the desktop viewer, tap **Stats** for live end-to-end round-trip time,
+In the desktop viewer, tap **Rotate (↻)** to switch the phone between portrait
+and landscape, including when Android's auto-rotate is off. The selected
+orientation stays in effect for the current viewer session.
+
+Tap **Stats** for live end-to-end round-trip time,
 wire/screen throughput, changed-frame FPS, JPEG decode time, dirty-area rate,
 sender queue depth, sequence gaps, and decode errors. The same panel has a
 persistent **Highlight updated rectangles in red** debugging option.

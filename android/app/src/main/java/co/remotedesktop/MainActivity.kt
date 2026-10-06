@@ -48,6 +48,7 @@ class MainActivity : AppCompatActivity() {
         prefs = Prefs(this)
         ConnectionManager.init(this)
         setContentView(R.layout.activity_main)
+        Ui.applySystemBarInsets(this)
 
         val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
         toolbar.inflateMenu(R.menu.menu_main)

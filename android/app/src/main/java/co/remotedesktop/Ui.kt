@@ -2,15 +2,60 @@ package co.remotedesktop
 
 import android.app.Activity
 import android.content.Context
+import android.os.Build
 import android.text.InputType
+import android.view.View
+import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.FrameLayout
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.security.SecureRandom
 import java.util.Base64
 
 /** Small dialogs and helpers shared by the settings-style screens. */
 object Ui {
+
+    fun applySystemBarInsets(activity: Activity) {
+        val content = activity.findViewById<ViewGroup>(android.R.id.content)
+        applySystemBarInsets(content.getChildAt(0))
+    }
+
+    /** Keep controls clear of system bars/cutouts with Android 15+ edge-to-edge.
+     * Preserve the original padding across repeated dispatches and leave IME
+     * information available to the viewer's keyboard/occlusion tracking. */
+    fun applySystemBarInsets(
+        root: View,
+        includeIme: Boolean = true,
+        onInsets: (WindowInsetsCompat) -> Unit = {},
+    ) {
+        val left = root.paddingLeft
+        val top = root.paddingTop
+        val right = root.paddingRight
+        val bottom = root.paddingBottom
+        val safeAreaTypes = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            if (Build.VERSION.SDK_INT >= 35) {
+                val safeArea = insets.getInsets(safeAreaTypes)
+                val imeBottom = if (includeIme) insets.getInsets(WindowInsetsCompat.Type.ime()).bottom else 0
+                view.setPadding(
+                    left + safeArea.left, top + safeArea.top, right + safeArea.right,
+                    bottom + maxOf(safeArea.bottom, imeBottom),
+                )
+            }
+            onInsets(insets)
+            if (Build.VERSION.SDK_INT >= 35) {
+                // These insets have been handled here; children must not add them again.
+                WindowInsetsCompat.Builder(insets)
+                    .setInsets(safeAreaTypes, Insets.NONE)
+                    .setDisplayCutout(null)
+                    .build()
+            } else insets
+        }
+        ViewCompat.requestApplyInsets(root)
+    }
 
     /** A random session key that passes [SessionKeyPolicy]. */
     fun generateSessionKey(): String {

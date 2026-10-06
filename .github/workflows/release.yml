@@ -27,11 +27,11 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Set up Java 17
+      - name: Set up Java 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
@@ -45,6 +45,9 @@ jobs:
           }
           if (-not $env:RELAY_SERVER_URL.StartsWith('wss://')) {
             throw "The public release relay URL must use wss://."
+          }
+          if ([int]$env:GITHUB_RUN_NUMBER -lt 9) {
+            throw "Android releases must use a version code above v1.0.6's version code 8."
           }
           "RELEASE_VERSION_NAME=$version" >> $env:GITHUB_ENV
           "RELEASE_VERSION_CODE=$env:GITHUB_RUN_NUMBER" >> $env:GITHUB_ENV
@@ -105,7 +108,7 @@ jobs:
           & $signTool verify /pa /v dist/RemoteDesktop-Windows-x64.exe
           if ($LASTEXITCODE -ne 0) { throw 'Windows signature verification failed.' }
 
-      - name: Build signed Android app
+      - name: Build signed Android APK and Play bundle
         shell: pwsh
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -113,8 +116,10 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           DEFAULT_RELAY_SERVER_URL: wss://relay.remote-desktop.co/ws
         run: |
-          .\android\gradlew.bat -p android --no-daemon :app:assembleRelease
+          .\android\gradlew.bat -p android --no-daemon :app:assembleRelease :app:bundleRelease :app:lintRelease :app:testDebugUnitTest
+          if ($LASTEXITCODE -ne 0) { throw 'Android build failed.' }
           Move-Item android/app/build/outputs/apk/release/app-release.apk dist/RemoteDesktop-Android.apk
+          Move-Item android/app/build/outputs/bundle/release/app-release.aab dist/RemoteDesktop-Android.aab
 
       - name: Verify Android signature
         shell: pwsh
@@ -124,11 +129,19 @@ jobs:
             Select-Object -First 1 -ExpandProperty FullName
           if (-not $apkSigner) { throw 'apksigner was not found on the runner.' }
           & $apkSigner verify --verbose --print-certs dist/RemoteDesktop-Android.apk
+          if ($LASTEXITCODE -ne 0) { throw 'Android APK signature verification failed.' }
+
+          $bundleVerification = & jarsigner -verify dist/RemoteDesktop-Android.aab 2>&1
+          $bundleVerificationExit = $LASTEXITCODE
+          $bundleVerification | Write-Output
+          if ($bundleVerificationExit -ne 0 -or ($bundleVerification -join "`n") -notmatch 'jar verified\.') {
+            throw 'Android App Bundle signature verification failed.'
+          }
 
       - name: Create checksums
         shell: pwsh
         run: |
-          $names = @('RemoteDesktop-Windows-x64.exe', 'RemoteDesktop-Android.apk')
+          $names = @('RemoteDesktop-Windows-x64.exe', 'RemoteDesktop-Android.apk', 'RemoteDesktop-Android.aab')
           $checksums = foreach ($name in $names) {
             $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $name"
@@ -144,4 +157,5 @@ jobs:
           files: |
             dist/RemoteDesktop-Windows-x64.exe
             dist/RemoteDesktop-Android.apk
+            dist/RemoteDesktop-Android.aab
             dist/SHA256SUMS.txt
