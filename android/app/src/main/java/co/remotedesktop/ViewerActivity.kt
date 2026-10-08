@@ -527,6 +527,8 @@ class ViewerActivity : AppCompatActivity() {
             isAllCaps = false
             isSingleLine = true
             minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
             setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
             alpha = 0.85f
             setOnClickListener { onClick() }
@@ -538,7 +540,7 @@ class ViewerActivity : AppCompatActivity() {
                 val button = tb(label, onClick)
                 addView(button, LinearLayout.LayoutParams(
                     0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    (36 * density).toInt(),
                     1f,
                 ))
                 return button
@@ -601,6 +603,7 @@ class ViewerActivity : AppCompatActivity() {
                 Move pointer — drag with one finger
                 Left-click — tap with one finger
                 Left-click drag — press and hold, then drag
+                Drag scrolling — hold near an edge while selecting
                 Right-click — tap with two fingers
                 Pan — drag with two fingers
                 Zoom — pinch with two fingers
@@ -917,6 +920,7 @@ class ViewerActivity : AppCompatActivity() {
         ConnectionManager.binaryListeners.remove(binaryListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
         if (::keyboard.isInitialized) keyboard.releaseAll()
+        if (::screen.isInitialized) screen.releaseInput()
         hideDiagnostics()
         diagnosticsHandler.removeCallbacksAndMessages(null)
         winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "stop-view").put("to", it)) }

@@ -2,30 +2,33 @@ package co.remotedesktop
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
+import androidx.appcompat.widget.AppCompatButton
+import kotlin.math.roundToInt
 
-/**
- * A full "hardware" keyboard for controlling Windows, including Ctrl / Alt /
- * Shift / Win and the function/navigation keys.
- *
- * Emission model:
- *  - Ctrl / Alt / Win are hold-toggles: tapping sends the key down and it stays
- *    held (highlighted) so you can build combos like Ctrl+Alt+Del; tap again to
- *    release. They are auto-released when the panel is hidden.
- *  - Shift flips the on-screen letter/symbol layer and, for non-text keys, is
- *    wrapped around the emitted key so Shift+Arrow / Ctrl+Shift+Esc work.
- *  - Printable keys with no Ctrl/Alt/Win held are sent as literal [onText] so
- *    symbols and letters type correctly regardless of host layout; with a
- *    modifier held they are sent as [onKey] base codes so shortcuts work.
+/** Gboard-style typing rows with compact desktop modifiers and navigation above them.
+ * Ctrl / Alt / Win stay held until toggled off or the panel is hidden. Shift
+ * changes the typing layer and wraps special keys for shortcuts such as Shift+Arrow.
+ * Printable keys use literal text unless a desktop modifier is held.
  */
 @SuppressLint("ViewConstructor", "SetTextI18n")
 class KeyboardPanel(context: Context) : LinearLayout(context) {
-
     var onKey: ((code: String, action: String) -> Unit)? = null
     var onText: ((String) -> Unit)? = null
     var onOpenIme: (() -> Unit)? = null
@@ -33,216 +36,278 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     private val chordMods = linkedMapOf("CTRL" to false, "ALT" to false, "WIN" to false)
     private var shift = false
     private var symbols = false
+    private var extraSymbols = false
     private var fnLayer = false
-
-    private val lettersRows = listOf(
-        "q w e r t y u i o p",
-        "a s d f g h j k l",
-        "z x c v b n m"
-    )
-    private val symbolRows = listOf(
-        "1 2 3 4 5 6 7 8 9 0",
-        "@ # $ % & * - + ( )",
-        "! \" ' : ; / ? , ."
-    )
-
-    private val modButtons = HashMap<String, Button>()
-    private lateinit var shiftButton: Button
-    private lateinit var dynamic: LinearLayout
-    private val density = context.resources.displayMetrics.density
-
-    // Key size adapts to the screen so all rows fit in landscape too.
+    private val density get() = resources.displayMetrics.density
     private var keyHeightPx = 0
-    private var keyTextSp = 13f
+    private var controlHeightPx = 0
+    private var rowGapPx = 0
+    private var keyTextSp = 24f
+    private val modButtons = HashMap<String, Button>()
 
     init {
         orientation = VERTICAL
-        setBackgroundColor(Color.parseColor("#20232A"))
-        val pad = (4 * density).toInt()
-        setPadding(pad, pad, pad, pad)
+        setBackgroundColor(Color.parseColor("#383838"))
         buildAll()
     }
 
+    private fun dp(v: Float) = (v * density).roundToInt()
+
     private fun buildAll() {
-        computeKeySize()
+        val dm = resources.displayMetrics
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        // The old modifier buttons were 30..46 dp high with 2 dp of margins.
+        // Reduce that whole row to 75%, independently of the typing key height.
+        val oldHeight = (dm.heightPixels * .60f / 8).toInt() - dp(2f)
+        controlHeightPx = ((oldHeight.coerceIn(dp(30f), dp(46f)) + dp(2f)) * .75f).roundToInt()
+        rowGapPx = dp(if (landscape) 6f else 10f)
+        val typingRows = if (fnLayer) 6 else 4
+        val available = dm.heightPixels * .65f - controlHeightPx * 2 - dp(12f)
+        keyHeightPx = minOf(dp(if (landscape) 34f else 44f),
+            (available / typingRows).toInt() - rowGapPx).coerceAtLeast(dp(24f))
+        keyTextSp = if (keyHeightPx < dp(34f)) 20f else if (landscape) 22f else 24f
+        setPadding(dp(2f), dp(4f), dp(2f), dp(4f))
         removeAllViews()
         modButtons.clear()
         addView(buildModifierRow())
-        dynamic = LinearLayout(context).apply { orientation = VERTICAL }
-        addView(dynamic)
-        rebuildDynamic()
+        addView(buildNavigationRow())
+        if (fnLayer) {
+            for (start in listOf(1, 7)) addView(row(*(start until start + 6).map { i ->
+                key("F$i", textSp = 16f) { emitKeyPress("F$i") }
+            }.toTypedArray()))
+        }
+        if (symbols) buildSymbols() else buildLetters()
+        addView(buildBottomRow())
         refreshModHighlights()
     }
 
-    /** Budget ~60% of the screen height over the 8 possible rows, so the
-     *  panel never overflows (landscape) but keys stay finger-sized (portrait). */
-    private fun computeKeySize() {
-        val dm = context.resources.displayMetrics
-        val rows = 8
-        val perRow = (dm.heightPixels * 0.60f / rows).toInt() - dp(2) // minus margins
-        keyHeightPx = perRow.coerceIn(dp(30), dp(46))
-        keyTextSp = if (keyHeightPx < dp(38)) 11f else 13f
-    }
-
-    /** The viewer activity handles rotation itself (configChanges), so rebuild
-     *  the rows for the new screen size here. */
     override fun onConfigurationChanged(newConfig: Configuration?) {
         super.onConfigurationChanged(newConfig)
         post { buildAll() }
     }
 
-    /** Release any held modifiers (call when hiding the panel). */
     fun releaseAll() {
-        for ((code, on) in chordMods) if (on) onKey?.invoke(code, "up")
+        for ((code, held) in chordMods) if (held) onKey?.invoke(code, "up")
         chordMods.keys.forEach { chordMods[it] = false }
         shift = false
-        refreshModHighlights()
+        buildAll()
     }
 
-    private fun dp(v: Int) = (v * density).toInt()
-
-    private fun key(label: String, weight: Float = 1f, onTap: (Button) -> Unit): Button {
-        return Button(context).apply {
-            text = label
-            isAllCaps = false
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, keyTextSp)
-            setPadding(dp(2), 0, dp(2), 0)
-            minWidth = 0
-            minimumWidth = 0
-            minHeight = 0
-            minimumHeight = 0
-            layoutParams = LayoutParams(0, keyHeightPx, weight).apply {
-                setMargins(dp(1), dp(1), dp(1), dp(1))
-            }
-            setOnClickListener { onTap(this) }
+    private fun key(
+        label: String,
+        weight: Float = 1f,
+        special: Boolean = false,
+        pill: Boolean = false,
+        compact: Boolean = false,
+        textSp: Float = keyTextSp,
+        icon: String? = null,
+        onTap: () -> Unit,
+    ): Button = KeyboardButton(context, icon).apply {
+        text = if (icon == null) label else ""
+        contentDescription = label
+        isAllCaps = false
+        isSingleLine = true
+        gravity = Gravity.CENTER
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, textSp)
+        setTextColor(Color.WHITE)
+        setPadding(0, 0, 0, 0)
+        minWidth = 0; minimumWidth = 0
+        minHeight = 0; minimumHeight = 0
+        backgroundTintList = null
+        stateListAnimator = null
+        val radius = if (pill) 100f else 7f
+        val fill = if (special) SPECIAL_COLOR else KEY_COLOR
+        background = keyBackground(fill, radius)
+        // Store the normal background so active modifiers keep their rounded shape.
+        tag = Pair(fill, radius)
+        layoutParams = LayoutParams(0, if (compact) controlHeightPx - dp(2f) else keyHeightPx, weight).apply {
+            setMargins(dp(2f), dp(1f), dp(2f), if (compact) dp(1f) else rowGapPx - dp(1f))
         }
+        setOnClickListener { onTap() }
     }
 
-    private fun row(vararg buttons: Button): LinearLayout {
-        return LinearLayout(context).apply {
-            orientation = HORIZONTAL
-            gravity = Gravity.CENTER
-            buttons.forEach { addView(it) }
+    private fun keyBackground(color: Int, radius: Float): Drawable {
+        val shape = GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(radius).toFloat()
         }
+        return RippleDrawable(ColorStateList.valueOf(Color.parseColor("#557F879A")), shape, null)
+    }
+
+    private fun row(vararg keys: View) = LinearLayout(context).apply {
+        orientation = HORIZONTAL
+        gravity = Gravity.TOP
+        isBaselineAligned = false
+        keys.forEach { addView(it) }
+    }
+
+    private fun spacer(weight: Float) = View(context).apply {
+        layoutParams = LayoutParams(0, 1, weight)
     }
 
     private fun buildModifierRow(): LinearLayout {
-        fun modKey(label: String, code: String): Button {
-            val b = key(label, 1.2f) { toggleMod(code) }
-            modButtons[code] = b
-            return b
-        }
-        shiftButton = key("⇧ Shift", 1.4f) { toggleShift() }
+        fun mod(label: String, code: String) = key(label, compact = true, special = true, textSp = 12f) {
+            val held = chordMods[code] != true
+            chordMods[code] = held
+            onKey?.invoke(code, if (held) "down" else "up")
+            refreshModHighlights()
+        }.also { modButtons[code] = it }
         return row(
-            modKey("Ctrl", "CTRL"),
-            modKey("Win", "WIN"),
-            modKey("Alt", "ALT"),
-            shiftButton,
-            key("Fn", 1f) { fnLayer = !fnLayer; rebuildDynamic() },
-            key(if (symbols) "ABC" else "?123", 1.2f) { symbols = !symbols; rebuildDynamic() },
-            key("⌨", 1f) { onOpenIme?.invoke() }
+            mod("Ctrl", "CTRL"), mod("Win", "WIN"), mod("Alt", "ALT"),
+            key("Fn", compact = true, special = true, textSp = 12f) { fnLayer = !fnLayer; buildAll() }
+                .also { highlight(it, fnLayer) },
+            control("Esc", "ESC"), control("Tab", "TAB"),
+            key("Phone keyboard", compact = true, special = true, icon = "keyboard") { onOpenIme?.invoke() },
         )
     }
 
-    private fun toggleMod(code: String) {
-        val now = !(chordMods[code] ?: false)
-        chordMods[code] = now
-        onKey?.invoke(code, if (now) "down" else "up")
-        refreshModHighlights()
+    private fun control(label: String, code: String) =
+        key(label, compact = true, special = true, textSp = 11f) { emitKeyPress(code) }
+
+    private fun buildNavigationRow() = row(
+        control("Del", "DELETE"), control("Home", "HOME"), control("End", "END"),
+        control("PgUp", "PGUP"), control("PgDn", "PGDN"),
+        control("◀", "LEFT").apply { contentDescription = "Left arrow" },
+        control("▲", "UP").apply { contentDescription = "Up arrow" },
+        control("▼", "DOWN").apply { contentDescription = "Down arrow" },
+        control("▶", "RIGHT").apply { contentDescription = "Right arrow" },
+    )
+
+    private fun printable(glyph: String) = key(glyph) { emitPrintable(glyph, glyph.uppercase()) }
+
+    private fun buildLetters() {
+        fun letter(char: Char) = printable(if (shift) char.uppercase() else char.toString())
+        addView(row(*"qwertyuiop".map { letter(it) }.toTypedArray()))
+        addView(row(spacer(.5f), *"asdfghjkl".map { letter(it) }.toTypedArray(), spacer(.5f)))
+        val shiftKey = key("Shift", 1.5f, special = true, icon = "shift") { shift = !shift; buildAll() }
+        highlight(shiftKey, shift)
+        addView(row(shiftKey, *"zxcvbnm".map { letter(it) }.toTypedArray(), backspace()))
     }
 
-    private fun toggleShift() {
-        shift = !shift
-        refreshModHighlights()
-        rebuildDynamic()
+    private fun buildSymbols() {
+        val first = if (extraSymbols) listOf("~", "`", "|", "•", "√", "π", "÷", "×", "<", ">")
+            else "1234567890".map { it.toString() }
+        val second = if (extraSymbols) listOf("£", "¢", "€", "¥", "^", "°", "=", "{", "}", "\\")
+            else listOf("@", "#", "$", "%", "&", "*", "-", "+", "(", ")")
+        val third = if (extraSymbols) listOf("_", "©", "®", "™", "[", "]", "!")
+            else listOf("!", "/", ";", ":", "'", "\"", "?")
+        addView(row(*first.map { printable(it) }.toTypedArray()))
+        addView(row(*second.map { printable(it) }.toTypedArray()))
+        addView(row(
+            key(if (extraSymbols) "?123" else "=\\<", 1.5f, special = true, textSp = 16f) {
+                extraSymbols = !extraSymbols; buildAll()
+            },
+            *third.map { printable(it) }.toTypedArray(), backspace(),
+        ))
     }
+
+    private fun backspace() = key("Backspace", 1.5f, special = true, icon = "backspace") {
+        emitKeyPress("BACKSPACE")
+    }
+
+    private fun buildBottomRow() = row(
+        key(if (symbols) "ABC" else "?123", 1.5f, special = true, pill = true, textSp = 16f) {
+            symbols = !symbols; extraSymbols = false; buildAll()
+        },
+        key(",", special = true) { emitPrintable(",", ",") },
+        key("Emoji and phone keyboard", icon = "emoji") { onOpenIme?.invoke() },
+        key("English", 4f, textSp = 14f) { emitPrintable(" ", "SPACE") }.apply { contentDescription = "Space" },
+        key(".", special = true) { emitPrintable(".", ".") },
+        key("Enter", 1.5f, special = true, pill = true, icon = "enter") { emitKeyPress("ENTER") },
+    )
 
     private fun refreshModHighlights() {
-        for ((code, b) in modButtons) highlight(b, chordMods[code] == true)
-        highlight(shiftButton, shift)
+        for ((code, button) in modButtons) highlight(button, chordMods[code] == true)
     }
 
-    private fun highlight(b: Button, on: Boolean) {
-        b.setBackgroundColor(if (on) Color.parseColor("#3B82F6") else Color.parseColor("#3A3F4B"))
-        b.setTextColor(Color.WHITE)
+    @Suppress("UNCHECKED_CAST")
+    private fun highlight(button: Button, on: Boolean) {
+        val (color, radius) = button.tag as Pair<Int, Float>
+        button.background = keyBackground(if (on) Color.parseColor("#8096CD") else color, radius)
+        button.isSelected = on
     }
-
-    private fun anyChordMod() = chordMods.values.any { it }
-
-    // ---- key emission ----
 
     private fun emitPrintable(glyph: String, baseCode: String) {
-        if (anyChordMod()) emitKeyPress(baseCode) else onText?.invoke(glyph)
+        if (chordMods.values.any { it }) emitKeyPress(baseCode) else onText?.invoke(glyph)
     }
 
     private fun emitKeyPress(code: String) {
-        val wrapShift = shift
-        if (wrapShift) onKey?.invoke("SHIFT", "down")
+        if (shift) onKey?.invoke("SHIFT", "down")
         onKey?.invoke(code, "press")
-        if (wrapShift) onKey?.invoke("SHIFT", "up")
+        if (shift) onKey?.invoke("SHIFT", "up")
     }
 
-    // ---- dynamic layers ----
+    private companion object {
+        val KEY_COLOR = Color.parseColor("#242424")
+        val SPECIAL_COLOR = Color.parseColor("#41485C")
+    }
+}
 
-    private fun rebuildDynamic() {
-        dynamic.removeAllViews()
-
-        // Top row: F-keys when Fn is on, else the number row.
-        if (fnLayer) {
-            val f1 = ArrayList<Button>()
-            for (i in 1..6) f1.add(key("F$i") { emitKeyPress("F$i") })
-            val f2 = ArrayList<Button>()
-            for (i in 7..12) f2.add(key("F$i") { emitKeyPress("F$i") })
-            dynamic.addView(row(*f1.toTypedArray()))
-            dynamic.addView(row(*f2.toTypedArray()))
-        } else {
-            val digits = (if (symbols) symbolRows[0] else "1 2 3 4 5 6 7 8 9 0").split(" ")
-            dynamic.addView(row(*digits.map { g ->
-                key(g) { emitPrintable(g, g) }
-            }.toTypedArray()))
+@SuppressLint("ViewConstructor") // Constructed in code, never inflated from XML.
+private class KeyboardButton(context: Context, icon: String?) : AppCompatButton(context) {
+    private val keyIcon = icon?.let { KeyboardIcon(it, resources.displayMetrics.density) }
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        keyIcon?.let {
+            val saved = canvas.save()
+            canvas.translate(scrollX.toFloat(), scrollY.toFloat())
+            it.setBounds(0, 0, width, height)
+            it.draw(canvas)
+            canvas.restoreToCount(saved)
         }
+    }
+}
 
-        val rows = if (symbols) symbolRows.drop(1) else lettersRows.take(2)
-        for (r in rows) {
-            dynamic.addView(row(*r.split(" ").map { g ->
-                val glyph = if (!symbols && shift) g.uppercase() else g
-                key(glyph) { emitPrintable(glyph, g.uppercase()) }
-            }.toTypedArray()))
-        }
-
-        // Last letter row gets Shift + Backspace bookends (letters layer only).
-        if (!symbols) {
-            val letters = lettersRows[2].split(" ").map { g ->
-                val glyph = if (shift) g.uppercase() else g
-                key(glyph) { emitPrintable(glyph, g.uppercase()) }
+/** Outline icons keep the Gboard proportions without depending on font glyphs. */
+private class KeyboardIcon(private val icon: String, private val density: Float) : Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#E4E8F5")
+        style = Paint.Style.STROKE
+        strokeWidth = 1.8f
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+    }
+    override fun draw(canvas: Canvas) {
+        val size = minOf(24f * density, bounds.height() * .70f)
+        canvas.save()
+        canvas.translate(bounds.exactCenterX() - size / 2f, bounds.exactCenterY() - size / 2f)
+        canvas.scale(size / 24f, size / 24f)
+        val path = Path()
+        when (icon) {
+            "shift" -> {
+                path.moveTo(12f, 2f); path.lineTo(22f, 12f); path.lineTo(16f, 12f)
+                path.lineTo(16f, 22f); path.lineTo(8f, 22f); path.lineTo(8f, 12f)
+                path.lineTo(2f, 12f); path.close()
             }
-            val shiftKey = key(if (shift) "⇧" else "⇧", 1.5f) { toggleShift() }
-            highlight(shiftKey, shift)
-            val back = key("⌫", 1.5f) { emitKeyPress("BACKSPACE") }
-            dynamic.addView(row(shiftKey, *letters.toTypedArray(), back))
-        } else {
-            val third = symbolRows[2].split(" ").map { g -> key(g) { emitPrintable(g, g) } }
-            val back = key("⌫", 1.5f) { emitKeyPress("BACKSPACE") }
-            dynamic.addView(row(*third.toTypedArray(), back))
+            "backspace" -> {
+                path.moveTo(8f, 4f); path.lineTo(22f, 4f); path.lineTo(22f, 20f)
+                path.lineTo(8f, 20f); path.lineTo(1f, 12f); path.close()
+                path.moveTo(11f, 8f); path.lineTo(18f, 16f)
+                path.moveTo(18f, 8f); path.lineTo(11f, 16f)
+            }
+            "enter" -> {
+                path.moveTo(21f, 5f); path.lineTo(21f, 13f); path.lineTo(3f, 13f)
+                path.moveTo(9f, 7f); path.lineTo(3f, 13f); path.lineTo(9f, 19f)
+            }
+            "keyboard" -> {
+                canvas.drawRoundRect(1f, 4f, 23f, 20f, 2f, 2f, paint)
+                for (y in listOf(8f, 12f)) for (x in listOf(5f, 9f, 13f, 17f))
+                    canvas.drawPoint(x, y, paint)
+                path.moveTo(6f, 16f); path.lineTo(18f, 16f)
+            }
+            "emoji" -> {
+                canvas.drawCircle(12f, 12f, 10f, paint)
+                canvas.drawCircle(8f, 9f, .8f, paint)
+                canvas.drawCircle(16f, 9f, .8f, paint)
+                canvas.drawArc(6f, 6f, 18f, 18f, 20f, 140f, false, paint)
+            }
         }
-
-        // Bottom control row: navigation + space + enter.
-        dynamic.addView(row(
-            key("Esc", 1.1f) { emitKeyPress("ESC") },
-            key("Tab", 1.1f) { emitKeyPress("TAB") },
-            key("◀", 1f) { emitKeyPress("LEFT") },
-            key("Space", 3f) { emitPrintable(" ", "SPACE") },
-            key("▶", 1f) { emitKeyPress("RIGHT") },
-            key("Enter", 1.6f) { emitKeyPress("ENTER") }
-        ))
-        dynamic.addView(row(
-            key("Del", 1.1f) { emitKeyPress("DELETE") },
-            key("Home", 1.2f) { emitKeyPress("HOME") },
-            key("End", 1.1f) { emitKeyPress("END") },
-            key("PgUp", 1.2f) { emitKeyPress("PGUP") },
-            key("PgDn", 1.2f) { emitKeyPress("PGDN") },
-            key("▲", 1f) { emitKeyPress("UP") },
-            key("▼", 1f) { emitKeyPress("DOWN") }
-        ))
+        canvas.drawPath(path, paint)
+        canvas.restore()
     }
+    override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+    override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter }
+    @Deprecated("Deprecated in Android")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
 }

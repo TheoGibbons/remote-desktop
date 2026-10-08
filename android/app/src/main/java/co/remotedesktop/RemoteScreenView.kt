@@ -403,13 +403,13 @@ class RemoteScreenView @JvmOverloads constructor(
     private fun cursorNormY() = (cursorY / deskH).toDouble().coerceIn(0.0, 1.0)
 
     /** Move the pointer by a finger delta given in view pixels. */
-    private fun movePointerBy(dxView: Float, dyView: Float) {
+    private fun movePointerBy(dxView: Float, dyView: Float, force: Boolean = false) {
         if (deskW == 0 || deskH == 0) return
         val scale = currentScale()
         cursorX = (cursorX + dxView / scale).coerceIn(0f, deskW.toFloat())
         cursorY = (cursorY + dyView / scale).coerceIn(0f, deskH.toFloat())
         keepPointerVisible()
-        sendPointer()
+        sendPointer(force)
         invalidate()
     }
 
@@ -604,6 +604,45 @@ class RemoteScreenView @JvmOverloads constructor(
     private var downFocusX = 0f
     private var downFocusY = 0f
 
+    private var dragFingerX = 0f
+    private var dragFingerY = 0f
+    private var lastDragViewportAt = 0L
+
+    // Touch events stop arriving when the finger is held still at an edge.
+    // Continue moving the held pointer, letting keepPointerVisible reveal more
+    // of the desktop, until the finger leaves the edge or the drag ends.
+    private val dragEdgeTicker = object : Runnable {
+        override fun run() {
+            if (state != State.DRAG_LEFT) return
+            val top = topOcclusionPx.toFloat()
+            val bottom = (height - bottomOcclusionPx).toFloat()
+            val dx = edgeDirection(dragFingerX, 0f, width.toFloat())
+            val dy = edgeDirection(dragFingerY, top, bottom)
+            if (dx != 0f || dy != 0f) {
+                val step = DRAG_EDGE_PAN_DP_PER_SECOND * density * WHEEL_TICK_MS / 1000f
+                movePointerBy(dx * step, dy * step, force = true)
+                val now = SystemClock.uptimeMillis()
+                if (now - lastDragViewportAt >= VIEWPORT_SETTLE_MS) {
+                    lastDragViewportAt = now
+                    // Continuous pointer-follow panning must not starve the
+                    // normal debounce and leave the newly revealed area blank.
+                    emitViewport()
+                }
+            }
+            postDelayed(this, WHEEL_TICK_MS)
+        }
+    }
+
+    private fun edgeDirection(position: Float, start: Float, end: Float): Float {
+        if (end <= start) return 0f
+        val band = min(48f * density, (end - start) / 4f)
+        return when {
+            position < start + band -> -((start + band - position) / band).coerceIn(0f, 1f)
+            position > end - band -> ((position - end + band) / band).coerceIn(0f, 1f)
+            else -> 0f
+        }
+    }
+
     // Three-finger wheel throttle: origin = finger focus when the 3rd finger
     // landed, current = the latest focus. wheelTicker scrolls based on the
     // standing displacement (current - origin) until the fingers return home.
@@ -675,6 +714,7 @@ class RemoteScreenView @JvmOverloads constructor(
         // distance (WHEEL_PX_PER_NOTCH) past the neutral deadzone.
         const val WHEEL_TICK_MS = 40L
         const val WHEEL_SPEED = 10.0
+        const val DRAG_EDGE_PAN_DP_PER_SECOND = 180f
         const val DIRTY_HIGHLIGHT_MS = 350L
     }
 
@@ -682,12 +722,30 @@ class RemoteScreenView @JvmOverloads constructor(
         state = dragState
         sendPointer(force = true)
         onMouseButton?.invoke("left", "down", cursorNormX(), cursorNormY())
+        lastDragViewportAt = 0L
+        postDelayed(dragEdgeTicker, WHEEL_TICK_MS)
     }
 
     private fun endDrag() {
+        removeCallbacks(dragEdgeTicker)
         sendPointer(force = true)
         onMouseButton?.invoke("left", "up", cursorNormX(), cursorNormY())
         state = State.NONE
+    }
+
+    /** Cancel timers and release the remote button when the viewer loses focus. */
+    fun releaseInput() {
+        removeCallbacks(holdRunnable)
+        removeCallbacks(wheelTicker)
+        removeCallbacks(dragEdgeTicker)
+        if (state == State.DRAG_LEFT) endDrag()
+        state = State.NONE
+    }
+
+    override fun onDetachedFromWindow() {
+        releaseInput()
+        removeCallbacks(viewportReporter)
+        super.onDetachedFromWindow()
     }
 
     private fun click(button: String) {
@@ -703,6 +761,7 @@ class RemoteScreenView @JvmOverloads constructor(
                 downTime = System.currentTimeMillis()
                 downX = event.x; downY = event.y
                 lastX = event.x; lastY = event.y
+                dragFingerX = event.x; dragFingerY = event.y
                 moved = false
                 state = State.POINTER1
                 // Arm the press-and-hold timer: if the finger stays put for
@@ -714,9 +773,9 @@ class RemoteScreenView @JvmOverloads constructor(
             MotionEvent.ACTION_POINTER_DOWN -> {
                 removeCallbacks(holdRunnable)
                 removeCallbacks(wheelTicker)
+                if (state == State.DRAG_LEFT) endDrag()
                 when (event.pointerCount) {
                     2 -> {
-                        if (state == State.DRAG_LEFT) endDrag()
                         state = State.POINTER2
                         twoDownTime = System.currentTimeMillis()
                         downDist = spacing(event); prevDist = downDist
@@ -795,6 +854,8 @@ class RemoteScreenView @JvmOverloads constructor(
     }
 
     private fun handleOneFingerMove(event: MotionEvent) {
+        dragFingerX = event.x
+        dragFingerY = event.y
         val dx = event.x - lastX
         val dy = event.y - lastY
         if (!moved && hypot(event.x - downX, event.y - downY) > touchSlop) {

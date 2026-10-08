@@ -92,6 +92,15 @@ wire/screen throughput, changed-frame FPS, JPEG decode time, dirty-area rate,
 sender queue depth, sequence gaps, and decode errors. The same panel has a
 persistent **Highlight updated rectangles in red** debugging option.
 
+While holding a left-click drag, hold your finger near any edge of the visible
+desktop to keep moving the cursor in that direction. The zoomed view follows
+the cursor so you can extend a selection beyond the phone screen without zooming
+out. Movement speeds up closer to the edge and stops when you move away or lift
+your finger. The top toolbar and keyboard control rows use 75% of their previous
+height. The keyboard uses Gboard-style typing rows; **?123** opens numbers and
+symbols, **ABC** returns to letters, and **Fn** exposes F1–F12. Desktop modifiers
+and navigation keys sit above the typing rows, with a single **Shift** beside Z.
+
 ## Google Play notes
 
 - The app requests `MANAGE_EXTERNAL_STORAGE` (All-files access) so the desktop
