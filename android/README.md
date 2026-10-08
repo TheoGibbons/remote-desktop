@@ -42,7 +42,9 @@ Run build, compatibility tests and lint with:
 ```
 
 The inset tests cover Android 14, 15 and 16, including keyboard visibility and
-cutouts. Before publishing, also test pairing, remote input, screen-sharing
+cutouts. H.264 regression tests simulate output becoming ready after the final
+network packet, decoder congestion, output timeout and viewer pause cleanup.
+Before publishing, also test pairing, remote input, screen-sharing
 consent, file transfers, and rotation on an Android 16 device or emulator.
 
 ## First-run setup (once)

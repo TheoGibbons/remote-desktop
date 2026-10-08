@@ -17,8 +17,8 @@ import android.view.Surface
  * here — it also means a viewer can join or recover mid-stream on any frame the
  * host flags as a keyframe.
  *
- * Not thread-safe, and deliberately so: it is only ever touched from the single
- * network thread that delivers binary frames.
+ * Calls are serialized by the viewer, including output polling after the
+ * network has gone idle.
  */
 class H264Decoder(surface: Surface, val width: Int, val height: Int) {
 
@@ -51,38 +51,34 @@ class H264Decoder(surface: Surface, val width: Int, val height: Int) {
      * place until the next frame corrects it.
      */
     fun decode(accessUnit: ByteArray, presentationUs: Long, keyframe: Boolean): Long {
-        if (!started) return -1L
-        try {
-            val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
-            if (index >= 0) {
-                val buffer = codec.getInputBuffer(index)
-                if (buffer != null) {
-                    buffer.clear()
-                    buffer.put(accessUnit)
-                    val flags = if (keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-                    codec.queueInputBuffer(index, 0, accessUnit.size, presentationUs, flags)
-                }
-            }
+        check(started) { "Decoder is not running" }
+        val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
+        // Silently dropping an inter frame corrupts every dependent frame.
+        check(index >= 0) { "Decoder input queue is full" }
+        val buffer = checkNotNull(codec.getInputBuffer(index))
+        buffer.clear()
+        buffer.put(accessUnit)
+        val flags = if (keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+        codec.queueInputBuffer(index, 0, accessUnit.size, presentationUs, flags)
+        return drain()
+    }
 
-            var renderedPts = -1L
-            while (true) {
-                val out = codec.dequeueOutputBuffer(info, 0)
-                when {
-                    out >= 0 -> {
-                        // The last one out is what ends up on the surface.
-                        renderedPts = info.presentationTimeUs
-                        // true = hand it to the surface rather than discard it.
-                        codec.releaseOutputBuffer(out, true)
-                    }
-                    // Format and buffer changes need no action when decoding to
-                    // a surface; the surface follows the stream.
-                    else -> return renderedPts
+    /** Output can become ready after decode() returns, without any new input. */
+    fun drain(): Long {
+        check(started) { "Decoder is not running" }
+        var renderedPts = -1L
+        while (true) {
+            val out = codec.dequeueOutputBuffer(info, 0)
+            when {
+                out >= 0 -> {
+                    // The last one out is what ends up on the surface.
+                    renderedPts = info.presentationTimeUs
+                    // true = hand it to the surface rather than discard it.
+                    codec.releaseOutputBuffer(out, true)
                 }
+                // Keep draining past format/buffer notifications.
+                out == MediaCodec.INFO_TRY_AGAIN_LATER -> return renderedPts
             }
-        } catch (e: IllegalStateException) {
-            // The codec has gone (device lost, app backgrounded mid-frame).
-            started = false
-            return -1L
         }
     }
 

@@ -517,11 +517,15 @@ public class ScreenStreamer
                 if (h264)
                 {
                     bool moved = srcRegion != sentRegion || outW != sentOutW || outH != sentOutH;
+                    // Recovery must not depend on fresh desktop damage. A viewer
+                    // can lose the last frame before the desktop goes idle.
+                    bool requestIdr = forceKeyframe || _keyframeRequested
+                        || (deltaSinceKeyframe && now - lastKeyframeAt > KeyframeIntervalMs);
                     // The crop buffer persists between frames, so normally only
                     // the damaged parts need re-rendering into it. A move
                     // invalidates all of it.
                     List<Rectangle> renderRects;
-                    if (moved || forceKeyframe)
+                    if (moved || requestIdr)
                     {
                         renderRects = new List<Rectangle> { srcRegion };
                     }
@@ -546,7 +550,7 @@ public class ScreenStreamer
                     RenderRegion(surface, output!, renderRects, srcRegion);
 
                     byte[]? au;
-                    try { au = encoder!.Encode(output!, forceKeyframe || _keyframeRequested); }
+                    try { au = encoder!.Encode(output!, requestIdr); }
                     catch
                     {
                         // Lost the encoder (device reset, driver update): drop

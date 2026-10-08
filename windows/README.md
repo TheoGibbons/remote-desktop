@@ -37,6 +37,12 @@ does not perform that signing. For setup and publishing steps, see
 (You can also open the folder in Visual Studio 2022 — it will detect the
 `.csproj` — and press F5.)
 
+Run the deterministic H.264 idle/recovery regression checks from the repository
+root with `dotnet run --project windows/RemoteDesktopWin.Tests`. They exercise
+the production capture loop with capture, encoder and transport doubles, including
+an idle keyframe request behind a busy lane and the periodic repair of a final
+inter frame. They take about 11 seconds and do not require a relay or GPU encoder.
+
 ## First-run setup (once)
 
 1. Launch the app.

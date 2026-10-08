@@ -85,6 +85,35 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var videoView: TextureView
     @Volatile private var videoSurface: Surface? = null
     private var decoder: H264Decoder? = null
+    private val videoLock = Any()
+    private val videoHandler = Handler(Looper.getMainLooper())
+    private var videoOutputProgressAtMs = 0L
+    @Volatile private var viewerResumed = false
+    // A zero-timeout dequeue immediately after input often finds nothing.
+    // Keep checking pending output even when the host sends no more frames.
+    private val videoOutputDrainer = object : Runnable {
+        override fun run() {
+            synchronized(videoLock) {
+                val dec = decoder ?: return
+                if (pendingRegions.isEmpty()) return
+                try {
+                    placeDecodedFrame(dec.drain(), dec.width, dec.height)
+                    if (pendingRegions.isNotEmpty() &&
+                        SystemClock.elapsedRealtime() - videoOutputProgressAtMs >= VIDEO_OUTPUT_TIMEOUT_MS
+                    ) {
+                        recoverVideo()
+                        return
+                    }
+                } catch (_: Exception) {
+                    recoverVideo()
+                    return
+                }
+                if (pendingRegions.isNotEmpty()) {
+                    videoHandler.postDelayed(this, VIDEO_DRAIN_INTERVAL_MS)
+                }
+            }
+        }
+    }
     private var videoPtsUs = 0L
     // Which desktop rect each queued access unit covers, keyed by its
     // timestamp. A decoder hands frames back later than they went in, and the
@@ -127,7 +156,8 @@ class ViewerActivity : AppCompatActivity() {
      * [seq u32][flags u8: bit0 keyframe][surfW u16][surfH u16]
      * [regionX u16][regionY u16][regionW u16][regionH u16][Annex B access unit]
      */
-    private fun handleH264(data: ByteArray) {
+    private fun handleH264(data: ByteArray) = synchronized(videoLock) {
+        if (!viewerResumed) return
         val started = SystemClock.elapsedRealtimeNanos()
         try {
             val buf = java.nio.ByteBuffer.wrap(data, 1, data.size - 1)
@@ -148,6 +178,9 @@ class ViewerActivity : AppCompatActivity() {
                 // A zoom changed the frame size; encoders cannot change
                 // resolution mid-stream and neither can decoders.
                 dec?.release()
+                videoHandler.removeCallbacks(videoOutputDrainer)
+                pendingRegions.clear()
+                haveKeyframe = false
                 if (!keyframe) { requestKeyframe(); decoder = null; return }
                 dec = H264Decoder(surface, w, h)
                 decoder = dec
@@ -163,21 +196,17 @@ class ViewerActivity : AppCompatActivity() {
             val au = ByteArray(buf.remaining())
             buf.get(au)
             videoPtsUs += 1_000_000L / 30
+            if (pendingRegions.isEmpty()) videoOutputProgressAtMs = SystemClock.elapsedRealtime()
             pendingRegions[videoPtsUs] = region
             while (pendingRegions.size > MAX_PENDING_REGIONS) {
                 pendingRegions.remove(pendingRegions.keys.first())
             }
 
             val renderedPts = dec.decode(au, videoPtsUs, keyframe)
-            if (renderedPts >= 0) {
-                // Place the frame that actually reached the surface, not the
-                // one just queued — and only once the surface shows it, which
-                // is onSurfaceTextureUpdated below.
-                val shown = pendingRegions[renderedPts] ?: region
-                pendingRegions.keys.filter { it <= renderedPts }.forEach { pendingRegions.remove(it) }
-                latchedFrameW = w
-                latchedFrameH = h
-                latchedRegion = shown
+            placeDecodedFrame(renderedPts, w, h)
+            videoHandler.removeCallbacks(videoOutputDrainer)
+            if (pendingRegions.isNotEmpty()) {
+                videoHandler.postDelayed(videoOutputDrainer, VIDEO_DRAIN_INTERVAL_MS)
             }
 
             streamStats.recordFrame(
@@ -191,13 +220,25 @@ class ViewerActivity : AppCompatActivity() {
                 height = h,
             )
         } catch (e: Exception) {
-            streamStats.recordDecodeError()
-            decoder?.release()
-            decoder = null
-            pendingRegions.clear()
-            haveKeyframe = false
-            requestKeyframe()
+            recoverVideo()
         }
+    }
+
+    private fun placeDecodedFrame(renderedPts: Long, w: Int, h: Int) {
+        if (renderedPts < 0) return
+        val shown = pendingRegions[renderedPts] ?: return
+        pendingRegions.keys.filter { it <= renderedPts }.forEach { pendingRegions.remove(it) }
+        latchedFrameW = w
+        latchedFrameH = h
+        latchedRegion = shown
+        videoOutputProgressAtMs = SystemClock.elapsedRealtime()
+    }
+
+    private fun recoverVideo() {
+        streamStats.recordDecodeError()
+        releaseVideo()
+        haveKeyframe = false
+        requestKeyframe()
     }
 
     /**
@@ -362,13 +403,18 @@ class ViewerActivity : AppCompatActivity() {
         return Rect.intersects(prev, now)
     }
 
-    private fun releaseVideo() {
-        val dec = decoder ?: return
+    private fun releaseVideo() = synchronized(videoLock) {
+        videoHandler.removeCallbacks(videoOutputDrainer)
+        val dec = decoder
         decoder = null
         pendingRegions.clear()
         latchedRegion = null
-        dec.release()
-        runOnUiThread { screen.clearVideo() }
+        dec?.release()
+        runOnUiThread {
+            synchronized(videoLock) {
+                if (decoder == null && ::screen.isInitialized) screen.clearVideo()
+            }
+        }
     }
 
     private fun requestKeyframe() {
@@ -446,17 +492,21 @@ class ViewerActivity : AppCompatActivity() {
             override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
 
             override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                releaseVideo()
-                videoSurface?.release()
-                videoSurface = null
+                synchronized(videoLock) {
+                    releaseVideo()
+                    videoSurface?.release()
+                    videoSurface = null
+                }
                 return true
             }
 
             override fun onSurfaceTextureUpdated(st: SurfaceTexture) {
                 // The surface is now showing the frame the decoder handed it,
                 // so this is the moment its placement becomes true.
-                val region = latchedRegion ?: return
-                screen.setVideoFrame(latchedFrameW, latchedFrameH, region)
+                synchronized(videoLock) {
+                    val region = latchedRegion ?: return
+                    screen.setVideoFrame(latchedFrameW, latchedFrameH, region)
+                }
             }
         }
         root.addView(videoView, FrameLayout.LayoutParams(
@@ -909,6 +959,7 @@ class ViewerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        viewerResumed = true
         ConnectionManager.binaryListeners.add(binaryListener)
         ConnectionManager.jsonListeners.add(jsonListener)
         winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)) }
@@ -916,6 +967,7 @@ class ViewerActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        viewerResumed = false
         releaseVideo()
         ConnectionManager.binaryListeners.remove(binaryListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
@@ -927,6 +979,8 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private companion object {
+        const val VIDEO_DRAIN_INTERVAL_MS = 16L
+        const val VIDEO_OUTPUT_TIMEOUT_MS = 2_000L
         // Decoder pipeline depth is ~1 in low-latency mode; this is slack.
         const val MAX_PENDING_REGIONS = 8
         const val DEBUG_PREFS = "viewer_debug"
