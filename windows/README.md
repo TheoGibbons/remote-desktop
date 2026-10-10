@@ -43,6 +43,11 @@ the production capture loop with capture, encoder and transport doubles, includi
 an idle keyframe request behind a busy lane and the periodic repair of a final
 inter frame. They take about 11 seconds and do not require a relay or GPU encoder.
 
+Run `dotnet run --project windows/RemoteDesktopWin.SingleInstanceTests` for
+cross-process checks of duplicate-launch rejection, normal shutdown, restart
+handoff, and recovery after a crash. These checks use an isolated lock and do
+not launch the UI or connect to a relay.
+
 ## Privacy mode
 
 While viewing from Android, tap **Privacy** to cover each physical Windows
@@ -82,6 +87,10 @@ and consumes its injected test events before they reach any desktop application.
 The cursor check briefly blanks standard pointer shapes and restores them.
 
 ## First-run setup (once)
+
+Only one app instance can run per Windows session, including while it is hidden
+in the tray. Launching another copy shows an error and exits. Open the existing
+app from its tray icon, or choose **Exit** there before launching it again.
 
 1. Launch the app.
 2. Click **Generate** to create a session key (or paste the one from your phone).

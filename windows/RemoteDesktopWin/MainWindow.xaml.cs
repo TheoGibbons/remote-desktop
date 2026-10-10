@@ -218,6 +218,7 @@ public partial class MainWindow : Window
             {
                 UseShellExecute = true,
                 Verb = "runas",
+                Arguments = App.RestartSwitch,
             });
             ExitApp();
         }
