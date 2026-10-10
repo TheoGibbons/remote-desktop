@@ -45,6 +45,8 @@ internal static class Program
         Check(Type("unlock"), "matcher can be reused");
         Console.WriteLine("PASS: local escape and remote-input classification");
 
+        PrivacyLifecycleTests.Run();
+
         if (args.Contains("--capture-smoke")) CaptureSmoke();
         if (args.Contains("--input-smoke")) InputSmoke();
         if (args.Contains("--cursor-smoke")) CursorSmoke();

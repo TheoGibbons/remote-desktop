@@ -55,8 +55,12 @@ keyboard and mouse events are suppressed while the app's remote input keeps
 working. Standard Windows pointer shapes are blanked during privacy and the
 configured cursor scheme is restored afterward. A hidden helper also restores
 the scheme if the host process exits without cleanup. Android still draws its
-own remote pointer. Pause/close the viewer, disconnect, revoke approval, turn off remote
-control, lock/log off Windows, or exit the host to restore local access.
+own remote pointer. Privacy stays active when the viewer pauses or closes, a
+device disconnects, approval is revoked, or the relay connection drops. Reconnecting
+viewers receive the current privacy state and can tap **Show PC** to restore local
+access. Typing `unlock` locally still works without a remote session. Turning off
+remote control, locking/logging off Windows, or exiting the host also restores
+local access. Privacy does not persist across host restarts.
 
 Requires Windows 10 version 2004 or later. The overlays use
 [`WDA_EXCLUDEFROMCAPTURE`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)
@@ -67,7 +71,9 @@ filter: Windows secure desktops (including UAC and Ctrl+Alt+Del) and application
 that read hardware through raw input are outside the low-level hook boundary.
 
 Run `dotnet run --project windows/RemoteDesktopWin.PrivacyTests` for the
-deterministic unlock/input-policy checks. On an interactive Windows desktop,
+deterministic unlock/input-policy and host-session lifecycle checks. The lifecycle
+checks use an isolated trust store and never connect to a relay or hide screens.
+On an interactive Windows desktop,
 add `-- --capture-smoke --input-smoke --cursor-smoke` to verify both actual capture paths,
 click-through/no-focus behavior, native hook pass/block behavior, and cursor
 restoration during normal cleanup and an abrupt host exit. The capture

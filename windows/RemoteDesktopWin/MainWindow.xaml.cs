@@ -9,11 +9,11 @@ namespace RemoteDesktopWin;
 
 public partial class MainWindow : Window
 {
-    private readonly AppSettings _settings = AppSettings.Load();
+    private readonly AppSettings _settings;
     private readonly WsClient _ws = new();
     private readonly ScreenStreamer _streamer;
     private readonly FsService _fs;
-    private readonly PeerAuth _auth = new(AppSettings.StorageDir);
+    private readonly PeerAuth _auth;
     private readonly PrivacyOverlayManager _privacy;
 
     private record Peer(string Id, string Device, string Name);
@@ -54,8 +54,12 @@ public partial class MainWindow : Window
 
     private bool _settingsInitialized;
 
-    public MainWindow()
+    public MainWindow() : this(AppSettings.Load(), new PeerAuth(AppSettings.StorageDir)) { }
+
+    internal MainWindow(AppSettings settings, PeerAuth auth)
     {
+        _settings = settings;
+        _auth = auth;
         InitializeComponent();
         var assembly = typeof(MainWindow).Assembly;
         var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -76,15 +80,7 @@ public partial class MainWindow : Window
             foreach (var peer in _peers) SendPrivacyState(peer.Id, error);
         };
         Closed += (_, _) => _privacy.Dispose();
-        _streamer.StreamingChanged += streaming =>
-        {
-            if (streaming) return;
-            if (Dispatcher.CheckAccess()) _privacy.Disable();
-            else Dispatcher.BeginInvoke(() =>
-            {
-                if (!_streamer.IsStreaming) _privacy.Disable();
-            });
-        };
+        // Privacy belongs to the host and survives stream stops and reconnects.
 
         // The stream is broadcast and every key holder can decrypt it, so it
         // pauses whenever an unapproved device shares the session (checked on
@@ -96,8 +92,6 @@ public partial class MainWindow : Window
         _auth.Changed += RefreshDeviceList;
         _auth.Changed += () =>
         {
-            if (_privacy.OwnerPeerId is { } owner &&
-                (!_auth.IsTrusted(owner) || !_auth.AllPeersTrusted)) _privacy.Disable();
             foreach (var peer in _peers) SendPrivacyState(peer.Id);
         };
 
@@ -360,7 +354,6 @@ public partial class MainWindow : Window
         _lastState = state;
         if (state != "connected")
         {
-            _privacy.Disable();
             _peers.Clear();
             _auth.ResetConnection(); // peer ids are stale after a drop
             RefreshDeviceList();
@@ -574,7 +567,6 @@ public partial class MainWindow : Window
 
             case "stop-view":
                 if (!_auth.IsTrusted(from)) break;
-                _privacy.Disable();
                 if (from != null) _streamer.Regions.RemoveViewer(from);
                 _streamer.Stop();
                 Toast.Show($"{PeerName(from)} stopped viewing this screen");
@@ -596,7 +588,7 @@ public partial class MainWindow : Window
                             SendPrivacyState(from, "Start viewing the desktop before enabling privacy.");
                             break;
                         }
-                        _privacy.Enable(from);
+                        _privacy.Enable();
                     }
                     else _privacy.Disable();
                     SendPrivacyState(from);
@@ -693,7 +685,6 @@ public partial class MainWindow : Window
                 break;
             case "revoked":
             case "disconnected":
-                _privacy.Disable();
                 if (_pcView != null && _pcView.PeerId == from) _pcView.Close();
                 if (_phoneView != null && _phoneView.PeerId == from) _phoneView.Close();
                 if (from != null) _streamer.Regions.RemoveViewer(from);
@@ -852,7 +843,6 @@ public partial class MainWindow : Window
     private void DisconnectRow(DeviceRow row)
     {
         if (row.PeerId is not { } id) return;
-        _privacy.Disable();
         _auth.DisconnectPeer(id);
         // Hang up whatever it was watching. (Sessions are expected to hold two
         // devices, so stopping the streamer outright is fine.)

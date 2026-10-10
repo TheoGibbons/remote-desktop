@@ -12,8 +12,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
     private PrivacyInputBlocker? _blocker;
     private PrivacyCursor? _cursor;
     private PrivacyCursorGuard? _cursorGuard;
-    internal string? OwnerPeerId { get; private set; }
-    internal bool IsEnabled => OwnerPeerId != null;
+    internal bool IsEnabled { get; private set; }
     internal event Action<string?>? Changed;
 
     internal PrivacyOverlayManager(Dispatcher dispatcher)
@@ -26,7 +25,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
         SystemEvents.SessionSwitch += SessionChanged;
     }
 
-    internal void Enable(string peerId)
+    internal void Enable()
     {
         _dispatcher.VerifyAccess();
         if (IsEnabled) return;
@@ -38,7 +37,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
             _cursorGuard = new PrivacyCursorGuard();
             _cursor = new PrivacyCursor();
             _blocker = new PrivacyInputBlocker(() => _dispatcher.BeginInvoke(() => Disable()));
-            OwnerPeerId = peerId;
+            IsEnabled = true;
             _refresh.Start();
         }
         catch
@@ -55,7 +54,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
     {
         _dispatcher.VerifyAccess();
         bool wasEnabled = IsEnabled;
-        OwnerPeerId = null;
+        IsEnabled = false;
         _refresh.Stop();
         try { _cursor?.Dispose(); }
         catch (Exception ex)
@@ -95,7 +94,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
             var screens = Forms.Screen.AllScreens;
             if (screens.Length != _windows.Count)
             {
-                // Recreate on hot-plug; retain hooks and session ownership.
+                // Recreate on hot-plug; retain hooks and privacy state.
                 foreach (var window in _windows) window.Dispose();
                 _windows.Clear();
                 CreateOverlays();
@@ -108,8 +107,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
     private void DisplayChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(Refresh);
     private void SessionChanged(object sender, SessionSwitchEventArgs e)
     {
-        if (e.Reason is SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff
-            or SessionSwitchReason.ConsoleDisconnect or SessionSwitchReason.RemoteDisconnect)
+        if (e.Reason is SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff)
             _dispatcher.BeginInvoke(() => Disable());
     }
 
