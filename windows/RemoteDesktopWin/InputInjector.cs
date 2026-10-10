@@ -9,6 +9,8 @@ namespace RemoteDesktopWin;
 /// </summary>
 public static class InputInjector
 {
+    // Low-level privacy hooks allow only input injected by this app.
+    internal static readonly IntPtr RemoteInputTag = new(0x52445056);
     #region Win32
 
     [StructLayout(LayoutKind.Sequential)]
@@ -65,8 +67,15 @@ public static class InputInjector
 
     #endregion
 
-    private static void Send(params INPUT[] inputs) =>
+    private static void Send(params INPUT[] inputs)
+    {
+        for (int i = 0; i < inputs.Length; i++)
+        {
+            if (inputs[i].type == INPUT_MOUSE) inputs[i].u.mi.dwExtraInfo = RemoteInputTag;
+            else inputs[i].u.ki.dwExtraInfo = RemoteInputTag;
+        }
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
 
     private static INPUT Mouse(uint flags, int dx = 0, int dy = 0, uint data = 0) => new()
     {

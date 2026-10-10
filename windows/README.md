@@ -43,6 +43,33 @@ the production capture loop with capture, encoder and transport doubles, includi
 an idle keyframe request behind a busy lane and the periodic repair of a final
 inter frame. They take about 11 seconds and do not require a relay or GPU encoder.
 
+## Privacy mode
+
+While viewing from Android, tap **Privacy** to cover each physical Windows
+monitor with a black, click-through screen containing small centered
+**type unlock** text. The Android button turns red while privacy is active and
+returns to its normal colour when the host confirms that it is off. Tap
+**Show PC** to restore the screens, or type `unlock` on the physical keyboard
+(no Enter needed; case insensitive). Other local
+keyboard and mouse events are suppressed while the app's remote input keeps
+working. Pause/close the viewer, disconnect, revoke approval, turn off remote
+control, lock/log off Windows, or exit the host to restore local access.
+
+Requires Windows 10 version 2004 or later. The overlays use
+[`WDA_EXCLUDEFROMCAPTURE`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)
+and remain absent from the app's DXGI and GDI captures. If overlay creation or
+input-hook installation fails, activation rolls back and Android shows the
+error. Display changes resize/recreate the overlays. This is a convenience
+filter: Windows secure desktops (including UAC and Ctrl+Alt+Del) and applications
+that read hardware through raw input are outside the low-level hook boundary.
+
+Run `dotnet run --project windows/RemoteDesktopWin.PrivacyTests` for the
+deterministic unlock/input-policy checks. On an interactive Windows desktop,
+add `-- --capture-smoke --input-smoke` to verify both actual capture paths,
+click-through/no-focus behavior, and native hook pass/block behavior. The capture
+check briefly shows a small test window; the input check briefly installs hooks
+and consumes its injected test events before they reach any desktop application.
+
 ## First-run setup (once)
 
 1. Launch the app.

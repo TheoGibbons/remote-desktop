@@ -81,7 +81,7 @@ fingerprint, and:
   the rest of the process so a hostile peer cannot spam prompts by reconnecting.
 
 **Enforcement.** Messages that view, control, or touch files (`start-view`,
-`request-keyframe`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
+`request-keyframe`, `privacy-mode`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
 `touch`, `pinch`, `back`, `homebtn`, `recents`, `fs-*`) are dropped unless the
 sending peer is trusted. Because **binary frames are broadcast** and every key
 holder can decrypt them, a host additionally sends no video frames and serves
@@ -113,6 +113,9 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 |---------------|--------|-------|
 | `start-view`  | `to`   | Ask peer to start streaming its screen to me. |
 | `stop-view`   | `to`   | Stop streaming. |
+| `privacy-mode` | `to`, `enabled` (boolean) | Windows only: hide physical monitors and block local keyboard/mouse while preserving app-injected remote input. Requires remote-control consent, an approved active viewer, and all peers trusted. |
+| `get-privacy-state` | `to` | Approved peer asks Windows for privacy availability and current state. |
+| `privacy-state` | `to`, `enabled`, `supported`, `allowed`, `error?` | Windows acknowledges a toggle and announces local unlock or automatic cleanup. Viewers must use this state rather than optimistically toggling. Older hosts may omit it. |
 | `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. Sent when streaming starts and whenever the geometry changes. |
 | `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH`, `h264`? | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. `h264: true` additionally advertises that the viewer can decode binary frame type `4`. See [Viewport streaming](#viewport-streaming). |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |

@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <AssemblyMetadata Include="DefaultRelayServerUrl" Value="$(DefaultRelayServerUrl)" />
+    <InternalsVisibleTo Include="RemoteDesktopWin.PrivacyTests" />
   </ItemGroup>
 
   <ItemGroup>

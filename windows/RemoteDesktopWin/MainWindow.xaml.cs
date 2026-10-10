@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private readonly ScreenStreamer _streamer;
     private readonly FsService _fs;
     private readonly PeerAuth _auth = new(AppSettings.StorageDir);
+    private readonly PrivacyOverlayManager _privacy;
 
     private record Peer(string Id, string Device, string Name);
 
@@ -68,6 +69,22 @@ public partial class MainWindow : Window
             MaxWidth = _settings.MaxStreamWidth,
         };
         _fs = new FsService(_ws);
+        _privacy = new PrivacyOverlayManager(Dispatcher);
+        _privacy.Changed += error =>
+        {
+            _streamer.RequestKeyframe();
+            foreach (var peer in _peers) SendPrivacyState(peer.Id, error);
+        };
+        Closed += (_, _) => _privacy.Dispose();
+        _streamer.StreamingChanged += streaming =>
+        {
+            if (streaming) return;
+            if (Dispatcher.CheckAccess()) _privacy.Disable();
+            else Dispatcher.BeginInvoke(() =>
+            {
+                if (!_streamer.IsStreaming) _privacy.Disable();
+            });
+        };
 
         // The stream is broadcast and every key holder can decrypt it, so it
         // pauses whenever an unapproved device shares the session (checked on
@@ -77,6 +94,12 @@ public partial class MainWindow : Window
         // Dispatcher.Invoke from the socket thread — don't stall the receive loop.
         _auth.ApprovalNeeded += req => Dispatcher.BeginInvoke(() => ShowApprovalPrompt(req));
         _auth.Changed += RefreshDeviceList;
+        _auth.Changed += () =>
+        {
+            if (_privacy.OwnerPeerId is { } owner &&
+                (!_auth.IsTrusted(owner) || !_auth.AllPeersTrusted)) _privacy.Disable();
+            foreach (var peer in _peers) SendPrivacyState(peer.Id);
+        };
 
         ServerUrlBox.Text = _settings.ServerUrl;
         SessionKeyBox.Text = _settings.SessionKey;
@@ -173,6 +196,7 @@ public partial class MainWindow : Window
     private void ExitApp()
     {
         _exiting = true;
+        _privacy.Disable();
         _streamer.Stop();
         _ws.Stop();
         if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }
@@ -222,9 +246,11 @@ public partial class MainWindow : Window
     {
         if (!_settingsInitialized) return;
         _settings.AllowRemoteControl = AllowStreamCheck.IsChecked == true;
+        if (!_settings.AllowRemoteControl) _privacy.Disable();
         _settings.AllowFileAccess = AllowFilesCheck.IsChecked == true;
         _settings.Save();
         foreach (var peer in _peers) SendFileAccess(peer.Id);
+        foreach (var peer in _peers) SendPrivacyState(peer.Id);
         ApplySectionVisibility();
     }
 
@@ -334,6 +360,7 @@ public partial class MainWindow : Window
         _lastState = state;
         if (state != "connected")
         {
+            _privacy.Disable();
             _peers.Clear();
             _auth.ResetConnection(); // peer ids are stale after a drop
             RefreshDeviceList();
@@ -520,6 +547,7 @@ public partial class MainWindow : Window
                     if (from != null) _streamer.Regions.AddViewer(from);
                     _streamer.Start();
                     _streamer.RequestKeyframe(); // joining mid-stream needs a full frame
+                    if (from != null) SendPrivacyState(from);
                     Toast.Show($"{PeerName(from)} started viewing this screen");
                 }
                 break;
@@ -546,9 +574,34 @@ public partial class MainWindow : Window
 
             case "stop-view":
                 if (!_auth.IsTrusted(from)) break;
+                _privacy.Disable();
                 if (from != null) _streamer.Regions.RemoveViewer(from);
                 _streamer.Stop();
                 Toast.Show($"{PeerName(from)} stopped viewing this screen");
+                break;
+
+            case "get-privacy-state":
+                if (from != null) SendPrivacyState(from);
+                break;
+
+            case "privacy-mode":
+                if (!controlAllowed || from == null) break;
+                if (msg["enabled"] is not JsonValue value || !value.TryGetValue<bool>(out var enabled)) break;
+                try
+                {
+                    if (enabled)
+                    {
+                        if (!_auth.AllPeersTrusted || !_streamer.IsStreaming || !_streamer.Regions.IsViewing(from))
+                        {
+                            SendPrivacyState(from, "Start viewing the desktop before enabling privacy.");
+                            break;
+                        }
+                        _privacy.Enable(from);
+                    }
+                    else _privacy.Disable();
+                    SendPrivacyState(from);
+                }
+                catch (Exception ex) { SendPrivacyState(from, ex.Message); }
                 break;
 
             case "cad":
@@ -605,6 +658,20 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SendPrivacyState(string peerId, string? error = null)
+    {
+        if (!_auth.IsTrusted(peerId)) return;
+        _ws.SendJson(new JsonObject
+        {
+            ["type"] = "privacy-state",
+            ["to"] = peerId,
+            ["enabled"] = _privacy.IsEnabled,
+            ["supported"] = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041),
+            ["allowed"] = _settings.AllowRemoteControl && _auth.AllPeersTrusted,
+            ["error"] = error,
+        });
+    }
+
     /// <summary>A peer told us where we stand with it (we are the viewer here).</summary>
     private void OnAuthResult(string? from, string? status)
     {
@@ -626,6 +693,7 @@ public partial class MainWindow : Window
                 break;
             case "revoked":
             case "disconnected":
+                _privacy.Disable();
                 if (_pcView != null && _pcView.PeerId == from) _pcView.Close();
                 if (_phoneView != null && _phoneView.PeerId == from) _phoneView.Close();
                 if (from != null) _streamer.Regions.RemoveViewer(from);
@@ -784,6 +852,7 @@ public partial class MainWindow : Window
     private void DisconnectRow(DeviceRow row)
     {
         if (row.PeerId is not { } id) return;
+        _privacy.Disable();
         _auth.DisconnectPeer(id);
         // Hang up whatever it was watching. (Sessions are expected to hold two
         // devices, so stopping the streamer outright is fine.)

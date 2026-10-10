@@ -60,6 +60,11 @@ public sealed class ViewRegionTracker
         }
     }
 
+    public bool IsViewing(string peerId)
+    {
+        lock (_lock) return _viewers.ContainsKey(peerId);
+    }
+
     public void RemoveViewer(string peerId)
     {
         lock (_lock)

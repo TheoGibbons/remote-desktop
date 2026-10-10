@@ -65,6 +65,14 @@ jobs:
           [IO.File]::WriteAllBytes($keystorePath, [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64))
           "ANDROID_KEYSTORE_FILE=$keystorePath" >> $env:GITHUB_ENV
 
+      - name: Validate Windows capture and privacy policies
+        shell: pwsh
+        run: |
+          dotnet run --project windows/RemoteDesktopWin.Tests --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Windows capture checks failed.' }
+          dotnet run --project windows/RemoteDesktopWin.PrivacyTests --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Windows privacy checks failed.' }
+
       - name: Build Windows app
         shell: pwsh
         run: |

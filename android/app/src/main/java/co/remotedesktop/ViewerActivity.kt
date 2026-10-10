@@ -3,6 +3,7 @@ package co.remotedesktop
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -53,6 +54,21 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var diagnosticsScroll: ScrollView
     private lateinit var diagnosticsText: TextView
     private var winId: String? = null
+    private lateinit var privacyButton: Button
+    private var privacyButtonDefaultTint: ColorStateList? = null
+    private lateinit var privacyButtonDefaultTextColors: ColorStateList
+    private var privacyEnabled = false
+    private var privacyAllowed = false
+    private val privacyHandler = Handler(Looper.getMainLooper())
+    private val privacyTimeout = Runnable {
+        // A missing acknowledgement must not imply the host changed state.
+        privacyButton.isEnabled = privacyAllowed
+        send(JSONObject().put("type", "get-privacy-state"))
+        Toast.makeText(this, R.string.privacy_no_reply, Toast.LENGTH_SHORT).show()
+    }
+    private val stateListener: (String) -> Unit = { state ->
+        if (state != "connected") resetPrivacy()
+    }
     private var imePrev = ""
     private var imeGuard = false
     private var imeVisible = false
@@ -468,8 +484,25 @@ class ViewerActivity : AppCompatActivity() {
                 // Approved: re-request the stream — the start-view sent while we
                 // were still unapproved was dropped by the desktop.
                 "trusted" ->
-                    winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)) }
+                    winId?.let {
+                        ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it))
+                        send(JSONObject().put("type", "get-privacy-state"))
+                    }
                 "denied", "revoked", "disconnected" -> finish()
+            }
+        }
+        if (msg.optString("type") == "privacy-state" && msg.optString("from") == winId) {
+            privacyHandler.removeCallbacks(privacyTimeout)
+            privacyEnabled = msg.optBoolean("enabled", false)
+            privacyAllowed = msg.optBoolean("supported", false) && msg.optBoolean("allowed", false)
+            privacyButton.isEnabled = privacyAllowed
+            privacyButton.setText(if (privacyEnabled) R.string.privacy_show_pc else R.string.privacy)
+            updatePrivacyButtonColors()
+            privacyButton.contentDescription = getString(
+                if (privacyEnabled) R.string.privacy_disable else R.string.privacy_enable)
+            privacyButton.tooltipText = privacyButton.contentDescription
+            msg.optString("error").takeIf { it.isNotEmpty() && it != "null" }?.let {
+                Toast.makeText(this, it, Toast.LENGTH_LONG).show()
             }
         }
         if (msg.optString("type") == "screen-info" && msg.optString("from") == winId) {
@@ -642,6 +675,18 @@ class ViewerActivity : AppCompatActivity() {
                 tooltipText = contentDescription
             }
             addToolbarButton("Stats") { showDiagnostics() }
+            privacyButton = addToolbarButton(getString(R.string.privacy)) {
+                privacyButton.isEnabled = false
+                send(JSONObject().put("type", "privacy-mode").put("enabled", !privacyEnabled))
+                privacyHandler.postDelayed(privacyTimeout, 5_000)
+            }.apply {
+                privacyButtonDefaultTint = backgroundTintList
+                privacyButtonDefaultTextColors = textColors
+                isEnabled = false // wait for the host's supported/allowed state
+                contentDescription = getString(R.string.privacy_enable)
+                tooltipText = contentDescription
+                textSize = 12f
+            }
             addToolbarButton("?") { showGestureHelp() }
             addToolbarButton("✕") { finish() }
         }
@@ -995,12 +1040,36 @@ class ViewerActivity : AppCompatActivity() {
         winId?.let { ConnectionManager.sendJson(obj.put("to", it)) }
     }
 
+    private fun resetPrivacy() {
+        privacyHandler.removeCallbacks(privacyTimeout)
+        privacyEnabled = false
+        privacyAllowed = false
+        if (::privacyButton.isInitialized) {
+            privacyButton.isEnabled = false
+            privacyButton.setText(R.string.privacy)
+            updatePrivacyButtonColors()
+            privacyButton.contentDescription = getString(R.string.privacy_enable)
+            privacyButton.tooltipText = privacyButton.contentDescription
+        }
+    }
+
+    private fun updatePrivacyButtonColors() {
+        privacyButton.backgroundTintList = if (privacyEnabled) {
+            ColorStateList.valueOf(Color.rgb(179, 38, 30))
+        } else privacyButtonDefaultTint
+        privacyButton.setTextColor(if (privacyEnabled) {
+            ColorStateList.valueOf(Color.WHITE)
+        } else privacyButtonDefaultTextColors)
+    }
+
     override fun onResume() {
         super.onResume()
         viewerResumed = true
         ConnectionManager.binaryListeners.add(binaryListener)
         ConnectionManager.jsonListeners.add(jsonListener)
+        ConnectionManager.stateListeners.add(stateListener)
         winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)) }
+        send(JSONObject().put("type", "get-privacy-state"))
     }
 
     override fun onPause() {
@@ -1009,6 +1078,8 @@ class ViewerActivity : AppCompatActivity() {
         releaseVideo()
         ConnectionManager.binaryListeners.remove(binaryListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
+        ConnectionManager.stateListeners.remove(stateListener)
+        resetPrivacy()
         if (::keyboard.isInitialized) keyboard.releaseAll()
         if (::screen.isInitialized) screen.releaseInput()
         hideDiagnostics()

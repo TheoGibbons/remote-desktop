@@ -3,6 +3,11 @@
     <string name="accessibility_description">Lets your paired computer tap and swipe on this phone during a remote session. Only devices that know your session key can send input.</string>
     <string name="close">Close</string>
     <string name="stats">Stats</string>
+    <string name="privacy">Privacy</string>
+    <string name="privacy_show_pc">Show PC</string>
+    <string name="privacy_enable">Hide the physical PC screens and block local input</string>
+    <string name="privacy_disable">Restore the physical PC screens and local input</string>
+    <string name="privacy_no_reply">No privacy response from the desktop. Checking status…</string>
     <string name="rotate_screen">Rotate screen between portrait and landscape</string>
     <string name="highlight_dirty_rectangles">Highlight updated rectangles in red</string>
 </resources>
