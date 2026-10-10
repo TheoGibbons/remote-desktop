@@ -81,6 +81,23 @@ class H264IdleOutputTest {
     }
 
     @Test
+    fun backClosesStatsBeforeExitingViewer() {
+        val activity = viewer()
+        ViewerActivity::class.java.getDeclaredMethod("showDiagnostics")
+            .apply { isAccessible = true }.invoke(activity)
+        val panel = field("diagnosticsPanel").get(activity) as android.view.View
+        assertEquals(android.view.View.VISIBLE, panel.visibility)
+
+        activity.onBackPressedDispatcher.onBackPressed()
+        assertEquals(android.view.View.GONE, panel.visibility)
+        assertNull(field("diagnosticsUpdater").get(activity))
+        assertFalse(activity.isFinishing)
+
+        activity.onBackPressedDispatcher.onBackPressed()
+        assertTrue(activity.isFinishing)
+    }
+
+    @Test
     fun finalFrameRendersWithoutAnotherNetworkPacketAndKeepsItsRegion() {
         val activity = viewer()
         deliver(activity)
@@ -114,6 +131,33 @@ class H264IdleOutputTest {
         deliver(activity)
         assertNull(field("decoder").get(activity))
         assertFalse(field("haveKeyframe").getBoolean(activity))
+    }
+
+    @Test
+    fun repeatedDecoderStallsFallBackToJpegAndPauseCancelsRecovery() {
+        val activity = viewer()
+        deliver(activity)
+        idle(2_032)
+        assertTrue(field("videoRecovering").getBoolean(activity))
+        deliver(activity, frame(2))
+        idle(2_032)
+        assertFalse(field("h264Enabled").getBoolean(activity))
+        pause(activity)
+        assertFalse(field("videoRecovering").getBoolean(activity))
+        idle(3_000)
+        assertNull(field("decoder").get(activity))
+    }
+
+    @Test
+    fun sequenceGapDoesNotFeedDependentFramesToTheDecoder() {
+        val activity = viewer()
+        deliver(activity)
+        DelayedOutputCodec.ready = true
+        idle(16)
+        deliver(activity, frame(3, keyframe = false))
+        assertNull(field("decoder").get(activity))
+        assertFalse(field("haveKeyframe").getBoolean(activity))
+        assertEquals(listOf(33_333L), DelayedOutputCodec.renderedPts)
     }
 
     @Test

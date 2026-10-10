@@ -301,7 +301,11 @@ public class ScreenStreamer
                         }
                         else if (_fpsDivider < 4) { _fpsDivider *= 2; lastLevelChange = now; skipStreak = 0; }
                     }
-                    else if (clearStreak >= Math.Max(1, ActiveFps) * StepUpClearSeconds)
+                    // Static desktops cannot build a clear-frame streak.
+                    // Probe higher quality at refresh time, respecting backoff.
+                    else if (clearStreak >= Math.Max(1, ActiveFps) * StepUpClearSeconds
+                        || (lastKeyframeAt != 0 && now - lastKeyframeAt > KeyframeIntervalMs
+                            && skipStreak == 0 && !_ws.VideoLaneBusy && now >= levelRetryAt))
                     {
                         if (_fpsDivider > 1) { _fpsDivider /= 2; lastLevelChange = now; clearStreak = 0; }
                         else if (level > 0 && (level - 1 != failedLevel || now >= levelRetryAt))
@@ -520,7 +524,7 @@ public class ScreenStreamer
                     // Recovery must not depend on fresh desktop damage. A viewer
                     // can lose the last frame before the desktop goes idle.
                     bool requestIdr = forceKeyframe || _keyframeRequested
-                        || (deltaSinceKeyframe && now - lastKeyframeAt > KeyframeIntervalMs);
+                        || now - lastKeyframeAt > KeyframeIntervalMs;
                     // The crop buffer persists between frames, so normally only
                     // the damaged parts need re-rendering into it. A move
                     // invalidates all of it.

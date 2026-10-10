@@ -386,3 +386,12 @@ Clients auto-reconnect with backoff (2s → 30s max) and re-send `hello`. The
 session key never expires, and the device-authentication handshake re-runs
 silently on every reconnect — an approved device never sees a prompt again
 unless it is revoked or the session key changes.
+
+### Desktop file-access status
+
+An authenticated viewer sends `get-file-access` with `to` to query the desktop.
+The desktop replies with `file-access`, `to`, and `allowed` (boolean), and sends
+the same status when file consent or peer trust changes. `allowed` is true only
+when file access is enabled and all session peers are trusted. Android disables
+uploads until it receives an affirmative status, including on returning from
+the file picker. The desktop still enforces consent on every file request.

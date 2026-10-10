@@ -38,6 +38,8 @@ internal static class Program
             await ExpectFrame(ws, keyframe: true, timeoutMs: 12_000);
             await ExpectIdle(ws);
             Console.WriteLine("PASS: periodic recovery after the desktop becomes idle");
+            await ExpectFrame(ws, keyframe: true, timeoutMs: 12_000);
+            Console.WriteLine("PASS: idle keyframe refresh continues without desktop damage");
         }
         finally
         {

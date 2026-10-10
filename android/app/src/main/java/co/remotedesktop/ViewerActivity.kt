@@ -30,6 +30,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -67,6 +68,11 @@ class ViewerActivity : AppCompatActivity() {
     private var hostJpegQuality: Int? = null
     private var hostMaxWidth: Int? = null
     private var diagnosticsUpdater: Runnable? = null
+    private val diagnosticsBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            hideDiagnostics()
+        }
+    }
 
     // Dirty-rect compositing state (see PROTOCOL.md, binary frame type 3).
     // Touched only on the network thread that delivers binary frames.
@@ -85,6 +91,18 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var videoView: TextureView
     @Volatile private var videoSurface: Surface? = null
     private var decoder: H264Decoder? = null
+    private var videoRecovering = false
+    private var videoRecoveryFailures = 0
+    private var h264Enabled = true
+    private val videoRecoveryRetry = object : Runnable {
+        override fun run() {
+            synchronized(videoLock) {
+                if (!viewerResumed || !videoRecovering) return
+                requestKeyframe()
+                videoHandler.postDelayed(this, VIDEO_RECOVERY_RETRY_MS)
+            }
+        }
+    }
     private val videoLock = Any()
     private val videoHandler = Handler(Looper.getMainLooper())
     private var videoOutputProgressAtMs = 0L
@@ -189,7 +207,10 @@ class ViewerActivity : AppCompatActivity() {
             val hadSequenceGap = haveKeyframe && !keyframe &&
                 seq != ((lastSeq + 1L) and 0xFFFFFFFFL)
             if (keyframe) haveKeyframe = true
-            else if (!haveKeyframe || hadSequenceGap) requestKeyframe()
+            else if (!haveKeyframe || hadSequenceGap) {
+                recoverVideo()
+                return
+            }
             lastSeq = seq
             if (!haveKeyframe) return // nothing to decode from yet
 
@@ -236,9 +257,18 @@ class ViewerActivity : AppCompatActivity() {
 
     private fun recoverVideo() {
         streamStats.recordDecodeError()
-        releaseVideo()
+        releaseVideo(clearDisplay = false)
         haveKeyframe = false
+        videoRecovering = true
+        videoRecoveryFailures++
+        if (videoRecoveryFailures >= 2 && h264Enabled) {
+            // Some hardware decoders never produce output for sparse desktop
+            // frames. Switch this session to JPEG rather than reset forever.
+            h264Enabled = false
+            runOnUiThread { screen.resendViewport() }
+        }
         requestKeyframe()
+        videoHandler.postDelayed(videoRecoveryRetry, VIDEO_RECOVERY_RETRY_MS)
     }
 
     /**
@@ -403,7 +433,9 @@ class ViewerActivity : AppCompatActivity() {
         return Rect.intersects(prev, now)
     }
 
-    private fun releaseVideo() = synchronized(videoLock) {
+    private fun releaseVideo(clearDisplay: Boolean = true) = synchronized(videoLock) {
+        videoHandler.removeCallbacks(videoRecoveryRetry)
+        videoRecovering = false
         videoHandler.removeCallbacks(videoOutputDrainer)
         val dec = decoder
         decoder = null
@@ -412,7 +444,7 @@ class ViewerActivity : AppCompatActivity() {
         dec?.release()
         runOnUiThread {
             synchronized(videoLock) {
-                if (decoder == null && ::screen.isInitialized) screen.clearVideo()
+                if (clearDisplay && decoder == null && ::screen.isInitialized) screen.clearVideo()
             }
         }
     }
@@ -506,6 +538,9 @@ class ViewerActivity : AppCompatActivity() {
                 synchronized(videoLock) {
                     val region = latchedRegion ?: return
                     screen.setVideoFrame(latchedFrameW, latchedFrameH, region)
+                    videoRecovering = false
+                    videoRecoveryFailures = 0
+                    videoHandler.removeCallbacks(videoRecoveryRetry)
                 }
             }
         }
@@ -534,6 +569,7 @@ class ViewerActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
 
         diagnosticsPanel = buildDiagnosticsPanel()
+        onBackPressedDispatcher.addCallback(this, diagnosticsBackCallback)
         val panelMargin = (8 * resources.displayMetrics.density).toInt()
         val panelWidth = minOf(
             (resources.displayMetrics.widthPixels * 0.72f).toInt(),
@@ -640,7 +676,7 @@ class ViewerActivity : AppCompatActivity() {
                     .put("outW", outW).put("outH", outH)
                     // Only once there is somewhere to decode onto, or the host
                     // would stream frames we cannot show.
-                    .put("h264", videoSurface != null))
+                    .put("h264", videoSurface != null && h264Enabled))
             }
         }
     }
@@ -757,6 +793,7 @@ class ViewerActivity : AppCompatActivity() {
             return
         }
         diagnosticsPanel.visibility = View.VISIBLE
+        diagnosticsBackCallback.isEnabled = true
         diagnosticsPanel.bringToFront()
         diagnosticsUpdater?.let { diagnosticsHandler.removeCallbacks(it) }
 
@@ -783,6 +820,7 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private fun hideDiagnostics() {
+        diagnosticsBackCallback.isEnabled = false
         if (::diagnosticsPanel.isInitialized) diagnosticsPanel.visibility = View.GONE
         diagnosticsUpdater?.let { diagnosticsHandler.removeCallbacks(it) }
         diagnosticsUpdater = null
@@ -979,6 +1017,7 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private companion object {
+        const val VIDEO_RECOVERY_RETRY_MS = 2_500L
         const val VIDEO_DRAIN_INTERVAL_MS = 16L
         const val VIDEO_OUTPUT_TIMEOUT_MS = 2_000L
         // Decoder pipeline depth is ~1 in low-latency mode; this is slack.

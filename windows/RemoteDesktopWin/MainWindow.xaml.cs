@@ -51,6 +51,8 @@ public partial class MainWindow : Window
     private bool _exiting;
     private bool _trayTipShown;
 
+    private bool _settingsInitialized;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -83,6 +85,7 @@ public partial class MainWindow : Window
         StartupCheck.IsChecked = _settings.StartWithWindows;
         AllowStreamCheck.IsChecked = _settings.AllowRemoteControl;
         AllowFilesCheck.IsChecked = _settings.AllowFileAccess;
+        _settingsInitialized = true;
         if (IsElevated())
         {
             ElevateButton.Visibility = Visibility.Collapsed;
@@ -208,6 +211,7 @@ public partial class MainWindow : Window
 
     private void Startup_Changed(object sender, RoutedEventArgs e)
     {
+        if (!_settingsInitialized) return;
         _settings.StartWithWindows = StartupCheck.IsChecked == true;
         _settings.Save();
         ApplyStartupRegistration();
@@ -216,10 +220,23 @@ public partial class MainWindow : Window
 
     private void Consent_Changed(object sender, RoutedEventArgs e)
     {
+        if (!_settingsInitialized) return;
         _settings.AllowRemoteControl = AllowStreamCheck.IsChecked == true;
         _settings.AllowFileAccess = AllowFilesCheck.IsChecked == true;
         _settings.Save();
+        foreach (var peer in _peers) SendFileAccess(peer.Id);
         ApplySectionVisibility();
+    }
+
+    private void SendFileAccess(string peerId)
+    {
+        if (!_auth.IsTrusted(peerId)) return;
+        _ws.SendJson(new JsonObject
+        {
+            ["type"] = "file-access",
+            ["to"] = peerId,
+            ["allowed"] = _settings.AllowFileAccess && _auth.AllPeersTrusted,
+        });
     }
 
     /// <summary>
@@ -472,6 +489,10 @@ public partial class MainWindow : Window
                 OnAuthResult(from, msg["status"]?.GetValue<string>());
                 break;
 
+            case "get-file-access":
+                if (from != null) SendFileAccess(from);
+                break;
+
             case "diagnostic-ping":
                 if (_auth.IsTrusted(from) && from != null)
                 {
@@ -654,6 +675,7 @@ public partial class MainWindow : Window
     /// own action buttons (approve/deny, view/files, disconnect/revoke).</summary>
     private void RefreshDeviceList()
     {
+        foreach (var peer in _peers) SendFileAccess(peer.Id);
         var good = (System.Windows.Media.Brush)FindResource("RdGoodBrush");
         var warn = (System.Windows.Media.Brush)FindResource("RdWarnBrush");
         var offline = (System.Windows.Media.Brush)FindResource("RdOfflineBrush");

@@ -35,6 +35,9 @@ class FileExplorerActivity : AppCompatActivity() {
     private lateinit var pathText: TextView
     private lateinit var statusText: TextView
     private lateinit var listView: ListView
+    private lateinit var uploadButton: Button
+    private var fileAccessAllowed = false
+    private var pendingUploadUri: Uri? = null
     private var winId: String? = null
     private var path = ""
     private var reqCounter = 0
@@ -44,6 +47,14 @@ class FileExplorerActivity : AppCompatActivity() {
 
     private val jsonListener: (JSONObject) -> Unit = { msg ->
         when (msg.optString("type")) {
+            "file-access" -> if (msg.optString("from") == winId) {
+                fileAccessAllowed = msg.optBoolean("allowed", false)
+                uploadButton.isEnabled = fileAccessAllowed
+                pendingUploadUri?.let { uri ->
+                    pendingUploadUri = null
+                    uploadUri(uri)
+                }
+            }
             "fs-list-result" -> if (msg.optString("reqId") == lastReqId) showResult(msg)
             "peer-left" -> if (msg.optString("id") == winId) { finish() }
         }
@@ -57,7 +68,10 @@ class FileExplorerActivity : AppCompatActivity() {
 
     private val uploadPicker =
         registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
-            if (res.resultCode == Activity.RESULT_OK) res.data?.data?.let { uploadUri(it) }
+            if (res.resultCode == Activity.RESULT_OK) res.data?.data?.let {
+                pendingUploadUri = it
+                ConnectionManager.sendJson(JSONObject().put("type", "get-file-access").put("to", winId))
+            }
         }
 
     @SuppressLint("SetTextI18n")
@@ -97,7 +111,8 @@ class FileExplorerActivity : AppCompatActivity() {
         root.addView(listView)
 
         val footer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        footer.addView(Button(this).apply {
+        uploadButton = Button(this).apply {
+            isEnabled = false
             text = "⬆ Upload file to desktop"
             isAllCaps = false
             setOnClickListener {
@@ -105,7 +120,8 @@ class FileExplorerActivity : AppCompatActivity() {
                     type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE)
                 })
             }
-        })
+        }
+        footer.addView(uploadButton)
         root.addView(footer)
 
         statusText = TextView(this).apply { text = "Tap a file to download it here." }
@@ -119,6 +135,9 @@ class FileExplorerActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         ConnectionManager.jsonListeners.add(jsonListener)
+        fileAccessAllowed = false
+        uploadButton.isEnabled = false
+        ConnectionManager.sendJson(JSONObject().put("type", "get-file-access").put("to", winId))
         ConnectionManager.fs.transferStatus.add(transferListener)
     }
 
@@ -208,6 +227,10 @@ class FileExplorerActivity : AppCompatActivity() {
     }
 
     private fun uploadUri(uri: Uri) {
+        if (!fileAccessAllowed) {
+            setStatus("File access is disabled on the desktop.")
+            return
+        }
         var name = "upload.bin"
         var size = -1L
         val cursor: Cursor? = contentResolver.query(uri, null, null, null, null)
