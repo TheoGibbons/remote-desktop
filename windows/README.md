@@ -52,7 +52,10 @@ returns to its normal colour when the host confirms that it is off. Tap
 **Show PC** to restore the screens, or type `unlock` on the physical keyboard
 (no Enter needed; case insensitive). Other local
 keyboard and mouse events are suppressed while the app's remote input keeps
-working. Pause/close the viewer, disconnect, revoke approval, turn off remote
+working. Standard Windows pointer shapes are blanked during privacy and the
+configured cursor scheme is restored afterward. A hidden helper also restores
+the scheme if the host process exits without cleanup. Android still draws its
+own remote pointer. Pause/close the viewer, disconnect, revoke approval, turn off remote
 control, lock/log off Windows, or exit the host to restore local access.
 
 Requires Windows 10 version 2004 or later. The overlays use
@@ -65,10 +68,12 @@ that read hardware through raw input are outside the low-level hook boundary.
 
 Run `dotnet run --project windows/RemoteDesktopWin.PrivacyTests` for the
 deterministic unlock/input-policy checks. On an interactive Windows desktop,
-add `-- --capture-smoke --input-smoke` to verify both actual capture paths,
-click-through/no-focus behavior, and native hook pass/block behavior. The capture
+add `-- --capture-smoke --input-smoke --cursor-smoke` to verify both actual capture paths,
+click-through/no-focus behavior, native hook pass/block behavior, and cursor
+restoration during normal cleanup and an abrupt host exit. The capture
 check briefly shows a small test window; the input check briefly installs hooks
 and consumes its injected test events before they reach any desktop application.
+The cursor check briefly blanks standard pointer shapes and restores them.
 
 ## First-run setup (once)
 

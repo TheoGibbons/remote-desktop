@@ -8,6 +8,8 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.os.Bundle
@@ -56,6 +58,8 @@ class ViewerActivity : AppCompatActivity() {
     private var winId: String? = null
     private lateinit var privacyButton: Button
     private var privacyButtonDefaultTint: ColorStateList? = null
+    private lateinit var privacyButtonDefaultBackground: Drawable
+    private lateinit var privacyButtonActiveBackground: Drawable
     private lateinit var privacyButtonDefaultTextColors: ColorStateList
     private var privacyEnabled = false
     private var privacyAllowed = false
@@ -681,6 +685,11 @@ class ViewerActivity : AppCompatActivity() {
                 privacyHandler.postDelayed(privacyTimeout, 5_000)
             }.apply {
                 privacyButtonDefaultTint = backgroundTintList
+                privacyButtonDefaultBackground = background
+                privacyButtonActiveBackground = background.constantState
+                    ?.newDrawable(resources, theme)?.mutate()?.apply {
+                        setTint(Color.rgb(179, 38, 30))
+                    } ?: ColorDrawable(Color.rgb(179, 38, 30))
                 privacyButtonDefaultTextColors = textColors
                 isEnabled = false // wait for the host's supported/allowed state
                 contentDescription = getString(R.string.privacy_enable)
@@ -1054,9 +1063,22 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private fun updatePrivacyButtonColors() {
-        privacyButton.backgroundTintList = if (privacyEnabled) {
-            ColorStateList.valueOf(Color.rgb(179, 38, 30))
-        } else privacyButtonDefaultTint
+        if (privacyButtonDefaultTint != null) {
+            privacyButton.backgroundTintList = if (privacyEnabled) {
+                ColorStateList.valueOf(Color.rgb(179, 38, 30))
+            } else privacyButtonDefaultTint
+        } else {
+            // A null View tint can still have a themed tint inside the drawable.
+            // Clearing View.backgroundTintList would erase that original tint.
+            val left = privacyButton.paddingLeft
+            val top = privacyButton.paddingTop
+            val right = privacyButton.paddingRight
+            val bottom = privacyButton.paddingBottom
+            privacyButton.background = if (privacyEnabled) {
+                privacyButtonActiveBackground
+            } else privacyButtonDefaultBackground
+            privacyButton.setPadding(left, top, right, bottom)
+        }
         privacyButton.setTextColor(if (privacyEnabled) {
             ColorStateList.valueOf(Color.WHITE)
         } else privacyButtonDefaultTextColors)

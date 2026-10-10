@@ -10,6 +10,8 @@ internal sealed class PrivacyOverlayManager : IDisposable
     private readonly List<PrivacyOverlayWindow> _windows = new();
     private readonly DispatcherTimer _refresh;
     private PrivacyInputBlocker? _blocker;
+    private PrivacyCursor? _cursor;
+    private PrivacyCursorGuard? _cursorGuard;
     internal string? OwnerPeerId { get; private set; }
     internal bool IsEnabled => OwnerPeerId != null;
     internal event Action<string?>? Changed;
@@ -33,11 +35,19 @@ internal sealed class PrivacyOverlayManager : IDisposable
         try
         {
             CreateOverlays();
+            _cursorGuard = new PrivacyCursorGuard();
+            _cursor = new PrivacyCursor();
             _blocker = new PrivacyInputBlocker(() => _dispatcher.BeginInvoke(() => Disable()));
             OwnerPeerId = peerId;
             _refresh.Start();
         }
-        catch { Disable(); throw; }
+        catch
+        {
+            // Constructor failure may leave a partially replaced cursor scheme.
+            _cursorGuard?.RequestRestore();
+            Disable();
+            throw;
+        }
         Changed?.Invoke(null);
     }
 
@@ -47,6 +57,16 @@ internal sealed class PrivacyOverlayManager : IDisposable
         bool wasEnabled = IsEnabled;
         OwnerPeerId = null;
         _refresh.Stop();
+        try { _cursor?.Dispose(); }
+        catch (Exception ex)
+        {
+            error ??= ex.Message;
+            _cursorGuard?.RequestRestore();
+        }
+        _cursor = null;
+        try { _cursorGuard?.Dispose(); }
+        catch (Exception ex) { error ??= ex.Message; }
+        _cursorGuard = null;
         _blocker?.Dispose();
         _blocker = null;
         foreach (var window in _windows) window.Dispose();
@@ -70,6 +90,8 @@ internal sealed class PrivacyOverlayManager : IDisposable
         if (!IsEnabled) return;
         try
         {
+            if (_cursorGuard?.IsAlive != true)
+                throw new InvalidOperationException("Cursor restoration helper stopped.");
             var screens = Forms.Screen.AllScreens;
             if (screens.Length != _windows.Count)
             {

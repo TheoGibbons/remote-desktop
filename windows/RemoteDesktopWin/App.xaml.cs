@@ -13,6 +13,11 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (PrivacyCursorGuard.TryRun(e.Args))
+        {
+            Shutdown();
+            return;
+        }
         StartMinimized = e.Args.Any(a =>
             a.Equals(MinimizedSwitch, StringComparison.OrdinalIgnoreCase) ||
             a.Equals("/minimized", StringComparison.OrdinalIgnoreCase));

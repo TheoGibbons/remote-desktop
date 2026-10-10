@@ -2,6 +2,8 @@ package co.remotedesktop
 
 import android.widget.Button
 import android.graphics.Color
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -9,10 +11,12 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import org.robolectric.RobolectricTestRunner
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PrivacyModeTest {
     @Test
     fun buttonTracksHostAcknowledgementsAndLocalUnlock() {
@@ -26,6 +30,18 @@ class PrivacyModeTest {
                 .apply { isAccessible = true }.get(activity) as Button
             val normalTint = button.backgroundTintList
             val normalTextColors = button.textColors
+            val normalBackground = button.background
+            fun padding() = intArrayOf(button.paddingLeft, button.paddingTop, button.paddingRight, button.paddingBottom)
+            val normalPadding = padding()
+            fun backgroundColor(): Int {
+                val bitmap = Bitmap.createBitmap(120, 60, Bitmap.Config.ARGB_8888)
+                button.background.setBounds(0, 0, 120, 60)
+                button.background.draw(Canvas(bitmap))
+                val color = bitmap.getPixel(60, 30)
+                bitmap.recycle()
+                return color
+            }
+            val normalBackgroundColor = backgroundColor()
             @Suppress("UNCHECKED_CAST")
             val listener = ViewerActivity::class.java.getDeclaredField("jsonListener")
                 .apply { isAccessible = true }.get(activity) as (JSONObject) -> Unit
@@ -45,8 +61,9 @@ class PrivacyModeTest {
             status(enabled = true)
             assertTrue(button.isEnabled)
             assertEquals("Show PC", button.text.toString())
-            assertEquals(Color.rgb(179, 38, 30), button.backgroundTintList!!.defaultColor)
+            assertEquals(Color.rgb(179, 38, 30), backgroundColor())
             assertEquals(Color.WHITE, button.currentTextColor)
+            assertArrayEquals(normalPadding, padding())
             button.performClick()
             assertFalse(button.isEnabled)
             val timeout = ViewerActivity::class.java.getDeclaredField("privacyTimeout")
@@ -58,6 +75,9 @@ class PrivacyModeTest {
             assertEquals("Privacy", button.text.toString())
             assertEquals(normalTint, button.backgroundTintList)
             assertEquals(normalTextColors, button.textColors)
+            assertEquals(normalBackgroundColor, backgroundColor())
+            assertArrayEquals(normalPadding, padding())
+            if (normalTint == null) assertSame(normalBackground, button.background)
             status(enabled = true)
             @Suppress("UNCHECKED_CAST")
             val stateListener = ViewerActivity::class.java.getDeclaredField("stateListener")
@@ -66,6 +86,7 @@ class PrivacyModeTest {
             assertFalse(button.isEnabled)
             assertEquals("Privacy", button.text.toString())
             assertEquals(normalTint, button.backgroundTintList)
+            assertEquals(normalBackgroundColor, backgroundColor())
             status(allowed = false)
             assertFalse(button.isEnabled)
             status(supported = false)

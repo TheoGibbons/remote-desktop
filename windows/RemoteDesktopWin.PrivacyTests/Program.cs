@@ -8,6 +8,13 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (PrivacyCursorGuard.TryRun(args)) return;
+        if (args.Contains("--cursor-crash-host"))
+        {
+            _ = new PrivacyCursorGuard();
+            _ = new PrivacyCursor();
+            Environment.Exit(0); // intentionally skips Dispose; guardian must restore
+        }
         Check(PrivacyInputPolicy.IsRemoteInput(true, InputInjector.RemoteInputTag), "tagged remote input passes");
         Check(!PrivacyInputPolicy.IsRemoteInput(false, InputInjector.RemoteInputTag), "physical input cannot pass by tag alone");
         Check(!PrivacyInputPolicy.IsRemoteInput(true, IntPtr.Zero), "unrelated injected input is blocked");
@@ -40,6 +47,7 @@ internal static class Program
 
         if (args.Contains("--capture-smoke")) CaptureSmoke();
         if (args.Contains("--input-smoke")) InputSmoke();
+        if (args.Contains("--cursor-smoke")) CursorSmoke();
     }
 
     // Opt-in: briefly shows a small test window; never blocks physical input.
@@ -60,7 +68,6 @@ internal static class Program
             Check(before.GetPixel(bounds.X + 20 - vb.X, bounds.Y + 20 - vb.Y).ToArgb() == Color.Magenta.ToArgb(),
                 "test desktop is visible before the overlay");
         }
-        var foreground = GetForegroundWindow();
         using var overlay = new PrivacyOverlayWindow(bounds);
         overlay.ShowCovered(bounds);
         Pump();
@@ -69,7 +76,8 @@ internal static class Program
         var point = new NativePoint { X = bounds.X + 20, Y = bounds.Y + 20 };
         var hit = WindowFromPoint(point);
         Check(hit == desktop.Handle, "remote clicks pass through the overlay");
-        Check(GetForegroundWindow() == foreground, "overlay never steals focus");
+        // Other applications can change focus during this interactive check.
+        Check(GetForegroundWindow() != overlay.Handle, "overlay never takes focus");
 
         var virtualBounds = Forms.SystemInformation.VirtualScreen;
         var sample = new Point(point.X - virtualBounds.X, point.Y - virtualBounds.Y);
@@ -155,6 +163,56 @@ internal static class Program
         Thread.Sleep(100);
         Forms.Application.DoEvents();
     }
+
+    private static void CursorSmoke()
+    {
+        int[] RenderCursor(uint id)
+        {
+            var cursor = LoadCursor(IntPtr.Zero, new IntPtr(id));
+            Check(cursor != IntPtr.Zero, "system cursor is available: " + id);
+            using var bitmap = new Bitmap(128, 128, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+            using (var graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.Magenta);
+                var dc = graphics.GetHdc();
+                try { Check(DrawIconEx(dc, 0, 0, cursor, 0, 0, 0, IntPtr.Zero, 3), "cursor can be rendered"); }
+                finally { graphics.ReleaseHdc(dc); }
+            }
+            return Enumerable.Range(0, 128 * 128).Select(i => bitmap.GetPixel(i % 128, i / 128).ToArgb()).ToArray();
+        }
+        var original = PrivacyCursor.CursorIds.ToDictionary(id => id, RenderCursor);
+        using (var guard = new PrivacyCursorGuard())
+        using (var cursor = new PrivacyCursor())
+        {
+            Check(guard.IsAlive, "crash restoration helper is running");
+            foreach (uint id in PrivacyCursor.CursorIds)
+                Check(RenderCursor(id).All(pixel => pixel == Color.Magenta.ToArgb()), "privacy cursor is blank: " + id);
+        }
+        foreach (uint id in PrivacyCursor.CursorIds)
+            Check(RenderCursor(id).SequenceEqual(original[id]), "original cursor is restored: " + id);
+        Console.WriteLine("PASS: standard Windows cursors are blank during privacy and restored afterward");
+
+        var start = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+        };
+        start.ArgumentList.Add("--cursor-crash-host");
+        using var host = System.Diagnostics.Process.Start(start)!;
+        try
+        {
+            Check(host.WaitForExit(10_000) && host.ExitCode == 0, "simulated privacy host exits");
+            bool restored = false;
+            for (int i = 0; i < 30 && !restored; i++)
+            {
+                Thread.Sleep(100);
+                restored = RenderCursor(32512).SequenceEqual(original[32512]);
+            }
+            Check(restored, "guardian restores cursors after the host exits without cleanup");
+            Console.WriteLine("PASS: cursor scheme is restored after an abrupt host exit");
+        }
+        finally { PrivacyCursor.Restore(); }
+    }
     private static void Check(bool condition, string message)
     {
         if (!condition) throw new Exception(message);
@@ -209,4 +267,9 @@ internal static class Program
     }
     [DllImport("user32.dll")]
     private static extern uint SendInput(uint count, TestInput[] inputs, int size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr LoadCursor(IntPtr instance, IntPtr name);
+    [DllImport("user32.dll")]
+    private static extern bool DrawIconEx(IntPtr dc, int x, int y, IntPtr cursor, int width, int height,
+        uint step, IntPtr brush, uint flags);
 }
