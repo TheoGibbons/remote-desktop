@@ -369,7 +369,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Once connected with devices in the session the window slims down to the
-    /// essentials: the devices list and a one-line permissions summary, with the
+    /// essentials: the devices list and any incomplete permissions, with the
     /// window shrunk to fit. Everything else hides behind "Show more settings".
     /// Outside that state the full layout is shown, as before.
     /// </summary>
@@ -395,6 +395,7 @@ public partial class MainWindow : Window
                     + (StartupCheck.IsChecked == true ? 1 : 0)
                     + (IsElevated() ? 1 : 0);
         AccessSummaryText.Text = $"{granted}/4 permissions granted";
+        AccessCard.Visibility = extras || granted < 4 ? Visibility.Visible : Visibility.Collapsed;
 
         MoreButton.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
         MoreButton.Content = _extrasShown ? "Hide extra settings" : "Show more settings";
