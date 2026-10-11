@@ -14,8 +14,10 @@ import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -44,6 +46,9 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     private var rowGapPx = 0
     private var keyTextSp = 24f
     private val modButtons = HashMap<String, Button>()
+    private val keyTouches = HashMap<Int, KeyTouch>()
+
+    private data class KeyTouch(val key: Button, val downTime: Long, val offsetX: Float, val offsetY: Float)
 
     init {
         orientation = VERTICAL
@@ -51,9 +56,90 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         buildAll()
     }
 
+    // Keep the visual gaps, but give every point in the panel to the nearest
+    // key rectangle. Each finger keeps its original key until lifted/cancelled.
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { cancelKeyTouches(); beginKeyTouch(event, 0) }
+            MotionEvent.ACTION_POINTER_DOWN -> beginKeyTouch(event, event.actionIndex)
+            MotionEvent.ACTION_MOVE -> {
+                for (i in 0 until event.pointerCount) {
+                    keyTouches[event.getPointerId(i)]?.let { sendKeyTouch(it, event, i, MotionEvent.ACTION_MOVE) }
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP -> {
+                val i = event.actionIndex
+                keyTouches.remove(event.getPointerId(i))?.let { sendKeyTouch(it, event, i, MotionEvent.ACTION_UP) }
+                if (event.actionMasked == MotionEvent.ACTION_UP) cancelKeyTouches()
+            }
+            MotionEvent.ACTION_CANCEL -> cancelKeyTouches()
+        }
+        return true // The keyboard never passes touches through to the desktop.
+    }
+
+    private fun beginKeyTouch(event: MotionEvent, index: Int) {
+        val x = event.getX(index)
+        val y = event.getY(index)
+        var nearest: Button? = null
+        var nearestDistance = Float.POSITIVE_INFINITY
+        var left = 0f
+        var top = 0f
+        for (r in 0 until childCount) {
+            val row = getChildAt(r) as? LinearLayout ?: continue
+            if (row.visibility != View.VISIBLE) continue
+            for (k in 0 until row.childCount) {
+                val key = row.getChildAt(k) as? Button ?: continue
+                if (!key.isEnabled || key.visibility != View.VISIBLE || key.width == 0 || key.height == 0) continue
+                val keyLeft = (row.left + key.left).toFloat()
+                val keyTop = (row.top + key.top).toFloat()
+                val dx = x - x.coerceIn(keyLeft, keyLeft + key.width)
+                val dy = y - y.coerceIn(keyTop, keyTop + key.height)
+                val distance = dx * dx + dy * dy
+                if (distance < nearestDistance) {
+                    nearest = key; nearestDistance = distance; left = keyLeft; top = keyTop
+                }
+            }
+        }
+        val key = nearest ?: return
+        // A second finger on the same key must not reset its current press.
+        if (keyTouches.values.any { it.key === key }) return
+        val touch = KeyTouch(key, event.eventTime,
+            if (nearestDistance == 0f) -left else key.width / 2f - x,
+            if (nearestDistance == 0f) -top else key.height / 2f - y)
+        keyTouches[event.getPointerId(index)] = touch
+        sendKeyTouch(touch, event, index, MotionEvent.ACTION_DOWN)
+    }
+
+    private fun sendKeyTouch(touch: KeyTouch, event: MotionEvent, index: Int, action: Int) {
+        val local = MotionEvent.obtain(touch.downTime, event.eventTime, action,
+            event.getX(index) + touch.offsetX, event.getY(index) + touch.offsetY, event.metaState)
+        try {
+            local.source = event.source
+            touch.key.dispatchTouchEvent(local)
+        } finally {
+            local.recycle()
+        }
+    }
+
+    private fun cancelKeyTouches() {
+        val touches = keyTouches.values.toList()
+        keyTouches.clear()
+        for (touch in touches) {
+            val cancel = MotionEvent.obtain(touch.downTime, SystemClock.uptimeMillis(),
+                MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+            try { touch.key.dispatchTouchEvent(cancel) } finally { cancel.recycle() }
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        cancelKeyTouches()
+        super.onDetachedFromWindow()
+    }
+
     private fun dp(v: Float) = (v * density).roundToInt()
 
     private fun buildAll() {
+        cancelKeyTouches()
         val dm = resources.displayMetrics
         val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         // The old modifier buttons were 30..46 dp high with 2 dp of margins.
