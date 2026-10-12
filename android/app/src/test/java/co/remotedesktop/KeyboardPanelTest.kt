@@ -9,6 +9,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewConfiguration
 import android.widget.Button
 import android.widget.FrameLayout
 import org.junit.Assert.*
@@ -21,6 +22,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.io.File
+import java.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "w411dp-h891dp-port-420dpi")
@@ -270,7 +272,10 @@ class KeyboardPanelTest {
         panel.onKey = { code, action -> keys.add(code to action) }
         panel.onText = { text.add(it) }
         panel.tap("Ctrl")
-        panel.tap("Shift")
+        val modifierRow = panel.getChildAt(0) as ViewGroup
+        assertEquals("Ctrl", modifierRow.getChildAt(0).contentDescription)
+        assertEquals("Sticky Shift", modifierRow.getChildAt(1).contentDescription)
+        panel.tap("Sticky Shift")
         panel.tap("A")
         panel.tap("Left arrow")
         panel.tap("Fn")
@@ -285,6 +290,89 @@ class KeyboardPanelTest {
             "CTRL" to "up",
         ), keys)
         assertEquals(listOf("a"), text)
+    }
+
+    @Test
+    fun typingShiftCapitalizesOnlyTheNextLetterAndIgnoresNonLetters() {
+        val panel = KeyboardPanel(RuntimeEnvironment.getApplication())
+        val text = mutableListOf<String>()
+        val keys = mutableListOf<Pair<String, String>>()
+        panel.onText = { text.add(it) }
+        panel.onKey = { code, action -> keys.add(code to action) }
+        panel.tap("Shift")
+        assertTrue(panel.button("Shift").isSelected)
+        panel.tap("Space")
+        panel.tap(".")
+        panel.tap("Backspace")
+        panel.tap("Left arrow")
+        panel.tap("?123")
+        panel.tap("1")
+        panel.tap("ABC")
+        panel.tap("A")
+        assertFalse(panel.button("Shift").isSelected)
+        panel.tap("b")
+        assertEquals(listOf(" ", ".", "1", "A", "b"), text)
+        assertEquals(listOf("BACKSPACE" to "press", "LEFT" to "press"), keys)
+    }
+
+    @Test
+    fun doubleTapLocksCapitalLettersUntilShiftIsTappedAgain() {
+        val panel = KeyboardPanel(RuntimeEnvironment.getApplication())
+        val text = mutableListOf<String>()
+        panel.onText = { text.add(it) }
+        panel.tap("Shift")
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+        panel.tap("Shift")
+        panel.tap("A")
+        panel.tap("B")
+        panel.tap("?123")
+        panel.tap("ABC")
+        assertTrue(panel.button("Shift").isSelected)
+        panel.tap("C")
+        panel.tap("Shift")
+        assertFalse(panel.button("Shift").isSelected)
+        panel.tap("d")
+        assertEquals(listOf("A", "B", "C", "d"), text)
+    }
+
+    @Test
+    fun slowSecondTapTurnsShiftOffAndTypingSeparatesShiftTapSequences() {
+        val panel = KeyboardPanel(RuntimeEnvironment.getApplication())
+        val text = mutableListOf<String>()
+        panel.onText = { text.add(it) }
+        panel.tap("Shift")
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ViewConfiguration.getDoubleTapTimeout() + 1L))
+        panel.tap("Shift")
+        panel.tap("a")
+        panel.tap("Shift")
+        panel.tap("B")
+        panel.tap("Shift")
+        panel.tap("C")
+        panel.tap("d")
+        assertEquals(listOf("a", "B", "C", "d"), text)
+    }
+
+    @Test
+    fun typingAndStickyShiftStayIndependentAndReleaseAllClearsBoth() {
+        val panel = KeyboardPanel(RuntimeEnvironment.getApplication())
+        val text = mutableListOf<String>()
+        panel.onText = { text.add(it) }
+        panel.tap("Sticky Shift")
+        panel.tap("Shift")
+        panel.tap("A")
+        assertTrue(panel.button("Sticky Shift").isSelected)
+        assertFalse(panel.button("Shift").isSelected)
+        panel.tap("B")
+        panel.tap("Sticky Shift")
+        panel.tap("c")
+        panel.tap("Shift")
+        panel.tap("Shift")
+        panel.tap("Sticky Shift")
+        panel.releaseAll()
+        assertFalse(panel.button("Sticky Shift").isSelected)
+        assertFalse(panel.button("Shift").isSelected)
+        panel.tap("d")
+        assertEquals(listOf("A", "B", "c", "d"), text)
     }
 
     @Test

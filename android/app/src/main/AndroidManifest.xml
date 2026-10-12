@@ -38,6 +38,7 @@
 
         <activity
             android:name=".ViewerActivity"
+            android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@style/Theme.AppCompat.NoActionBar"
             android:exported="false" />

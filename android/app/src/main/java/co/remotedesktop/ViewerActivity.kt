@@ -110,6 +110,8 @@ class ViewerActivity : AppCompatActivity() {
     // ever holds a decoded frame.
     private lateinit var videoView: TextureView
     @Volatile private var videoSurface: Surface? = null
+    private var retainedVideoTexture: SurfaceTexture? = null
+    private var viewerDestroyed = false
     private var decoder: H264Decoder? = null
     private var videoRecovering = false
     private var videoRecoveryFailures = 0
@@ -167,12 +169,12 @@ class ViewerActivity : AppCompatActivity() {
     private var hostCodec: String? = null
 
     private val binaryListener: (ByteArray) -> Unit = { data ->
-        if (data.isNotEmpty()) when (data[0].toInt()) {
+        if (viewerResumed && data.isNotEmpty()) when (data[0].toInt()) {
             1 -> { // legacy full-frame JPEG
                 val started = SystemClock.elapsedRealtimeNanos()
                 val bmp = BitmapFactory.decodeByteArray(data, 1, data.size - 1)
                 if (bmp != null) {
-                    screen.setFrame(bmp, Rect(0, 0, bmp.width, bmp.height))
+                    screen.setFrame(bmp, screen.fullDesktopRect(bmp.width, bmp.height))
                     streamStats.recordFrame(
                         bytes = data.size,
                         rectCount = 1,
@@ -317,7 +319,7 @@ class ViewerActivity : AppCompatActivity() {
                 val rh = buf.short.toInt() and 0xFFFF
                 Rect(rx, ry, rx + rw, ry + rh)
             } else {
-                Rect(0, 0, w, h) // whole desktop, image pixels are desktop pixels
+                screen.fullDesktopRect(w, h)
             }
 
             // Bit 2: the host moved the crop and expects the overlapping
@@ -489,7 +491,7 @@ class ViewerActivity : AppCompatActivity() {
                 // were still unapproved was dropped by the desktop.
                 "trusted" ->
                     winId?.let {
-                        ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it))
+                        startViewer()
                         send(JSONObject().put("type", "get-privacy-state"))
                     }
                 "denied", "revoked", "disconnected" -> finish()
@@ -534,6 +536,8 @@ class ViewerActivity : AppCompatActivity() {
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedOrientation = savedInstanceState?.getInt(STATE_ORIENTATION, ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
+            ?: ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         ConnectionManager.init(this)
         winId = ConnectionManager.peers.firstOrNull { it.device == "windows" }?.id
         if (winId == null) {
@@ -552,19 +556,36 @@ class ViewerActivity : AppCompatActivity() {
         videoView.isOpaque = false
         videoView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                videoSurface = Surface(st)
+                synchronized(videoLock) {
+                    val retained = retainedVideoTexture
+                    if (retained != null) {
+                        // setSurfaceTexture releases the newly created empty texture.
+                        videoView.setSurfaceTexture(retained)
+                        retainedVideoTexture = null
+                    }
+                    videoSurface = Surface(retained ?: st)
+                }
                 // The host only sends H.264 to viewers that said they could
                 // decode it, and until now this one could not.
-                screen.resendViewport()
+                screen.refreshVideoTransform()
+                screen.resendViewport(immediate = true)
             }
 
-            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                screen.refreshVideoTransform()
+            }
 
             override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
                 synchronized(videoLock) {
-                    releaseVideo()
+                    releaseVideo(clearDisplay = false)
                     videoSurface?.release()
                     videoSurface = null
+                    if (!isFinishing && !viewerDestroyed) {
+                        // Keep the last GPU frame while Android removes the layer
+                        // in the background. We own its release until reattached.
+                        retainedVideoTexture = st
+                        return false
+                    }
                 }
                 return true
             }
@@ -587,6 +608,7 @@ class ViewerActivity : AppCompatActivity() {
         ))
 
         screen = RemoteScreenView(this)
+        screen.restoreViewportState(savedInstanceState?.getBundle(STATE_VIEWPORT))
         screen.attachVideo(videoView)
         val debugPrefs = getSharedPreferences(DEBUG_PREFS, Context.MODE_PRIVATE)
         screen.setDirtyRectHighlightsEnabled(debugPrefs.getBoolean(PREF_HIGHLIGHT_DIRTY, false))
@@ -719,10 +741,12 @@ class ViewerActivity : AppCompatActivity() {
             send(JSONObject().put("type", "mouse").put("action", action).put("button", button).put("x", x).put("y", y))
         }
         screen.onWheel = { dx, dy -> send(JSONObject().put("type", "scroll").put("dx", dx).put("dy", dy)) }
-        screen.onViewportChanged = { x, y, w, h, outW, outH ->
+        screen.onViewportChanged = viewport@ { x, y, w, h, outW, outH ->
             // Round before comparing so sub-pixel drift from a settling gesture
             // does not cost the host a keyframe for a region it is already on.
-            val key = "%.3f,%.3f,%.3f,%.3f,%d,%d".format(Locale.US, x, y, w, h, outW, outH)
+            if (!viewerResumed) return@viewport
+            val supportsH264 = videoSurface != null && h264Enabled
+            val key = "%.3f,%.3f,%.3f,%.3f,%d,%d,%b".format(Locale.US, x, y, w, h, outW, outH, supportsH264)
             if (key != lastSentRegion) {
                 lastSentRegion = key
                 send(JSONObject().put("type", "view-region")
@@ -730,7 +754,7 @@ class ViewerActivity : AppCompatActivity() {
                     .put("outW", outW).put("outH", outH)
                     // Only once there is somewhere to decode onto, or the host
                     // would stream frames we cannot show.
-                    .put("h264", videoSurface != null && h264Enabled))
+                    .put("h264", supportsH264))
             }
         }
     }
@@ -1090,26 +1114,59 @@ class ViewerActivity : AppCompatActivity() {
         ConnectionManager.binaryListeners.add(binaryListener)
         ConnectionManager.jsonListeners.add(jsonListener)
         ConnectionManager.stateListeners.add(stateListener)
-        winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)) }
+        startViewer()
         send(JSONObject().put("type", "get-privacy-state"))
     }
 
     override fun onPause() {
         super.onPause()
         viewerResumed = false
-        releaseVideo()
+        releaseVideo(clearDisplay = false)
+        haveKeyframe = false
         ConnectionManager.binaryListeners.remove(binaryListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
         ConnectionManager.stateListeners.remove(stateListener)
         resetPrivacy()
         if (::keyboard.isInitialized) keyboard.releaseAll()
-        if (::screen.isInitialized) screen.releaseInput()
+        if (::screen.isInitialized) {
+            screen.releaseInput()
+            screen.suspendViewportReporting()
+        }
         hideDiagnostics()
         diagnosticsHandler.removeCallbacksAndMessages(null)
         winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "stop-view").put("to", it)) }
     }
 
+    private fun startViewer() {
+        // stop-view removes both the host's crop and codec capability. Restore
+        // them before restarting capture, even when the local view has not moved.
+        lastSentRegion = null
+        lastKeyframeRequestAt = 0L
+        if (::screen.isInitialized) screen.resendViewport(immediate = true)
+        winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)) }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(STATE_ORIENTATION, requestedOrientation)
+        if (::screen.isInitialized) outState.putBundle(STATE_VIEWPORT, screen.saveViewportState())
+    }
+
+    override fun onDestroy() {
+        viewerDestroyed = true
+        synchronized(videoLock) {
+            releaseVideo()
+            videoSurface?.release()
+            videoSurface = null
+            retainedVideoTexture?.release()
+            retainedVideoTexture = null
+        }
+        super.onDestroy()
+    }
+
     private companion object {
+        const val STATE_ORIENTATION = "viewer_orientation"
+        const val STATE_VIEWPORT = "viewer_viewport"
         const val VIDEO_RECOVERY_RETRY_MS = 2_500L
         const val VIDEO_DRAIN_INTERVAL_MS = 16L
         const val VIDEO_OUTPUT_TIMEOUT_MS = 2_000L

@@ -9,6 +9,8 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
+import android.os.Bundle
+import android.os.Looper
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
@@ -59,8 +61,8 @@ class RemoteScreenView @JvmOverloads constructor(
     // Which desktop rectangle `bitmap` covers. Replaced wholesale rather than
     // mutated: it is written on the network thread and read while drawing.
     @Volatile private var frameRect: Rect = Rect()
-    private var deskW = 0
-    private var deskH = 0
+    @Volatile private var deskW = 0
+    @Volatile private var deskH = 0
 
     private val matrix = Matrix()
     private val drawMatrix = Matrix()
@@ -78,6 +80,9 @@ class RemoteScreenView @JvmOverloads constructor(
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private var fitScale = 1f
     private var matrixInitialized = false
+    private var viewportWidth = 0
+    private var viewportHeight = 0
+    private var restoredViewport: Bundle? = null
     private var topOcclusionPx = 0
     private var bottomOcclusionPx = 0
 
@@ -109,6 +114,10 @@ class RemoteScreenView @JvmOverloads constructor(
      * transform from the incoming frame onto the desktop changes.
      */
     fun setDesktopSize(w: Int, h: Int) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            post { setDesktopSize(w, h) }
+            return
+        }
         if (w <= 0 || h <= 0 || (w == deskW && h == deskH)) return
         val prevW = deskW
         val prevH = deskH
@@ -123,9 +132,29 @@ class RemoteScreenView @JvmOverloads constructor(
         // or went, and fitting to the window is the honest answer.
         val rescaledOnly = matrixInitialized && prevW > 0 && prevH > 0 &&
             sameAspect(prevW, prevH, w, h)
-        post {
-            if (rescaledOnly) remapAfterRescale(prevW, prevH) else resetToFit()
+        if (rescaledOnly) remapAfterRescale(prevW, prevH) else resetToFit()
+    }
+
+    /** Whole-desktop frames may be downscaled without carrying a crop header. */
+    fun fullDesktopRect(frameW: Int, frameH: Int): Rect =
+        Rect(0, 0, deskW.takeIf { it > 0 } ?: frameW, deskH.takeIf { it > 0 } ?: frameH)
+
+    fun saveViewportState(): Bundle? {
+        if (!matrixInitialized) return restoredViewport
+        val values = FloatArray(9)
+        matrix.getValues(values)
+        val scale = values[Matrix.MSCALE_X]
+        return Bundle().apply {
+            putFloat("zoom", scale / fitScale)
+            putFloat("centerX", (viewportWidth / 2f - values[Matrix.MTRANS_X]) / scale / deskW)
+            putFloat("centerY", (viewportHeight / 2f - values[Matrix.MTRANS_Y]) / scale / deskH)
+            putFloat("cursorX", cursorX / deskW)
+            putFloat("cursorY", cursorY / deskH)
         }
+    }
+
+    fun restoreViewportState(state: Bundle?) {
+        restoredViewport = state
     }
 
     /**
@@ -144,7 +173,7 @@ class RemoteScreenView @JvmOverloads constructor(
         }
         if (!matrixInitialized) {
             post {
-                resetToFit()
+                if (!matrixInitialized) resetToFit()
                 dirtyRects?.let {
                     addDirtyHighlights(it)
                     invalidateImageRegions(it)
@@ -186,7 +215,7 @@ class RemoteScreenView @JvmOverloads constructor(
             cursorY = deskH / 2f
         }
         if (!matrixInitialized) {
-            post { resetToFit() }
+            post { if (!matrixInitialized) resetToFit() }
         } else {
             // Place the surface now rather than on the next draw. The frame is
             // already latched, so any gap here shows it at the previous
@@ -205,13 +234,25 @@ class RemoteScreenView @JvmOverloads constructor(
 
     /** Re-send the viewport even if it has not moved — used when a capability
      *  the host cares about, such as the decoder being ready, changes. */
-    fun resendViewport() {
+    fun resendViewport(immediate: Boolean = false) {
         lastRequestScale = 0f
-        reportViewport()
+        removeCallbacks(viewportReporter)
+        if (immediate) emitViewport() else reportViewport()
+    }
+
+    fun suspendViewportReporting() {
+        removeCallbacks(viewportReporter)
+    }
+
+    /** A recreated TextureView layer needs the transform even if it is unchanged. */
+    fun refreshVideoTransform() {
+        lastVideoValues.fill(Float.NaN)
+        if (videoW > 0) videoView?.let { syncVideoTransform(it, frameRect) }
     }
 
     /** Pixels at the bottom currently covered by a custom keyboard or IME. */
     fun setBottomOcclusion(bottomPx: Int) {
+        if (width == 0 || height == 0) return
         val next = bottomPx.coerceIn(0, height.coerceAtLeast(0))
         if (next == bottomOcclusionPx) return
         bottomOcclusionPx = next
@@ -228,7 +269,7 @@ class RemoteScreenView @JvmOverloads constructor(
         val next = topPx.coerceIn(0, height.coerceAtLeast(0))
         if (next == topOcclusionPx) return
         topOcclusionPx = next
-        if (matrixInitialized) keepPointerVisible()
+        if (matrixInitialized && width > 0 && height > 0) keepPointerVisible()
         invalidate()
     }
 
@@ -247,6 +288,19 @@ class RemoteScreenView @JvmOverloads constructor(
         matrix.postScale(fitScale, fitScale)
         matrix.postTranslate(dx, dy)
         matrixInitialized = true
+        viewportWidth = width
+        viewportHeight = height
+        restoredViewport?.let { state ->
+            val scale = fitScale * state.getFloat("zoom", 1f).coerceIn(1f, MAX_ZOOM)
+            matrix.setScale(scale, scale)
+            matrix.postTranslate(
+                width / 2f - state.getFloat("centerX", .5f) * deskW * scale,
+                height / 2f - state.getFloat("centerY", .5f) * deskH * scale,
+            )
+            cursorX = state.getFloat("cursorX", .5f).coerceIn(0f, 1f) * deskW
+            cursorY = state.getFloat("cursorY", .5f).coerceIn(0f, 1f) * deskH
+            restoredViewport = null
+        }
         clampTranslation()
         keepPointerVisible()
         reportViewport()
@@ -287,8 +341,29 @@ class RemoteScreenView @JvmOverloads constructor(
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        matrixInitialized = false
-        resetToFit()
+        // Backgrounding and insets can temporarily lay out the view at zero.
+        // Keep the last usable geometry so returning does not reset the zoom.
+        if (w <= 0 || h <= 0) return
+        if (!matrixInitialized) {
+            resetToFit()
+            return
+        }
+        val values = FloatArray(9)
+        matrix.getValues(values)
+        val oldScale = values[Matrix.MSCALE_X]
+        val centerX = (viewportWidth / 2f - values[Matrix.MTRANS_X]) / oldScale
+        val centerY = (viewportHeight / 2f - values[Matrix.MTRANS_Y]) / oldScale
+        val nextFit = min(w.toFloat() / deskW, h.toFloat() / deskH)
+        val scale = oldScale * nextFit / fitScale
+        fitScale = nextFit
+        matrix.setScale(scale, scale)
+        matrix.postTranslate(w / 2f - centerX * scale, h / 2f - centerY * scale)
+        viewportWidth = w
+        viewportHeight = h
+        clampTranslation()
+        reportViewport()
+        refreshVideoTransform()
+        invalidate()
     }
 
     /**

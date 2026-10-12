@@ -19,14 +19,17 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.Button
 import android.widget.LinearLayout
 import androidx.appcompat.widget.AppCompatButton
+import androidx.core.view.ViewCompat
 import kotlin.math.roundToInt
 
 /** Gboard-style typing rows with compact desktop modifiers and navigation above them.
  * Ctrl / Alt / Win stay held until toggled off or the panel is hidden. Shift
- * changes the typing layer and wraps special keys for shortcuts such as Shift+Arrow.
+ * beside Ctrl stays enabled for shortcuts such as Shift+Arrow. The typing Shift
+ * capitalizes the next letter; double-tapping it locks uppercase typing.
  * Printable keys use literal text unless a desktop modifier is held.
  */
 @SuppressLint("ViewConstructor", "SetTextI18n")
@@ -36,7 +39,11 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     var onOpenIme: (() -> Unit)? = null
 
     private val chordMods = linkedMapOf("CTRL" to false, "ALT" to false, "WIN" to false)
-    private var shift = false
+    private var stickyShift = false
+    private enum class TypingShift { OFF, ONCE, CAPS_LOCK }
+    private var typingShift = TypingShift.OFF
+    private var lastTypingShiftTapAt = -1L
+    private val uppercaseLetters get() = stickyShift || typingShift != TypingShift.OFF
     private var symbols = false
     private var extraSymbols = false
     private var fnLayer = false
@@ -175,7 +182,9 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     fun releaseAll() {
         for ((code, held) in chordMods) if (held) onKey?.invoke(code, "up")
         chordMods.keys.forEach { chordMods[it] = false }
-        shift = false
+        stickyShift = false
+        typingShift = TypingShift.OFF
+        lastTypingShiftTapAt = -1L
         buildAll()
     }
 
@@ -187,6 +196,7 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         compact: Boolean = false,
         textSp: Float = keyTextSp,
         icon: String? = null,
+        resetsShiftTap: Boolean = true,
         onTap: () -> Unit,
     ): Button = KeyboardButton(context, icon).apply {
         text = if (icon == null) label else ""
@@ -210,7 +220,10 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         layoutParams = LayoutParams(0, if (compact) controlHeightPx - dp(2f) else keyHeightPx, weight).apply {
             setMargins(dp(2f), dp(1f), dp(2f), if (compact) dp(1f) else rowGapPx - dp(1f))
         }
-        setOnClickListener { onTap() }
+        setOnClickListener {
+            if (resetsShiftTap) lastTypingShiftTapAt = -1L
+            onTap()
+        }
     }
 
     private fun keyBackground(color: Int, radius: Float): Drawable {
@@ -240,7 +253,15 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
             refreshModHighlights()
         }.also { modButtons[code] = it }
         return row(
-            mod("Ctrl", "CTRL"), mod("Win", "WIN"), mod("Alt", "ALT"),
+            mod("Ctrl", "CTRL"),
+            key("Shift", compact = true, special = true, textSp = 12f) {
+                stickyShift = !stickyShift
+                buildAll()
+            }.also {
+                it.contentDescription = "Sticky Shift"
+                highlight(it, stickyShift)
+            },
+            mod("Win", "WIN"), mod("Alt", "ALT"),
             key("Fn", compact = true, special = true, textSp = 12f) { fnLayer = !fnLayer; buildAll() }
                 .also { highlight(it, fnLayer) },
             control("Esc", "ESC"), control("Tab", "TAB"),
@@ -263,11 +284,18 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     private fun printable(glyph: String) = key(glyph) { emitPrintable(glyph, glyph.uppercase()) }
 
     private fun buildLetters() {
-        fun letter(char: Char) = printable(if (shift) char.uppercase() else char.toString())
+        fun letter(char: Char) = printable(if (uppercaseLetters) char.uppercase() else char.toString())
         addView(row(*"qwertyuiop".map { letter(it) }.toTypedArray()))
         addView(row(spacer(.5f), *"asdfghjkl".map { letter(it) }.toTypedArray(), spacer(.5f)))
-        val shiftKey = key("Shift", 1.5f, special = true, icon = "shift") { shift = !shift; buildAll() }
-        highlight(shiftKey, shift)
+        val shiftKey = key("Shift", 1.5f, special = true,
+            icon = if (typingShift == TypingShift.CAPS_LOCK) "caps-lock" else "shift",
+            resetsShiftTap = false) { toggleTypingShift() }
+        highlight(shiftKey, typingShift != TypingShift.OFF)
+        ViewCompat.setStateDescription(shiftKey, when (typingShift) {
+            TypingShift.OFF -> "Off"
+            TypingShift.ONCE -> "Next letter"
+            TypingShift.CAPS_LOCK -> "Caps Lock"
+        })
         addView(row(shiftKey, *"zxcvbnm".map { letter(it) }.toTypedArray(), backspace()))
     }
 
@@ -315,13 +343,32 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     }
 
     private fun emitPrintable(glyph: String, baseCode: String) {
-        if (chordMods.values.any { it }) emitKeyPress(baseCode) else onText?.invoke(glyph)
+        val letter = glyph.length == 1 && glyph[0].isLetter()
+        if (chordMods.values.any { it }) {
+            emitKeyPress(baseCode, stickyShift || (letter && typingShift == TypingShift.ONCE))
+        } else onText?.invoke(glyph)
+        if (letter && typingShift == TypingShift.ONCE) {
+            typingShift = TypingShift.OFF
+            buildAll()
+        }
     }
 
-    private fun emitKeyPress(code: String) {
-        if (shift) onKey?.invoke("SHIFT", "down")
+    private fun toggleTypingShift() {
+        val now = SystemClock.uptimeMillis()
+        typingShift = when {
+            typingShift == TypingShift.ONCE && lastTypingShiftTapAt >= 0 &&
+                now - lastTypingShiftTapAt <= ViewConfiguration.getDoubleTapTimeout() -> TypingShift.CAPS_LOCK
+            typingShift == TypingShift.OFF -> TypingShift.ONCE
+            else -> TypingShift.OFF
+        }
+        lastTypingShiftTapAt = if (typingShift == TypingShift.ONCE) now else -1L
+        buildAll()
+    }
+
+    private fun emitKeyPress(code: String, shifted: Boolean = stickyShift) {
+        if (shifted) onKey?.invoke("SHIFT", "down")
         onKey?.invoke(code, "press")
-        if (shift) onKey?.invoke("SHIFT", "up")
+        if (shifted) onKey?.invoke("SHIFT", "up")
     }
 
     private companion object {
@@ -361,10 +408,13 @@ private class KeyboardIcon(private val icon: String, private val density: Float)
         canvas.scale(size / 24f, size / 24f)
         val path = Path()
         when (icon) {
-            "shift" -> {
+            "shift", "caps-lock" -> {
                 path.moveTo(12f, 2f); path.lineTo(22f, 12f); path.lineTo(16f, 12f)
                 path.lineTo(16f, 22f); path.lineTo(8f, 22f); path.lineTo(8f, 12f)
                 path.lineTo(2f, 12f); path.close()
+                if (icon == "caps-lock") {
+                    path.moveTo(8f, 24f); path.lineTo(16f, 24f)
+                }
             }
             "backspace" -> {
                 path.moveTo(8f, 4f); path.lineTo(22f, 4f); path.lineTo(22f, 20f)

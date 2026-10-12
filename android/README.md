@@ -85,6 +85,8 @@ pause.
 - **View desktop** → live PC view with the mouse/keyboard controls.
 - **Browse files** → download to `Downloads`, or upload.
 
+Desktop sessions open in landscape. Switching apps keeps the current zoom and
+desktop position; the viewer restores its viewport when streaming resumes.
 In the desktop viewer, tap **Rotate (↻)** to switch the phone between portrait
 and landscape, including when Android's auto-rotate is off. The selected
 orientation stays in effect for the current viewer session.
@@ -101,7 +103,9 @@ out. Movement speeds up closer to the edge and stops when you move away or lift
 your finger. The top toolbar and keyboard control rows use 75% of their previous
 height. The keyboard uses Gboard-style typing rows; **?123** opens numbers and
 symbols, **ABC** returns to letters, and **Fn** exposes F1–F12. Desktop modifiers
-and navigation keys sit above the typing rows, with a single **Shift** beside Z.
+and navigation keys sit above the typing rows. **Shift** beside Z capitalizes
+the next letter; double-tap it for Caps Lock and tap again to turn it off. The
+**Shift** beside Ctrl stays enabled until toggled off for desktop shortcuts.
 
 ## Google Play notes
 

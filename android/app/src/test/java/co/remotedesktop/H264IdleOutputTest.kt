@@ -1,10 +1,17 @@
 package co.remotedesktop
 
 import android.graphics.Rect
+import android.graphics.Matrix
+import android.content.pm.ActivityInfo
 import android.graphics.SurfaceTexture
 import android.media.MediaCodec
 import android.os.Looper
 import android.view.Surface
+import android.util.Base64
+import okhttp3.Request
+import okhttp3.WebSocket
+import okio.ByteString
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -43,7 +50,11 @@ class H264IdleOutputTest {
 
     @After
     fun teardown() {
-        viewer?.let { pause(it) }
+        viewer?.let {
+            pause(it)
+            ViewerActivity::class.java.getDeclaredMethod("onDestroy")
+                .apply { isAccessible = true }.invoke(it)
+        }
         ConnectionManager.peers.clear()
         ConnectionManager::class.java.getDeclaredField("appContext").apply { isAccessible = true }
             .set(ConnectionManager, null)
@@ -125,6 +136,97 @@ class H264IdleOutputTest {
     }
 
     @Test
+    fun newViewerOpensInLandscapeAndResumeResendsAnUnchangedViewport() {
+        val activity = viewer()
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, activity.requestedOrientation)
+        val screen = field("screen").get(activity) as RemoteScreenView
+        val socketField = ConnectionManager::class.java.getDeclaredField("ws").apply { isAccessible = true }
+        val keyField = ConnectionManager::class.java.getDeclaredField("encKey").apply { isAccessible = true }
+        val previousKey = keyField.get(ConnectionManager)
+        val socket = RecordingSocket(ByteArray(32) { 7 })
+        socketField.set(ConnectionManager, socket)
+        keyField.set(ConnectionManager, socket.key)
+        try {
+            screen.setDesktopSize(4000, 3200)
+            idle(200)
+            val before = socket.messages.last { it.getString("type") == "view-region" }.toString()
+            assertTrue(JSONObject(before).getBoolean("h264"))
+            socket.messages.clear()
+            pause(activity)
+            idle(200)
+            assertEquals(listOf("stop-view"), socket.messages.map { it.getString("type") })
+            socket.messages.clear()
+            ViewerActivity::class.java.getDeclaredMethod("onResume")
+                .apply { isAccessible = true }.invoke(activity)
+            assertEquals(listOf("view-region", "start-view", "get-privacy-state"),
+                socket.messages.map { it.getString("type") })
+            assertEquals(before, socket.messages.first().toString())
+
+            // Changing only decoder capability must also bypass deduplication.
+            socket.messages.clear()
+            field("h264Enabled").setBoolean(activity, false)
+            screen.resendViewport(immediate = true)
+            assertEquals(1, socket.messages.size)
+            assertFalse(socket.messages.single().getBoolean("h264"))
+        } finally {
+            socketField.set(ConnectionManager, null)
+            keyField.set(ConnectionManager, previousKey)
+        }
+    }
+
+    @Test
+    fun pauseKeepsLastVideoFrameAndDetachedTextureUntilViewerIsDestroyed() {
+        val activity = viewer()
+        val screen = field("screen").get(activity) as RemoteScreenView
+        screen.setDesktopSize(4000, 3200)
+        idle(200)
+        screen.setVideoFrame(100, 80, Rect(20, 30, 220, 190))
+        pause(activity)
+        val videoWidth = RemoteScreenView::class.java.getDeclaredField("videoW").apply { isAccessible = true }
+        assertEquals(100, videoWidth.getInt(screen))
+        val texture = object : SurfaceTexture(0) {
+            var releases = 0
+            override fun release() {
+                releases++
+                super.release()
+            }
+        }
+        val video = field("videoView").get(activity) as android.view.TextureView
+        assertFalse(video.surfaceTextureListener!!.onSurfaceTextureDestroyed(texture))
+        assertSame(texture, field("retainedVideoTexture").get(activity))
+        ViewerActivity::class.java.getDeclaredMethod("onDestroy")
+            .apply { isAccessible = true }.invoke(activity)
+        viewer = null
+        assertNull(field("retainedVideoTexture").get(activity))
+        assertEquals(1, texture.releases)
+    }
+
+    @Test
+    fun reattachedVideoTextureKeepsItsFrameAndReappliesTheTransform() {
+        val activity = viewer()
+        val screen = field("screen").get(activity) as RemoteScreenView
+        val video = field("videoView").get(activity) as android.view.TextureView
+        screen.setDesktopSize(4000, 3200)
+        idle(200)
+        screen.setVideoFrame(100, 80, Rect(800, 600, 2800, 2200))
+        val before = FloatArray(9)
+        video.getTransform(Matrix()).getValues(before)
+        pause(activity)
+        val texture = SurfaceTexture(0)
+        val listener = video.surfaceTextureListener!!
+        assertFalse(listener.onSurfaceTextureDestroyed(texture))
+        video.setTransform(Matrix())
+        listener.onSurfaceTextureAvailable(SurfaceTexture(0), video.width, video.height)
+        assertSame(texture, video.surfaceTexture)
+        assertNull(field("retainedVideoTexture").get(activity))
+        val after = FloatArray(9)
+        video.getTransform(Matrix()).getValues(after)
+        assertArrayEquals(before, after, .00001f)
+        // Hand ownership back to the activity so teardown also covers release.
+        assertFalse(listener.onSurfaceTextureDestroyed(texture))
+    }
+
+    @Test
     fun fullInputQueueResetsDecoderInsteadOfSilentlyLosingAnInterFrame() {
         val activity = viewer()
         DelayedOutputCodec.inputAvailable = false
@@ -170,6 +272,20 @@ class H264IdleOutputTest {
         DelayedOutputCodec.ready = true
         idle(16)
         assertEquals(listOf(66_666L), DelayedOutputCodec.renderedPts)
+    }
+
+    private class RecordingSocket(val key: ByteArray) : WebSocket {
+        val messages = mutableListOf<JSONObject>()
+        override fun request() = Request.Builder().url("https://example.test/").build()
+        override fun queueSize() = 0L
+        override fun send(text: String): Boolean {
+            val blob = Base64.decode(JSONObject(text).getString("d"), Base64.NO_WRAP)
+            messages.add(JSONObject(String(Crypto.decrypt(key, blob, Crypto.CH_JSON)!!)))
+            return true
+        }
+        override fun send(bytes: ByteString) = false
+        override fun close(code: Int, reason: String?) = true
+        override fun cancel() {}
     }
 }
 
