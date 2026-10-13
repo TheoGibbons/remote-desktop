@@ -2,7 +2,7 @@
     <string name="app_name">Remote Desktop</string>
     <string name="session_id">Session ID</string>
     <string name="session_id_required">Please add a session ID.</string>
-    <string name="session_id_ready">Session ID set — tap to view or change it.</string>
+    <string name="session_id_preview">%1$s...</string>
     <string name="session_id_help">Use the same session ID on all your devices. Enter an existing ID, generate a new one, or scan the QR code from the desktop app.</string>
     <string name="generate_session_id">Generate new session ID</string>
     <string name="save_and_connect">Save &amp; connect</string>

@@ -114,9 +114,10 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetTextI18n")
     private fun refreshStatus() {
-        val missingSessionId = prefs.sessionKey.isBlank()
+        val sessionId = prefs.sessionKey
+        val missingSessionId = sessionId.isBlank()
         sessionIdSubtitle.text = if (missingSessionId) getString(R.string.session_id_required)
-            else getString(R.string.session_id_ready)
+            else getString(R.string.session_id_preview, sessionId.take(6))
         sessionIdSubtitle.setTextColor(if (missingSessionId) getColor(R.color.rd_danger)
             else com.google.android.material.color.MaterialColors.getColor(
                 sessionIdSubtitle, com.google.android.material.R.attr.colorOnSurfaceVariant))
