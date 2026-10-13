@@ -6,10 +6,8 @@ import android.os.Bundle
 import android.text.InputType
 import android.view.View
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
-import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -51,22 +49,6 @@ class SettingsActivity : AppCompatActivity() {
 
         findViewById<View>(R.id.pairedDevicesRow).setOnClickListener {
             startActivity(Intent(this, DevicesActivity::class.java))
-        }
-
-        findViewById<View>(R.id.regenerateRow).setOnClickListener {
-            MaterialAlertDialogBuilder(this)
-                .setTitle("Generate a new session ID?")
-                .setMessage(
-                    "Every device must be given the new ID and paired again. " +
-                        "Do this if the current ID may have leaked."
-                )
-                .setPositiveButton("Generate") { _, _ ->
-                    prefs.sessionKey = Ui.generateSessionKey()
-                    Ui.reconnect(this)
-                    Toast.makeText(this, "New session ID generated — update your other devices", Toast.LENGTH_LONG).show()
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
         }
 
         findViewById<TextView>(R.id.versionValue).text = try {

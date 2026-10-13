@@ -53,6 +53,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".SessionIdActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".SettingsActivity"
             android:exported="false" />
 

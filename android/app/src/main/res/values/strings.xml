@@ -1,5 +1,12 @@
 <resources>
     <string name="app_name">Remote Desktop</string>
+    <string name="session_id">Session ID</string>
+    <string name="session_id_required">Please add a session ID.</string>
+    <string name="session_id_ready">Session ID set — tap to view or change it.</string>
+    <string name="session_id_help">Use the same session ID on all your devices. Enter an existing ID, generate a new one, or scan the QR code from the desktop app.</string>
+    <string name="generate_session_id">Generate new session ID</string>
+    <string name="save_and_connect">Save &amp; connect</string>
+    <string name="scan_qr_code">Scan QR code</string>
     <string name="accessibility_description">Lets your paired computer tap and swipe on this phone during a remote session. Only devices that know your session key can send input.</string>
     <string name="close">Close</string>
     <string name="stats">Stats</string>

@@ -52,8 +52,10 @@ consent, file transfers, and rotation on an Android 16 device or emulator.
 1. Launch **Remote Desktop**.
 2. Easiest: click **QR code** in the desktop app and tap **Scan QR** here — it
    fills in the server URL and session ID and connects. (Or type the session ID
-   into the main-screen box / tap the refresh icon to generate a strong one and
+   under **Session ID** / tap **Generate new session ID** for a strong one and
    copy it to the PC. The server URL lives in **⋮ → Settings → Server URL**.)
+   The **Session ID** screen also has **Scan QR code** and **Save & connect**.
+   If no ID is saved, the main-screen card shows a red message asking you to add one.
 3. Settings persist, a small foreground service keeps the session alive in the
    background (and after reboots), and the app auto-connects from then on.
 
