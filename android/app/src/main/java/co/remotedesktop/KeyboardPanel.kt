@@ -29,7 +29,8 @@ import kotlin.math.roundToInt
 /** Gboard-style typing rows with compact desktop modifiers and navigation above them.
  * Ctrl / Alt / Win stay held until toggled off or the panel is hidden. Shift
  * beside Ctrl stays enabled for shortcuts such as Shift+Arrow. The typing Shift
- * capitalizes the next letter; double-tapping it locks uppercase typing.
+ * capitalizes the next letter; double-tapping it locks uppercase typing, while
+ * holding it works as a physical Shift modifier for every desktop key.
  * Printable keys use literal text unless a desktop modifier is held.
  */
 @SuppressLint("ViewConstructor", "SetTextI18n")
@@ -43,7 +44,11 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     private enum class TypingShift { OFF, ONCE, CAPS_LOCK }
     private var typingShift = TypingShift.OFF
     private var lastTypingShiftTapAt = -1L
-    private val uppercaseLetters get() = stickyShift || typingShift != TypingShift.OFF
+    private var heldTypingShift = false
+    private var typingShiftUsed = false
+    private var typingShiftButton: Button? = null
+    private val typingLetters = mutableListOf<Button>()
+    private val uppercaseLetters get() = stickyShift || heldTypingShift || typingShift != TypingShift.OFF
     private var symbols = false
     private var extraSymbols = false
     private var fnLayer = false
@@ -122,7 +127,8 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
             event.getX(index) + touch.offsetX, event.getY(index) + touch.offsetY, event.metaState)
         try {
             local.source = event.source
-            touch.key.dispatchTouchEvent(local)
+            if (touch.key === typingShiftButton) handleTypingShiftTouch(touch.key, local)
+            else touch.key.dispatchTouchEvent(local)
         } finally {
             local.recycle()
         }
@@ -134,8 +140,49 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         for (touch in touches) {
             val cancel = MotionEvent.obtain(touch.downTime, SystemClock.uptimeMillis(),
                 MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
-            try { touch.key.dispatchTouchEvent(cancel) } finally { cancel.recycle() }
+            try {
+                if (touch.key === typingShiftButton) handleTypingShiftTouch(touch.key, cancel)
+                else touch.key.dispatchTouchEvent(cancel)
+            } finally { cancel.recycle() }
         }
+    }
+
+    private fun handleTypingShiftTouch(button: Button, event: MotionEvent) {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                heldTypingShift = true
+                typingShiftUsed = false
+                button.isPressed = true
+                button.drawableHotspotChanged(event.x, event.y)
+                onKey?.invoke("SHIFT", "down")
+                refreshTypingShift()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val slop = ViewConfiguration.get(context).scaledTouchSlop
+                if (event.x < -slop || event.x >= button.width + slop ||
+                    event.y < -slop || event.y >= button.height + slop) finishTypingShiftTouch(button, false)
+            }
+            MotionEvent.ACTION_UP -> finishTypingShiftTouch(button, button.isPressed)
+            MotionEvent.ACTION_CANCEL -> finishTypingShiftTouch(button, false)
+        }
+    }
+
+    private fun finishTypingShiftTouch(button: Button, tap: Boolean) {
+        button.isPressed = false
+        if (!heldTypingShift) return
+        heldTypingShift = false
+        onKey?.invoke("SHIFT", "up")
+        if (tap && !typingShiftUsed) button.performClick()
+        else {
+            if (typingShiftUsed && typingShift == TypingShift.ONCE) typingShift = TypingShift.OFF
+            lastTypingShiftTapAt = -1L
+            refreshTypingShift()
+        }
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (visibility != View.VISIBLE && typingShiftButton != null) cancelKeyTouches()
     }
 
     override fun onDetachedFromWindow() {
@@ -162,6 +209,8 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         setPadding(dp(2f), dp(4f), dp(2f), dp(4f))
         removeAllViews()
         modButtons.clear()
+        typingShiftButton = null
+        typingLetters.clear()
         addView(buildModifierRow())
         addView(buildNavigationRow())
         if (fnLayer) {
@@ -180,6 +229,7 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     }
 
     fun releaseAll() {
+        cancelKeyTouches()
         for ((code, held) in chordMods) if (held) onKey?.invoke(code, "up")
         chordMods.keys.forEach { chordMods[it] = false }
         stickyShift = false
@@ -197,8 +247,9 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         textSp: Float = keyTextSp,
         icon: String? = null,
         resetsShiftTap: Boolean = true,
+        repeatOnHold: Boolean = false,
         onTap: () -> Unit,
-    ): Button = KeyboardButton(context, icon).apply {
+    ): Button = KeyboardButton(context, icon, repeatOnHold) { heldTypingShift }.apply {
         text = if (icon == null) label else ""
         contentDescription = label
         isAllCaps = false
@@ -221,6 +272,7 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
             setMargins(dp(2f), dp(1f), dp(2f), if (compact) dp(1f) else rowGapPx - dp(1f))
         }
         setOnClickListener {
+            if (heldTypingShift) typingShiftUsed = true
             if (resetsShiftTap) lastTypingShiftTapAt = -1L
             onTap()
         }
@@ -270,7 +322,8 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
     }
 
     private fun control(label: String, code: String) =
-        key(label, compact = true, special = true, textSp = 11f) { emitKeyPress(code) }
+        key(label, compact = true, special = true, textSp = 11f,
+            repeatOnHold = code == "DELETE") { emitKeyPress(code) }
 
     private fun buildNavigationRow() = row(
         control("Del", "DELETE"), control("Home", "HOME"), control("End", "END"),
@@ -285,18 +338,31 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
 
     private fun buildLetters() {
         fun letter(char: Char) = printable(if (uppercaseLetters) char.uppercase() else char.toString())
+            .also { typingLetters.add(it) }
         addView(row(*"qwertyuiop".map { letter(it) }.toTypedArray()))
         addView(row(spacer(.5f), *"asdfghjkl".map { letter(it) }.toTypedArray(), spacer(.5f)))
         val shiftKey = key("Shift", 1.5f, special = true,
             icon = if (typingShift == TypingShift.CAPS_LOCK) "caps-lock" else "shift",
             resetsShiftTap = false) { toggleTypingShift() }
-        highlight(shiftKey, typingShift != TypingShift.OFF)
-        ViewCompat.setStateDescription(shiftKey, when (typingShift) {
-            TypingShift.OFF -> "Off"
-            TypingShift.ONCE -> "Next letter"
-            TypingShift.CAPS_LOCK -> "Caps Lock"
-        })
+        typingShiftButton = shiftKey
         addView(row(shiftKey, *"zxcvbnm".map { letter(it) }.toTypedArray(), backspace()))
+        refreshTypingShift()
+    }
+
+    private fun refreshTypingShift() {
+        typingShiftButton?.let { button ->
+            highlight(button, heldTypingShift || typingShift != TypingShift.OFF)
+            ViewCompat.setStateDescription(button, if (heldTypingShift) "Held" else when (typingShift) {
+                TypingShift.OFF -> "Off"
+                TypingShift.ONCE -> "Next letter"
+                TypingShift.CAPS_LOCK -> "Caps Lock"
+            })
+        }
+        for (button in typingLetters) {
+            val glyph = button.text.toString()
+            button.text = if (uppercaseLetters) glyph.uppercase() else glyph.lowercase()
+            button.contentDescription = button.text
+        }
     }
 
     private fun buildSymbols() {
@@ -316,7 +382,7 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         ))
     }
 
-    private fun backspace() = key("Backspace", 1.5f, special = true, icon = "backspace") {
+    private fun backspace() = key("Backspace", 1.5f, special = true, icon = "backspace", repeatOnHold = true) {
         emitKeyPress("BACKSPACE")
     }
 
@@ -344,12 +410,14 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
 
     private fun emitPrintable(glyph: String, baseCode: String) {
         val letter = glyph.length == 1 && glyph[0].isLetter()
-        if (chordMods.values.any { it }) {
-            emitKeyPress(baseCode, stickyShift || (letter && typingShift == TypingShift.ONCE))
-        } else onText?.invoke(glyph)
+        if (heldTypingShift || chordMods.values.any { it }) {
+            emitKeyPress(baseCode, stickyShift || heldTypingShift || (letter && typingShift == TypingShift.ONCE))
+        } else onText?.invoke(if (letter) {
+            if (uppercaseLetters) glyph.uppercase() else glyph.lowercase()
+        } else glyph)
         if (letter && typingShift == TypingShift.ONCE) {
             typingShift = TypingShift.OFF
-            buildAll()
+            if (heldTypingShift) refreshTypingShift() else buildAll()
         }
     }
 
@@ -365,10 +433,11 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         buildAll()
     }
 
-    private fun emitKeyPress(code: String, shifted: Boolean = stickyShift) {
-        if (shifted) onKey?.invoke("SHIFT", "down")
+    private fun emitKeyPress(code: String, shifted: Boolean = stickyShift || heldTypingShift) {
+        val temporaryShift = shifted && !heldTypingShift
+        if (temporaryShift) onKey?.invoke("SHIFT", "down")
         onKey?.invoke(code, "press")
-        if (shifted) onKey?.invoke("SHIFT", "up")
+        if (temporaryShift) onKey?.invoke("SHIFT", "up")
     }
 
     private companion object {
@@ -378,8 +447,60 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
 }
 
 @SuppressLint("ViewConstructor") // Constructed in code, never inflated from XML.
-private class KeyboardButton(context: Context, icon: String?) : AppCompatButton(context) {
+private class KeyboardButton(
+    context: Context,
+    icon: String?,
+    private val repeatOnHold: Boolean,
+    private val pressOnTouchDown: () -> Boolean,
+) : AppCompatButton(context) {
     private val keyIcon = icon?.let { KeyboardIcon(it, resources.displayMetrics.density) }
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var immediateTouch = false
+    private val repeatPress = object : Runnable {
+        override fun run() {
+            if (!isPressed || !isEnabled || !isShown) {
+                stopRepeating()
+                return
+            }
+            performClick()
+            if (isPressed) postDelayed(this, 50L)
+        }
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) immediateTouch = repeatOnHold || pressOnTouchDown()
+        if (!immediateTouch) return super.onTouchEvent(event)
+        if (!isEnabled) {
+            stopRepeating()
+            return true
+        }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                stopRepeating()
+                isPressed = true
+                drawableHotspotChanged(event.x, event.y)
+                performClick()
+                if (repeatOnHold && isPressed) postDelayed(repeatPress, 350L)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (event.x < -touchSlop || event.x >= width + touchSlop ||
+                    event.y < -touchSlop || event.y >= height + touchSlop) stopRepeating()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> stopRepeating()
+        }
+        return true
+    }
+
+    private fun stopRepeating() {
+        removeCallbacks(repeatPress)
+        isPressed = false
+    }
+
+    override fun onDetachedFromWindow() {
+        stopRepeating()
+        super.onDetachedFromWindow()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         keyIcon?.let {

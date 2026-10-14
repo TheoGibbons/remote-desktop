@@ -106,7 +106,10 @@ your finger. The top toolbar and keyboard control rows use 75% of their previous
 height. The keyboard uses Gboard-style typing rows; **?123** opens numbers and
 symbols, **ABC** returns to letters, and **Fn** exposes F1–F12. Desktop modifiers
 and navigation keys sit above the typing rows. **Shift** beside Z capitalizes
-the next letter; double-tap it for Caps Lock and tap again to turn it off. The
+the next letter; double-tap it for Caps Lock and tap again to turn it off. Hold
+that arrow Shift while pressing other keys for physical-keyboard shortcuts such
+as **Shift+Enter**, **Shift+Tab**, and **Shift+Arrow**. **Del** and **Backspace**
+repeat quickly while held, after a short initial delay. The
 **Shift** beside Ctrl stays enabled until toggled off for desktop shortcuts.
 
 ## Google Play notes
