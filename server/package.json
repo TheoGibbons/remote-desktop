@@ -1,6 +1,6 @@
 {
   "name": "remote-desktop-relay",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "description": "WebSocket relay server pairing devices by shared session key",
   "type": "module",
   "main": "server.js",
