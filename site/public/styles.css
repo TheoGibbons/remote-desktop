@@ -141,6 +141,13 @@ h3 { font-size: 29px; line-height: 1.12; letter-spacing: -.04em; }
 .gesture-visual i { position: absolute; width: 60px; height: 74px; left: 52%; top: 46%; border-radius: 30px 30px 15px 15px; background: var(--ink); transform: rotate(-18deg); box-shadow: 13px -20px 0 -2px var(--ink); }
 .feature-blue { background: var(--blue); border: 0; }.feature-blue p, .feature-blue .feature-number, .feature-blue .feature-kicker { color: #193a4d; }
 .feature-dark { background: var(--ink); color: white; border: 0; }.feature-dark p { color: #aebdb9; }.feature-dark .feature-number { color: #7f928c; }.feature-dark .feature-kicker { color: var(--mint); }
+.feature a { font-weight: 750; text-underline-offset: 3px; }
+.feature-privacy { gap: 40px; background: #e5f2e9; }
+.privacy-details { border-left: 1px solid var(--line); padding-left: 40px; }
+.privacy-details b { color: var(--ink); font-size: 19px; }
+.privacy-details p:last-child { margin-bottom: 0; }
+.privacy-details .privacy-note { font-size: 14px; }
+.privacy-details code { color: var(--ink); }
 .mini-phone { width: 118px; height: 194px; border: 5px solid var(--ink); border-radius: 23px; position: absolute; bottom: -28px; right: 48px; transform: rotate(-5deg); padding: 18px 9px; }
 .mini-phone div { height: 100%; border-radius: 14px; background: white; padding: 14px 8px; }.mini-phone span { display: block; height: 8px; border-radius: 4px; background: #d8e6df; margin-bottom: 9px; }.mini-phone span:first-child { height: 48px; background: var(--mint); }
 .screen-pair { position: absolute; bottom: 38px; left: 34px; right: 34px; height: 115px; }
@@ -187,6 +194,7 @@ footer > p { margin: 0; text-align: center; } footer > div { display: flex; just
   .hero { width: calc(100% - 20px); border-radius: 24px; }.hero-copy { padding: 55px 24px 24px; }.hero-intro { font-size: 16px; }.hero-proof { margin-top: 34px; gap: 12px; }
   .device-stage { min-height: 440px; }.orbit-one { width: 430px; height: 430px; left: -40px; }.orbit-two { width: 320px; height: 320px; left: 20px; }.monitor { width: 82%; left: -3%; top: 80px; }.monitor-screen { height: 205px; }.phone { width: 125px; height: 255px; right: 4%; top: 165px; border-width: 6px; border-radius: 23px; }.phone-card { min-height: 68px; padding: 8px; }.phone-card b { width: 22px; height: 22px; margin-bottom: 8px; }.phone-card.short { display: none; }.phone-dock { height: 32px; }.signal-card { right: 7%; bottom: 5px; }.connection-line { left: 40%; top: 254px; width: 150px; }
   .capabilities, .download { width: calc(100% - 32px); padding: 90px 0; }.feature-grid { grid-template-columns: 1fr; }.feature, .feature-wide { grid-column: auto; grid-template-columns: 1fr; min-height: 390px; padding: 30px; }.feature-wide { gap: 26px; }.gesture-visual, .files-visual { height: 190px; }.folder { width: 180px; height: 110px; }
+  .privacy-details { border-left: 0; border-top: 1px solid var(--line); padding: 24px 0 0; }
   .security { padding: 85px 24px; }.download-card { padding: 26px; }.download-card h3 { font-size: 31px; }
   .setup { width: calc(100% - 32px); padding: 38px 25px; margin-bottom: 80px; }
   footer { grid-template-columns: 1fr; padding: 38px 0; gap: 18px; } footer > p { text-align: left; } footer > div { justify-content: flex-start; }
