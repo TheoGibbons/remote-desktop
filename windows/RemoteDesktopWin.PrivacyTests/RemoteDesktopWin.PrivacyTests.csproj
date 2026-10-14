@@ -9,5 +9,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../RemoteDesktopWin/RemoteDesktopWin.csproj" />
+    <Content Include="../RemoteDesktopWin/App.xaml" Link="AppResources.xaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

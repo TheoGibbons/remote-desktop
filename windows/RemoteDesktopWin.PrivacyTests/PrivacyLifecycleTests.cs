@@ -2,6 +2,8 @@ using System.IO;
 using System.Reflection;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Markup;
+using System.Xml.Linq;
 using Microsoft.Win32;
 using RemoteDesktopWin;
 
@@ -11,8 +13,15 @@ internal static class PrivacyLifecycleTests
     {
         // Exercise real host event handlers without connecting to a relay,
         // altering saved settings, covering monitors, or installing input hooks.
-        var app = new App();
-        app.InitializeComponent();
+        // Use the host's styles without App.OnStartup or its StartupUri. Pumping
+        // the dispatcher must not start a second host or use saved settings.
+        var app = new System.Windows.Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var markup = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "AppResources.xaml"));
+        var resources = new XElement(presentation + "ResourceDictionary",
+            new XAttribute(XNamespace.Xmlns + "x", "http://schemas.microsoft.com/winfx/2006/xaml"),
+            markup.Root!.Element(presentation + "Application.Resources")!.Elements());
+        app.Resources = (ResourceDictionary)XamlReader.Parse(resources.ToString());
         string storage = Path.Combine(Path.GetTempPath(), "privacy-lifecycle-" + Guid.NewGuid().ToString("N"));
         var auth = new PeerAuth(storage);
         var host = new MainWindow(new AppSettings { AutoConnect = false }, auth);

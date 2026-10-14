@@ -22,6 +22,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
             (_, _) => Refresh(), dispatcher);
         _refresh.Stop();
         SystemEvents.DisplaySettingsChanged += DisplayChanged;
+        SystemEvents.UserPreferenceChanged += PreferencesChanged;
         SystemEvents.SessionSwitch += SessionChanged;
     }
 
@@ -91,6 +92,9 @@ internal sealed class PrivacyOverlayManager : IDisposable
         {
             if (_cursorGuard?.IsAlive != true)
                 throw new InvalidOperationException("Cursor restoration helper stopped.");
+            // Also repairs silent SPI_SETCURSORS calls that do not broadcast a
+            // preferences change. Keep cursor recovery inside the rollback path.
+            _cursor?.Refresh();
             var screens = Forms.Screen.AllScreens;
             if (screens.Length != _windows.Count)
             {
@@ -105,6 +109,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
     }
 
     private void DisplayChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(Refresh);
+    private void PreferencesChanged(object sender, UserPreferenceChangedEventArgs e) => _dispatcher.BeginInvoke(Refresh);
     private void SessionChanged(object sender, SessionSwitchEventArgs e)
     {
         if (e.Reason is SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff)
@@ -114,6 +119,7 @@ internal sealed class PrivacyOverlayManager : IDisposable
     public void Dispose()
     {
         SystemEvents.DisplaySettingsChanged -= DisplayChanged;
+        SystemEvents.UserPreferenceChanged -= PreferencesChanged;
         SystemEvents.SessionSwitch -= SessionChanged;
         Disable();
     }

@@ -57,8 +57,9 @@ returns to its normal colour when the host confirms that it is off. Tap
 **Show PC** to restore the screens, or type `unlock` on the physical keyboard
 (no Enter needed; case insensitive). Other local
 keyboard and mouse events are suppressed while the app's remote input keeps
-working. Standard Windows pointer shapes are blanked during privacy and the
-configured cursor scheme is restored afterward. A hidden helper also restores
+working. Standard Windows pointer shapes are blanked during privacy, reapplied
+when Windows settings change and once a second to repair silent cursor scheme
+reloads. The configured cursor scheme is restored afterward. A hidden helper also restores
 the scheme if the host process exits without cleanup. Android still draws its
 own remote pointer. Privacy stays active when the viewer pauses or closes, a
 device disconnects, approval is revoked, or the relay connection drops. Reconnecting

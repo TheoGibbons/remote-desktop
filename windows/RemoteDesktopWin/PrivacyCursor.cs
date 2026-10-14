@@ -15,22 +15,31 @@ internal sealed class PrivacyCursor : IDisposable
 
     internal PrivacyCursor()
     {
+        try { BlankSystemCursors(); }
+        catch { Dispose(); throw; }
+    }
+
+    // Windows can reload the cursor scheme while privacy is active (for example
+    // after a theme or pointer-settings change). Blanking it once is not enough.
+    internal void Refresh()
+    {
+        if (_changed) BlankSystemCursors();
+    }
+
+    private void BlankSystemCursors()
+    {
         var andMask = new byte[128]; // 32 x 32 monochrome, AND=1 / XOR=0: transparent
         Array.Fill(andMask, (byte)0xFF);
         var xorMask = new byte[128];
-        try
+        foreach (uint id in CursorIds)
         {
-            foreach (uint id in CursorIds)
-            {
-                var cursor = CreateCursor(IntPtr.Zero, 0, 0, 32, 32, andMask, xorMask);
-                if (cursor == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
-                // SetSystemCursor takes ownership and destroys the supplied cursor.
-                if (!SetSystemCursor(cursor, id))
-                    throw new Win32Exception(Marshal.GetLastWin32Error());
-                _changed = true;
-            }
+            var cursor = CreateCursor(IntPtr.Zero, 0, 0, 32, 32, andMask, xorMask);
+            if (cursor == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            // SetSystemCursor takes ownership and destroys the supplied cursor.
+            if (!SetSystemCursor(cursor, id))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            _changed = true;
         }
-        catch { Dispose(); throw; }
     }
 
     // Reload the configured scheme without changing any persisted settings.

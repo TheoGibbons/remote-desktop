@@ -189,10 +189,23 @@ internal static class Program
             Check(guard.IsAlive, "crash restoration helper is running");
             foreach (uint id in PrivacyCursor.CursorIds)
                 Check(RenderCursor(id).All(pixel => pixel == Color.Magenta.ToArgb()), "privacy cursor is blank: " + id);
+
+            for (int reload = 0; reload < 3; reload++)
+            {
+                // Reproduce a theme/pointer scheme reload without changing the
+                // user's saved settings or disabling/re-enabling privacy.
+                Check(PrivacyCursor.Restore(), "Windows cursor scheme reload succeeds");
+                Check(RenderCursor(32512).SequenceEqual(original[32512]), "scheme reload brings the pointer back");
+                cursor.Refresh();
+                foreach (uint id in PrivacyCursor.CursorIds)
+                    Check(RenderCursor(id).All(pixel => pixel == Color.Magenta.ToArgb()),
+                        "privacy repairs a reloaded cursor: " + id);
+            }
         }
         foreach (uint id in PrivacyCursor.CursorIds)
             Check(RenderCursor(id).SequenceEqual(original[id]), "original cursor is restored: " + id);
         Console.WriteLine("PASS: standard Windows cursors are blank during privacy and restored afterward");
+        Console.WriteLine("PASS: cursor scheme reloads are repaired without toggling privacy");
 
         var start = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
         {
