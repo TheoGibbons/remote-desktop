@@ -154,7 +154,7 @@ the viewer simply decodes the type-3 stream (below) and sends these.
 | `fs-get`         | `to`, `path`, `xferId` | Ask peer to send me a file. |
 | `fs-begin`       | `to`, `xferId`, `name`, `size` | Sender announces an incoming file (used for both push-upload and get-response). |
 | `fs-end`         | `to`, `xferId`, `ok`, `error?` | |
-| `fs-saved`       | `to`, `xferId`, `path` | Optional receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Older peers may omit this reply. |
+| `fs-saved`       | `to`, `xferId`, `path?`, `error?` | Receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Windows replies with `error` if saving fails or a known-size file is incomplete. Older peers may omit this reply; Android share-sheet sends wait for confirmation and show an unconfirmed result on timeout. |
 
 ## Binary frames
 

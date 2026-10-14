@@ -85,7 +85,17 @@ unapproved device is present in the session, screen sharing and file serving
 pause.
 
 - **View desktop** → live PC view with the mouse/keyboard controls.
-- **Browse files** → download to `Downloads`, or upload.
+- **Browse files** → download to `Downloads`, or select one or multiple files to upload to the desktop's `Downloads` folder.
+
+You can also select files or images in a file manager or gallery, tap **Share**,
+and choose **Remote Desktop**. Choose an online desktop by its name and device
+code, then tap **Send**. Pairing and desktop file-access permission must be
+enabled; the share screen keeps the selection while you connect or review
+devices. Transfers continue across screen rotation, and cancelled or failed
+batches retain only files that have not been confirmed saved. Files go to the
+desktop's `Downloads` folder, with duplicate names kept as separate files.
+Use an updated desktop app for save confirmations. If an older app does not
+reply, check `Downloads` before retrying to avoid sending duplicates.
 
 Desktop sessions open in landscape. Switching apps keeps the current zoom and
 desktop position; the viewer restores its viewport when streaming resumes.

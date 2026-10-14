@@ -311,17 +311,29 @@ public class FsService
         {
             if (!_incoming.Remove(xferId, out t)) return;
         }
-        t.Stream.Dispose();
-        if (ok)
+        try
         {
+            t.Stream.Dispose();
+            if (!ok) throw new IOException(msg["error"]?.GetValue<string>() ?? "unknown error");
+            if (t.Expected >= 0 && t.Received != t.Expected) throw new IOException("Incomplete file transfer");
             File.Move(t.TempPath, t.FinalPath);
+            _ws.SendJson(new JsonObject
+            {
+                ["type"] = "fs-saved", ["to"] = msg["from"]?.GetValue<string>(),
+                ["xferId"] = xferId, ["path"] = t.FinalPath,
+            });
             TransferStatus?.Invoke($"Received {Path.GetFileName(t.FinalPath)}");
             t.OnDone?.Invoke(t.FinalPath);
         }
-        else
+        catch (Exception ex)
         {
-            File.Delete(t.TempPath);
-            var err = msg["error"]?.GetValue<string>() ?? "unknown error";
+            try { File.Delete(t.TempPath); } catch { /* Report the original save failure. */ }
+            var err = ex.Message;
+            _ws.SendJson(new JsonObject
+            {
+                ["type"] = "fs-saved", ["to"] = msg["from"]?.GetValue<string>(),
+                ["xferId"] = xferId, ["error"] = err,
+            });
             TransferStatus?.Invoke($"Receive failed: {err}");
             t.OnError?.Invoke(err);
         }

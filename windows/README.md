@@ -48,6 +48,11 @@ cross-process checks of duplicate-launch rejection, normal shutdown, restart
 handoff, and recovery after a crash. These checks use an isolated lock and do
 not launch the UI or connect to a relay.
 
+Run `dotnet run --project windows/RemoteDesktopWin.FileTransferTests` for file
+save confirmations, duplicate names, incomplete and cancelled transfers,
+unknown sizes, empty files and save failures. These checks use temporary files
+and a transport double, without connecting to a relay.
+
 ## Privacy mode
 
 While viewing from Android, tap **Privacy** to cover each physical Windows

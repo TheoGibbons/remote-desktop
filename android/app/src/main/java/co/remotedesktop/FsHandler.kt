@@ -2,14 +2,17 @@ package co.remotedesktop
 
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadLocalRandom
@@ -135,17 +138,23 @@ class FsHandler(private val context: Context) {
 
     /** Streams any InputStream to a peer as a file transfer.
      *  @return true if the whole file was sent and fs-end ok was signalled. */
-    fun sendFile(toPeer: String, input: InputStream, name: String, size: Long, xferId: Int): Boolean {
+    fun sendFile(
+        toPeer: String, input: InputStream, name: String, size: Long, xferId: Int,
+        canContinue: () -> Boolean = { true },
+        onProgress: ((String) -> Unit)? = null,
+    ): Boolean {
         try {
-            ConnectionManager.sendJson(
-                JSONObject()
-                    .put("type", "fs-begin").put("to", toPeer)
-                    .put("xferId", xferId).put("name", name).put("size", size)
-            )
-            val buf = ByteArray(256 * 1024)
-            var sent = 0L
             input.use { ins ->
+                if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+                ConnectionManager.sendJson(
+                    JSONObject()
+                        .put("type", "fs-begin").put("to", toPeer)
+                        .put("xferId", xferId).put("name", name).put("size", size)
+                )
+                val buf = ByteArray(256 * 1024)
+                var sent = 0L
                 while (true) {
+                    if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
                     val n = ins.read(buf)
                     if (n <= 0) break
                     // Payload (before encryption): [xferId(4 BE)][chunk]. The frame-type
@@ -158,14 +167,21 @@ class FsHandler(private val context: Context) {
                     System.arraycopy(buf, 0, payload, 4, n)
                     // Back-pressure: wait while the socket queue is full.
                     var tries = 0
-                    while (!ConnectionManager.sendBinary(Crypto.CH_FILE, payload) && tries++ < 300) Thread.sleep(100)
+                    while (!ConnectionManager.sendBinary(Crypto.CH_FILE, payload)) {
+                        if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+                        if (++tries >= 300) throw IOException("Connection timed out while sending")
+                        Thread.sleep(100)
+                    }
                     sent += n
-                    if (size > 0) status("Sending $name: ${sent * 100 / size}%")
+                    val progress = if (size > 0) "Sending $name: ${sent * 100 / size}%" else "Sending $name..."
+                    status(progress)
+                    onProgress?.invoke(progress)
                 }
+                if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+                ConnectionManager.sendJson(
+                    JSONObject().put("type", "fs-end").put("to", toPeer).put("xferId", xferId).put("ok", true)
+                )
             }
-            ConnectionManager.sendJson(
-                JSONObject().put("type", "fs-end").put("to", toPeer).put("xferId", xferId).put("ok", true)
-            )
             status("Sent $name")
             return true
         } catch (e: Exception) {
@@ -186,6 +202,35 @@ class FsHandler(private val context: Context) {
         exec.execute {
             val ok = sendFile(toPeer, input, name, size, id)
             onDone?.invoke(ok)
+        }
+    }
+
+    /** Open only the current file, on the transfer worker, while its share grant is valid. */
+    fun sendUriAsync(
+        toPeer: String, uri: Uri, xferId: Int, canContinue: () -> Boolean,
+        onProgress: (String) -> Unit, onDone: (Boolean, String?) -> Unit,
+    ) {
+        exec.execute {
+            try {
+                if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+                var name = "shared-file"
+                var size = -1L
+                context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
+                    if (it.moveToFirst()) {
+                        val ni = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val si = it.getColumnIndex(OpenableColumns.SIZE)
+                        if (ni >= 0) name = it.getString(ni)?.takeIf { value -> value.isNotBlank() } ?: name
+                        if (si >= 0 && !it.isNull(si)) size = it.getLong(si)
+                    }
+                }
+                val input = context.contentResolver.openInputStream(uri)
+                    ?: throw IOException("Cannot open the shared file")
+                onProgress("Sending $name...")
+                val ok = sendFile(toPeer, input, name, size, xferId, canContinue, onProgress)
+                onDone(ok, if (ok) name else "Could not send $name. Check the connection and desktop file access.")
+            } catch (e: Exception) {
+                onDone(false, "Cannot read the shared file: ${e.message ?: "access expired"}. Share it again from the source app.")
+            }
         }
     }
 

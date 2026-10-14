@@ -57,7 +57,7 @@ object ConnectionManager {
 
     var myId: String? = null
         private set
-    var state: String = "disconnected"
+    @Volatile var state: String = "disconnected"
         private set
     val peers = CopyOnWriteArrayList<Peer>()
 
@@ -149,6 +149,8 @@ object ConnectionManager {
 
     private fun scheduleReconnect(socket: WebSocket) {
         if (!enabled || socket !== ws) return
+        peers.clear()
+        PeerAuth.resetConnection()
         setState("disconnected: retrying...")
         main.postDelayed({ connect() }, backoffMs)
         backoffMs = (backoffMs * 2).coerceAtMost(30_000L)

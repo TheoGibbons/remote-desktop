@@ -1,15 +1,12 @@
 package co.remotedesktop
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Intent
 import android.content.ActivityNotFoundException
-import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.DocumentsContract
-import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -26,7 +23,7 @@ import java.io.File
 /**
  * Browses the paired desktop's filesystem. Tap a folder to open it, tap a file
  * to download it into the phone's Downloads folder, or use Upload
- * to push a file from the phone to the desktop.
+ * to push files from the phone to the desktop.
  */
 class FileExplorerActivity : AppCompatActivity() {
 
@@ -36,8 +33,8 @@ class FileExplorerActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var listView: ListView
     private lateinit var uploadButton: Button
-    private var fileAccessAllowed = false
-    private var pendingUploadUri: Uri? = null
+    @Volatile private var fileAccessAllowed = false
+    private var pendingUploadUris: List<Uri> = emptyList()
     private var winId: String? = null
     private var path = ""
     private var reqCounter = 0
@@ -50,10 +47,9 @@ class FileExplorerActivity : AppCompatActivity() {
             "file-access" -> if (msg.optString("from") == winId) {
                 fileAccessAllowed = msg.optBoolean("allowed", false)
                 uploadButton.isEnabled = fileAccessAllowed
-                pendingUploadUri?.let { uri ->
-                    pendingUploadUri = null
-                    uploadUri(uri)
-                }
+                val uris = pendingUploadUris
+                pendingUploadUris = emptyList()
+                uris.forEach { uploadUri(it) }
             }
             "fs-list-result" -> if (msg.optString("reqId") == lastReqId) showResult(msg)
             "peer-left" -> if (msg.optString("id") == winId) { finish() }
@@ -67,9 +63,9 @@ class FileExplorerActivity : AppCompatActivity() {
         registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { }
 
     private val uploadPicker =
-        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
-            if (res.resultCode == Activity.RESULT_OK) res.data?.data?.let {
-                pendingUploadUri = it
+        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents()) { uris ->
+            if (uris.isNotEmpty()) {
+                pendingUploadUris = uris
                 ConnectionManager.sendJson(JSONObject().put("type", "get-file-access").put("to", winId))
             }
         }
@@ -113,12 +109,10 @@ class FileExplorerActivity : AppCompatActivity() {
         val footer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         uploadButton = Button(this).apply {
             isEnabled = false
-            text = "⬆ Upload file to desktop"
+            text = "⬆ Upload files to desktop"
             isAllCaps = false
             setOnClickListener {
-                uploadPicker.launch(Intent(Intent.ACTION_GET_CONTENT).apply {
-                    type = "*/*"; addCategory(Intent.CATEGORY_OPENABLE)
-                })
+                uploadPicker.launch("*/*")
             }
         }
         footer.addView(uploadButton)
@@ -231,32 +225,19 @@ class FileExplorerActivity : AppCompatActivity() {
             setStatus("File access is disabled on the desktop.")
             return
         }
-        var name = "upload.bin"
-        var size = -1L
-        val cursor: Cursor? = contentResolver.query(uri, null, null, null, null)
-        cursor?.use {
-            if (it.moveToFirst()) {
-                val ni = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                val si = it.getColumnIndex(OpenableColumns.SIZE)
-                if (ni >= 0) name = it.getString(ni)
-                if (si >= 0 && !it.isNull(si)) size = it.getLong(si)
-            }
-        }
-        val input = contentResolver.openInputStream(uri)
-        if (input == null) {
-            setStatus("Cannot open selected file"); return
-        }
-        ConnectionManager.fs.sendFileAsync(winId!!, input, name, size) { ok ->
-            if (ok) runOnUiThread {
-                Toast.makeText(
-                    this,
-                    "“$name” uploaded to the desktop's Downloads folder " +
-                        "(not the folder you are browsing)",
-                    Toast.LENGTH_LONG
+        val peerId = winId ?: return
+        ConnectionManager.fs.sendUriAsync(peerId, uri, ConnectionManager.fs.nextXferId(),
+            { fileAccessAllowed && PeerAuth.isTrusted(peerId) && PeerAuth.allPeersTrusted &&
+                ConnectionManager.peers.any { it.id == peerId } },
+            { progress -> runOnUiThread { setStatus(progress) } },
+            { ok, result -> runOnUiThread {
+                if (ok) Toast.makeText(
+                    this, "“$result” sent to the desktop's Downloads folder " +
+                        "(not the folder you are browsing)", Toast.LENGTH_LONG
                 ).show()
-            }
-        }
-        setStatus("Uploading $name...")
+                else setStatus(result ?: "Could not send the selected file")
+            } })
+        setStatus("Queued selected file for upload...")
     }
 
     private fun goUp() {
