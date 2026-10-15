@@ -66,8 +66,11 @@ working. Standard Windows pointer shapes are blanked during privacy, reapplied
 when Windows settings change and once a second to repair silent cursor scheme
 reloads. The configured cursor scheme is restored afterward. A hidden helper also restores
 the scheme if the host process exits without cleanup. Android still draws its
-own remote pointer. Privacy stays active when the viewer pauses or closes, a
-device disconnects, approval is revoked, or the relay connection drops. Reconnecting
+own remote pointer. By default, privacy stays active when the viewer pauses or closes, a
+device disconnects, approval is revoked, or the relay connection drops. Android's
+**Settings → Privacy → Auto privacy** can enable privacy when viewing starts;
+**Auto un-privacy** opts that viewing session into restoring local access when
+it ends, including a dropped connection. Both are off by default. Reconnecting
 viewers receive the current privacy state and can tap **Show PC** to restore local
 access. Typing `unlock` locally still works without a remote session. Turning off
 remote control, locking/logging off Windows, or exiting the host also restores

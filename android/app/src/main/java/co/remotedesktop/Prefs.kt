@@ -22,6 +22,14 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("autoConnect", true)
         set(v) = sp.edit().putBoolean("autoConnect", v).apply()
 
+    var autoPrivacy: Boolean
+        get() = sp.getBoolean("autoPrivacy", false)
+        set(v) = sp.edit().putBoolean("autoPrivacy", v).apply()
+
+    var autoUnprivacy: Boolean
+        get() = sp.getBoolean("autoUnprivacy", false)
+        set(v) = sp.edit().putBoolean("autoUnprivacy", v).apply()
+
     /** Consent: paired devices may view this screen and inject taps/keys. */
     var allowControl: Boolean
         get() = sp.getBoolean("allowControl", true)

@@ -75,9 +75,43 @@ internal static class PrivacyLifecycleTests
             Json("privacy-mode", reconnected, enabled: false);
             if (privacy.IsEnabled) throw new Exception("Approved reconnected peer could not restore the desktop");
             Console.WriteLine("PASS: privacy survives session endings and an approved peer can disable it after reconnect");
+
+            // Never capture the real desktop in these lifecycle tests.
+            streamer.Gate = () => false;
+            foreach (var end in new Action[] {
+                () => Json("stop-view", peer),
+                () => Json("peer-left", id: peer),
+                () => Invoke(host, "OnState", "disconnected: network lost"),
+                () => Invoke(host, "DisconnectRow", new MainWindow.DeviceRow { PeerId = peer }),
+                () => Invoke(host, "OnAuthResult", peer, "disconnected"),
+                () => Invoke(host, "OnAuthResult", peer, "revoked"),
+            })
+            {
+                trusted.Add(peer);
+                Json("start-view", peer, autoUnprivacy: true);
+                SeedPrivacy();
+                end();
+                if (privacy.IsEnabled) throw new Exception("Auto un-privacy did not restore desktop on session ending");
+                streamer.Stop();
+            }
+
+            trusted.Add(peer);
+            Json("start-view", peer, autoUnprivacy: true);
+            SeedPrivacy();
+            Json("stop-view", "unapproved");
+            ExpectPrivate("unapproved peer sends stop-view");
+            // The latest start-view policy replaces any previous opt-in.
+            Json("start-view", peer, autoUnprivacy: false);
+            Json("stop-view", peer);
+            ExpectPrivate("auto un-privacy is turned off");
+            Json("start-view", "unapproved", autoUnprivacy: true);
+            Invoke(host, "OnState", "disconnected: network lost");
+            ExpectPrivate("unapproved peer tries to register auto un-privacy");
+            Console.WriteLine("PASS: opted-in viewers restore privacy on close, disconnect, revocation and relay loss");
         }
         finally
         {
+            streamer.Stop();
             privacy.Dispose();
             Field<WsClient>(host, "_ws").Dispose();
             Field<System.Windows.Forms.NotifyIcon>(host, "_tray").Dispose();
@@ -92,8 +126,12 @@ internal static class PrivacyLifecycleTests
             if (!privacy.IsEnabled) throw new Exception("Privacy cleared when " + action);
         }
 
-        void Json(string type, string? from = null, string? id = null, bool? enabled = null) =>
-            Invoke(host, "OnJson", new JsonObject { ["type"] = type, ["from"] = from, ["id"] = id, ["enabled"] = enabled });
+        void SeedPrivacy() => typeof(PrivacyOverlayManager)
+            .GetProperty("IsEnabled", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(privacy, true);
+
+        void Json(string type, string? from = null, string? id = null, bool? enabled = null, bool? autoUnprivacy = null) =>
+            Invoke(host, "OnJson", new JsonObject { ["type"] = type, ["from"] = from, ["id"] = id,
+                ["enabled"] = enabled, ["autoUnprivacy"] = autoUnprivacy });
     }
 
     private static T Field<T>(object instance, string name) =>

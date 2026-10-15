@@ -63,6 +63,7 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var privacyButtonDefaultTextColors: ColorStateList
     private var privacyEnabled = false
     private var privacyAllowed = false
+    private var autoPrivacyPending = false
     private val privacyHandler = Handler(Looper.getMainLooper())
     private val privacyTimeout = Runnable {
         // A missing acknowledgement must not imply the host changed state.
@@ -510,6 +511,12 @@ class ViewerActivity : AppCompatActivity() {
             msg.optString("error").takeIf { it.isNotEmpty() && it != "null" }?.let {
                 Toast.makeText(this, it, Toast.LENGTH_LONG).show()
             }
+            // Apply once per viewing connection, after the host confirms support
+            // and permission. Later local unlocks must stay unlocked.
+            if (autoPrivacyPending && privacyAllowed) {
+                autoPrivacyPending = false
+                if (!privacyEnabled) requestPrivacy(true)
+            }
         }
         if (msg.optString("type") == "screen-info" && msg.optString("from") == winId) {
             // desktopWidth/Height are the coordinate space region patches and
@@ -702,9 +709,7 @@ class ViewerActivity : AppCompatActivity() {
             }
             addToolbarButton("Stats") { showDiagnostics() }
             privacyButton = addToolbarButton(getString(R.string.privacy)) {
-                privacyButton.isEnabled = false
-                send(JSONObject().put("type", "privacy-mode").put("enabled", !privacyEnabled))
-                privacyHandler.postDelayed(privacyTimeout, 5_000)
+                requestPrivacy(!privacyEnabled)
             }.apply {
                 privacyButtonDefaultTint = backgroundTintList
                 privacyButtonDefaultBackground = background
@@ -1074,6 +1079,7 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private fun resetPrivacy() {
+        autoPrivacyPending = false
         privacyHandler.removeCallbacks(privacyTimeout)
         privacyEnabled = false
         privacyAllowed = false
@@ -1084,6 +1090,13 @@ class ViewerActivity : AppCompatActivity() {
             privacyButton.contentDescription = getString(R.string.privacy_enable)
             privacyButton.tooltipText = privacyButton.contentDescription
         }
+    }
+
+    private fun requestPrivacy(enabled: Boolean) {
+        privacyButton.isEnabled = false
+        send(JSONObject().put("type", "privacy-mode").put("enabled", enabled))
+        privacyHandler.removeCallbacks(privacyTimeout)
+        privacyHandler.postDelayed(privacyTimeout, 5_000)
     }
 
     private fun updatePrivacyButtonColors() {
@@ -1134,16 +1147,25 @@ class ViewerActivity : AppCompatActivity() {
         }
         hideDiagnostics()
         diagnosticsHandler.removeCallbacksAndMessages(null)
+        // Send before stop-view, including to older hosts that do not understand
+        // the disconnect policy carried in start-view.
+        if (Prefs(this).autoUnprivacy) {
+            send(JSONObject().put("type", "privacy-mode").put("enabled", false))
+        }
         winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "stop-view").put("to", it)) }
     }
 
     private fun startViewer() {
+        autoPrivacyPending = Prefs(this).autoPrivacy
         // stop-view removes both the host's crop and codec capability. Restore
         // them before restarting capture, even when the local view has not moved.
         lastSentRegion = null
         lastKeyframeRequestAt = 0L
         if (::screen.isInitialized) screen.resendViewport(immediate = true)
-        winId?.let { ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)) }
+        winId?.let {
+            ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)
+                .put("autoUnprivacy", Prefs(this).autoUnprivacy))
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

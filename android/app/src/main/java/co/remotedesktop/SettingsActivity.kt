@@ -8,6 +8,7 @@ import android.view.View
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.materialswitch.MaterialSwitch
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -26,6 +27,15 @@ class SettingsActivity : AppCompatActivity() {
 
         deviceNameValue = findViewById(R.id.deviceNameValue)
         serverUrlValue = findViewById(R.id.serverUrlValue)
+
+        findViewById<MaterialSwitch>(R.id.autoPrivacySwitch).apply {
+            isChecked = prefs.autoPrivacy
+            setOnCheckedChangeListener { _, checked -> prefs.autoPrivacy = checked }
+        }
+        findViewById<MaterialSwitch>(R.id.autoUnprivacySwitch).apply {
+            isChecked = prefs.autoUnprivacy
+            setOnCheckedChangeListener { _, checked -> prefs.autoUnprivacy = checked }
+        }
 
         findViewById<View>(R.id.deviceNameRow).setOnClickListener {
             Ui.showTextDialog(this, "Device name", prefs.deviceName) { name ->

@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private readonly FsService _fs;
     private readonly PeerAuth _auth;
     private readonly PrivacyOverlayManager _privacy;
+    private readonly HashSet<string> _autoUnprivacyViewers = new();
 
     private record Peer(string Id, string Device, string Name);
 
@@ -80,7 +81,12 @@ public partial class MainWindow : Window
             foreach (var peer in _peers) SendPrivacyState(peer.Id, error);
         };
         Closed += (_, _) => _privacy.Dispose();
-        // Privacy belongs to the host and survives stream stops and reconnects.
+        // Privacy normally survives session endings. An approved viewer may
+        // explicitly request restoration when its viewing session ends.
+        _streamer.StreamingChanged += streaming =>
+        {
+            if (!streaming) RestorePrivacyForEndedViewers();
+        };
 
         // The stream is broadcast and every key holder can decrypt it, so it
         // pauses whenever an unapproved device shares the session (checked on
@@ -92,6 +98,7 @@ public partial class MainWindow : Window
         _auth.Changed += RefreshDeviceList;
         _auth.Changed += () =>
         {
+            RestorePrivacyForEndedViewers();
             foreach (var peer in _peers) SendPrivacyState(peer.Id);
         };
 
@@ -538,7 +545,14 @@ public partial class MainWindow : Window
             case "start-view":
                 if (controlAllowed)
                 {
-                    if (from != null) _streamer.Regions.AddViewer(from);
+                    if (from != null)
+                    {
+                        _streamer.Regions.AddViewer(from);
+                        if (msg["autoUnprivacy"] is JsonValue option &&
+                            option.TryGetValue<bool>(out var restore) && restore)
+                            _autoUnprivacyViewers.Add(from);
+                        else _autoUnprivacyViewers.Remove(from);
+                    }
                     _streamer.Start();
                     _streamer.RequestKeyframe(); // joining mid-stream needs a full frame
                     if (from != null) SendPrivacyState(from);
@@ -663,6 +677,13 @@ public partial class MainWindow : Window
             ["allowed"] = _settings.AllowRemoteControl && _auth.AllPeersTrusted,
             ["error"] = error,
         });
+    }
+
+    private void RestorePrivacyForEndedViewers()
+    {
+        if (_autoUnprivacyViewers.RemoveWhere(id =>
+                !_auth.IsTrusted(id) || !_streamer.Regions.IsViewing(id)) > 0)
+            _privacy.Disable();
     }
 
     /// <summary>A peer told us where we stand with it (we are the viewer here).</summary>

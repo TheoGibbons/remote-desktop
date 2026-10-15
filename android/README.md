@@ -99,6 +99,14 @@ reply, check `Downloads` before retrying to avoid sending duplicates.
 
 Desktop sessions open in landscape. Switching apps keeps the current zoom and
 desktop position; the viewer restores its viewport when streaming resumes.
+Under **Settings → Privacy**, **Auto privacy** enables the desktop privacy
+screen when viewing starts, and **Auto un-privacy** restores the physical
+desktop when viewing stops, including when leaving the viewer or switching apps.
+Both switches are independent, saved, and off by default. Auto privacy requires
+desktop support and remote-control permission; a manual unlock stays in effect
+until the next viewing connection. An updated Windows host also applies auto
+un-privacy after a connection drop; older hosts can only receive the restore
+command while the connection is still available.
 In the desktop viewer, tap **Rotate (↻)** to switch the phone between portrait
 and landscape, including when Android's auto-rotate is off. The selected
 orientation stays in effect for the current viewer session.
