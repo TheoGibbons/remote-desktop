@@ -7,18 +7,32 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.DocumentsContract
+import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.ArrayAdapter
+import android.widget.BaseAdapter
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.PopupMenu
+import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.edit
+import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.json.JSONObject
 import java.io.File
+import java.text.NumberFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
 
 /**
  * Browses the paired desktop's filesystem. Tap a folder to open it, tap a file
@@ -27,20 +41,25 @@ import java.io.File
  */
 class FileExplorerActivity : AppCompatActivity() {
 
-    private data class Entry(val name: String, val dir: Boolean, val size: Long, val mtime: Long)
-
     private lateinit var pathText: TextView
     private lateinit var statusText: TextView
     private lateinit var listView: ListView
     private lateinit var uploadButton: Button
+    private lateinit var upButton: ImageButton
+    private lateinit var sortButton: MaterialButton
+    private lateinit var loading: ProgressBar
+    private lateinit var emptyText: TextView
+    private var sort = DesktopFileSort.NAME_ASC
+    private var listing = false
     @Volatile private var fileAccessAllowed = false
     private var pendingUploadUris: List<Uri> = emptyList()
     private var winId: String? = null
     private var path = ""
-    private var reqCounter = 0
+    private var requestedPath = ""
     private var lastReqId = ""
-    private val entries = ArrayList<Entry>()
-    private lateinit var adapter: ArrayAdapter<String>
+    private var pendingScroll: Bundle? = null
+    private val entries = ArrayList<DesktopFileEntry>()
+    private lateinit var adapter: FileAdapter
 
     private val jsonListener: (JSONObject) -> Unit = { msg ->
         when (msg.optString("type")) {
@@ -73,7 +92,6 @@ class FileExplorerActivity : AppCompatActivity() {
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        title = "Desktop files"
         ConnectionManager.init(this)
         winId = ConnectionManager.peers.firstOrNull { it.device == "windows" }?.id
         if (winId == null) {
@@ -81,58 +99,93 @@ class FileExplorerActivity : AppCompatActivity() {
             finish(); return
         }
 
-        val pad = (12 * resources.displayMetrics.density).toInt()
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-        }
+        path = savedInstanceState?.getString("path") ?: ""
+        pendingScroll = savedInstanceState?.getBundle("scroll")
+        sort = DesktopFileSort.entries.firstOrNull {
+            it.name == getSharedPreferences("file_browser", MODE_PRIVATE).getString("sort", null)
+        } ?: DesktopFileSort.NAME_ASC
 
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        header.addView(Button(this).apply { text = "⬆ Up"; isAllCaps = false; setOnClickListener { goUp() } })
-        pathText = TextView(this).apply {
-            text = "/"
-            setPadding(pad, 0, 0, 0)
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        header.addView(pathText)
-        header.addView(Button(this).apply { text = "⟳"; setOnClickListener { requestList(path) } })
-        root.addView(header)
-
-        adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList())
-        listView = ListView(this).apply {
-            this.adapter = this@FileExplorerActivity.adapter
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-            setOnItemClickListener { _, _, pos, _ -> onEntryTap(pos) }
-        }
-        root.addView(listView)
-
-        val footer = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        uploadButton = Button(this).apply {
-            isEnabled = false
-            text = "⬆ Upload files to desktop"
-            isAllCaps = false
-            setOnClickListener {
-                uploadPicker.launch("*/*")
+        setContentView(R.layout.activity_file_explorer)
+        Ui.applySystemBarInsets(this)
+        findViewById<MaterialToolbar>(R.id.filesToolbar).apply {
+            setNavigationOnClickListener { finish() }
+            menu.add(getString(R.string.files_refresh)).apply {
+                setIcon(R.drawable.ic_refresh)
+                iconTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.rd_on_surface))
+                setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_IF_ROOM)
+                setOnMenuItemClickListener { requestList(path); true }
             }
         }
-        footer.addView(uploadButton)
-        root.addView(footer)
+        pathText = findViewById<TextView>(R.id.filesPath).apply {
+            setOnClickListener { showLocation() }
+        }
+        upButton = findViewById<ImageButton>(R.id.filesUp).apply {
+            setOnClickListener { goUp() }
+            tooltipText = getString(R.string.files_up)
+        }
+        sortButton = findViewById<MaterialButton>(R.id.filesSort).apply {
+            setOnClickListener { showSortMenu() }
+        }
+        loading = findViewById(R.id.filesLoading)
+        emptyText = findViewById(R.id.filesEmpty)
+        adapter = FileAdapter()
+        listView = findViewById<ListView>(R.id.filesList).apply {
+            adapter = this@FileExplorerActivity.adapter
+            emptyView = emptyText
+            setOnItemClickListener { _, _, pos, _ -> onEntryTap(pos) }
+        }
+        uploadButton = findViewById<Button>(R.id.filesUpload).apply {
+            tooltipText = getString(R.string.files_upload_description)
+            setOnClickListener { uploadPicker.launch("*/*") }
+        }
+        // Leave room for the title when the screen is narrow or text is enlarged.
+        if (resources.configuration.screenWidthDp < 360 || resources.configuration.fontScale >= 1.3f) {
+            (uploadButton as MaterialButton).apply {
+                text = ""
+                iconPadding = 0
+                iconGravity = MaterialButton.ICON_GRAVITY_TEXT_START
+                minWidth = 0
+                minimumWidth = 0
+                val pad = (12 * resources.displayMetrics.density).toInt()
+                setPadding(pad, paddingTop, pad, paddingBottom)
+                layoutParams = layoutParams.apply { width = pad * 4 }
+            }
+        }
+        statusText = findViewById(R.id.filesStatus)
+        updatePath()
+        updateSortButton()
+    }
 
-        statusText = TextView(this).apply { text = "Tap a file to download it here." }
-        root.addView(statusText)
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("path", if (listing) requestedPath else path)
+        outState.putBundle("scroll", captureScroll())
+        super.onSaveInstanceState(outState)
+    }
 
-        setContentView(root)
-        Ui.applySystemBarInsets(this)
-        requestList("")
+    private fun captureScroll(): Bundle? {
+        // Keep the anchor through another rotation while the folder reply is pending.
+        pendingScroll?.let { return it }
+        if (!::listView.isInitialized || (listing && requestedPath != path)) return null
+        val position = listView.firstVisiblePosition
+        val entry = entries.getOrNull(position) ?: return null
+        val firstRow = listView.getChildAt(0) ?: return null
+        return Bundle().apply {
+            putString("path", path)
+            putString("name", entry.name)
+            putInt("position", position)
+            putInt("offset", firstRow.top - listView.paddingTop)
+        }
     }
 
     override fun onResume() {
         super.onResume()
+        if (!::uploadButton.isInitialized) return
         ConnectionManager.jsonListeners.add(jsonListener)
         fileAccessAllowed = false
         uploadButton.isEnabled = false
         ConnectionManager.sendJson(JSONObject().put("type", "get-file-access").put("to", winId))
         ConnectionManager.fs.transferStatus.add(transferListener)
+        if (lastReqId.isEmpty() || listing) requestList(if (listing) requestedPath else path)
     }
 
     override fun onPause() {
@@ -142,8 +195,13 @@ class FileExplorerActivity : AppCompatActivity() {
     }
 
     private fun requestList(p: String) {
-        setStatus("Loading...")
-        lastReqId = (++reqCounter).toString()
+        pendingScroll = if (p == path) captureScroll() else null
+        requestedPath = p
+        setListing(true)
+        emptyText.setText(R.string.files_loading)
+        setStatus(getString(R.string.files_loading))
+        // Replies from the previous activity must not match a request after rotation.
+        lastReqId = UUID.randomUUID().toString()
         ConnectionManager.sendJson(
             JSONObject().put("type", "fs-list").put("to", winId)
                 .put("path", p).put("reqId", lastReqId)
@@ -152,27 +210,173 @@ class FileExplorerActivity : AppCompatActivity() {
 
     @SuppressLint("SetTextI18n")
     private fun showResult(msg: JSONObject) {
+        setListing(false)
         val err = msg.opt("error")
         if (err != null && err != JSONObject.NULL) {
+            if (entries.isNotEmpty()) pendingScroll = null
+            emptyText.setText(R.string.files_error)
             setStatus("Error: $err")
             return
         }
         path = msg.optString("path")
-        pathText.text = if (path.isEmpty()) "This PC" else path
+        val scroll = pendingScroll?.takeIf { it.getString("path") == path }
+        pendingScroll = null
+        updatePath()
         entries.clear()
         val arr = msg.optJSONArray("entries")
         if (arr != null) for (i in 0 until arr.length()) {
             val e = arr.getJSONObject(i)
-            entries.add(Entry(e.getString("name"), e.optBoolean("dir"), e.optLong("size"), e.optLong("mtime")))
+            entries.add(DesktopFileEntry(e.getString("name"), e.optBoolean("dir"), e.optLong("size"), e.optLong("mtime")))
         }
-        entries.sortWith(compareByDescending<Entry> { it.dir }.thenBy { it.name.lowercase() })
-        adapter.clear()
-        adapter.addAll(entries.map { (if (it.dir) "📁 " else "📄 ") + it.name + if (!it.dir) "   (${fmtSize(it.size)})" else "" })
+        applySort(scroll)
+        emptyText.setText(R.string.files_empty)
+        setStatus(getString(R.string.files_list_hint,
+            resources.getQuantityString(R.plurals.files_count, entries.size, entries.size)))
+    }
+
+    private fun setListing(active: Boolean) {
+        listing = active
+        loading.visibility = if (active) View.VISIBLE else View.INVISIBLE
+        listView.isEnabled = !active
+        listView.alpha = if (active) 0.5f else 1f
+        upButton.isEnabled = !active && path.isNotEmpty()
+        upButton.alpha = if (upButton.isEnabled) 1f else 0.38f
+    }
+
+    private fun updatePath() {
+        pathText.text = path.ifEmpty { getString(R.string.files_this_pc) }
+        pathText.tooltipText = pathText.text
+        upButton.isEnabled = !listing && path.isNotEmpty()
+        upButton.alpha = if (upButton.isEnabled) 1f else 0.38f
+    }
+
+    private fun showLocation() {
+        MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_RemoteDesktop_FileDialog)
+            .setTitle(R.string.files_detail_location)
+            .setView(detailContent(listOf(getString(R.string.files_detail_location) to pathText.text.toString())))
+            .setPositiveButton(R.string.close, null)
+            .show()
+    }
+
+    private fun updateSortButton() {
+        sortButton.setText(sort.summary)
+        sortButton.contentDescription = getString(R.string.files_sort_description, getString(sort.label))
+        sortButton.tooltipText = sortButton.contentDescription
+    }
+
+    private fun showSortMenu() {
+        PopupMenu(this, sortButton, Gravity.END).apply {
+            DesktopFileSort.entries.forEachIndexed { index, option ->
+                menu.add(0, index, index, option.label).isChecked = option == sort
+            }
+            menu.setGroupCheckable(0, true, true)
+            setOnMenuItemClickListener { item ->
+                sort = DesktopFileSort.entries[item.itemId]
+                pendingScroll = null
+                getSharedPreferences("file_browser", MODE_PRIVATE).edit { putString("sort", sort.name) }
+                updateSortButton()
+                applySort()
+                true
+            }
+            show()
+        }
+    }
+
+    private fun applySort(scroll: Bundle? = null) {
+        entries.sortWith(sort.comparator())
         adapter.notifyDataSetChanged()
-        setStatus("${entries.size} items")
+        if (scroll == null) {
+            listView.setSelection(0)
+        } else {
+            // Follow the same file if the desktop added or removed earlier entries.
+            val position = entries.indexOfFirst { it.name == scroll.getString("name") }
+                .takeIf { it >= 0 } ?: scroll.getInt("position").coerceIn(0, maxOf(0, entries.lastIndex))
+            listView.setSelectionFromTop(position, scroll.getInt("offset"))
+        }
+    }
+
+    private inner class FileAdapter : BaseAdapter() {
+        override fun getCount() = entries.size
+        override fun getItem(position: Int) = entries[position]
+        override fun getItemId(position: Int) = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val row = convertView ?: layoutInflater.inflate(R.layout.row_desktop_file, parent, false)
+            val entry = getItem(position)
+            row.findViewById<ImageView>(R.id.fileIcon).setImageResource(
+                if (entry.dir) R.drawable.ic_folder else R.drawable.ic_document)
+            row.findViewById<TextView>(R.id.fileName).text = entry.name
+            val kind = if (entry.dir) getString(R.string.files_folder) else fmtSize(entry.size)
+            row.findViewById<TextView>(R.id.fileMetadata).apply {
+                text = if (entry.mtime > 0) getString(R.string.files_metadata, kind, formatDate(entry.mtime)) else kind
+                contentDescription = if (entry.mtime > 0) getString(R.string.files_metadata, kind,
+                    getString(R.string.files_modified_metadata, formatDate(entry.mtime))) else kind
+            }
+            row.findViewById<ImageButton>(R.id.fileDetails).apply {
+                contentDescription = getString(R.string.files_details_description, entry.name)
+                tooltipText = getString(R.string.files_details)
+                setOnClickListener { if (!listing) showDetails(entry) }
+            }
+            return row
+        }
+    }
+
+    private fun formatDate(mtime: Long, includeTime: Boolean = false): String {
+        if (mtime <= 0) return getString(R.string.files_unknown_date)
+        val date = Date(mtime)
+        return DateFormat.getDateFormat(this).format(date) +
+            if (includeTime) " " + DateFormat.getTimeFormat(this).format(date) else ""
+    }
+
+    private fun showDetails(entry: DesktopFileEntry) {
+        val fullPath = join(path, entry.name)
+        val type = if (entry.dir) getString(R.string.files_folder) else {
+            val extension = entry.name.substringAfterLast('.', "").takeIf { entry.name.lastIndexOf('.') > 0 }
+            if (extension.isNullOrEmpty()) getString(R.string.files_file)
+            else getString(R.string.files_file_type, extension.uppercase(Locale.getDefault()))
+        }
+        val size = if (entry.dir) getString(R.string.files_folder_size) else
+            getString(R.string.files_exact_size, fmtSize(entry.size), NumberFormat.getIntegerInstance().format(entry.size))
+        MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_RemoteDesktop_FileDialog)
+            .setTitle(R.string.files_details)
+            .setView(detailContent(listOf(
+                getString(R.string.files_detail_name) to entry.name,
+                getString(R.string.files_detail_type) to type,
+                getString(R.string.files_detail_size) to size,
+                getString(R.string.files_detail_modified) to formatDate(entry.mtime, includeTime = true),
+                getString(R.string.files_detail_location) to fullPath,
+            )))
+            .setNegativeButton(R.string.close, null)
+            .setPositiveButton(if (entry.dir) R.string.files_open_folder else R.string.files_download) { _, _ ->
+                if (entry.dir) requestList(fullPath) else download(fullPath, entry.name)
+            }
+            .show()
+    }
+
+    private fun detailContent(fields: List<Pair<String, String>>): View {
+        val pad = (24 * resources.displayMetrics.density).toInt()
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, pad / 2)
+        }
+        fields.forEach { (label, value) ->
+            content.addView(TextView(this).apply {
+                text = label
+                setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_LabelMedium)
+                setTextColor(getColor(R.color.rd_on_surface_variant))
+                setPadding(0, pad / 2, 0, pad / 6)
+            })
+            content.addView(TextView(this).apply {
+                text = value
+                setTextAppearance(com.google.android.material.R.style.TextAppearance_Material3_BodyLarge)
+                setTextIsSelectable(true)
+            })
+        }
+        return ScrollView(this).apply { addView(content) }
     }
 
     private fun onEntryTap(pos: Int) {
+        if (listing) return
         val e = entries.getOrNull(pos) ?: return
         if (e.dir) {
             requestList(join(path, e.name))

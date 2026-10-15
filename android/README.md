@@ -87,6 +87,14 @@ pause.
 - **View desktop** → live PC view with the mouse/keyboard controls.
 - **Browse files** → download to `Downloads`, or select one or multiple files to upload to the desktop's `Downloads` folder.
 
+The file browser shows file sizes and modification dates beneath each name.
+Tap the info button for the full name, type, exact size, modification time, and
+location. The sort menu offers name, size, and modification date in either
+direction, always keeping folders first, and remembers your choice. Tap the
+current path to see its full location; Upload always sends to desktop Downloads.
+Rotating the phone keeps the same visible file and scroll offset while the
+folder reloads.
+
 You can also select files or images in a file manager or gallery, tap **Share**,
 and choose **Remote Desktop**. Choose an online desktop by its name and device
 code, then tap **Send**. Pairing and desktop file-access permission must be

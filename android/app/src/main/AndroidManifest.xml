@@ -45,7 +45,6 @@
 
         <activity
             android:name=".FileExplorerActivity"
-            android:theme="@style/Theme.RemoteDesktop.WithActionBar"
             android:exported="false" />
 
         <activity

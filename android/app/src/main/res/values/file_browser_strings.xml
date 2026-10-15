@@ -1,0 +1,47 @@
+<resources>
+    <string name="files_title">Desktop files</string>
+    <string name="files_back">Back</string>
+    <string name="files_upload">Upload</string>
+    <string name="files_upload_description">Upload files to desktop Downloads</string>
+    <string name="files_refresh">Refresh folder</string>
+    <string name="files_up">Parent folder</string>
+    <string name="files_this_pc">This PC</string>
+    <string name="files_empty">This folder is empty</string>
+    <string name="files_loading">Loading…</string>
+    <string name="files_error">Could not load this folder. Try refreshing.</string>
+    <string name="files_sort_description">Sort: %1$s. Folders always first.</string>
+    <string name="files_sort_name_asc">Name (A–Z)</string>
+    <string name="files_sort_name_desc">Name (Z–A)</string>
+    <string name="files_sort_size_desc">Size (largest first)</string>
+    <string name="files_sort_size_asc">Size (smallest first)</string>
+    <string name="files_sort_modified_desc">Modified (newest first)</string>
+    <string name="files_sort_modified_asc">Modified (oldest first)</string>
+    <string name="files_sort_name_up">Name ↑</string>
+    <string name="files_sort_name_down">Name ↓</string>
+    <string name="files_sort_size_down">Size ↓</string>
+    <string name="files_sort_size_up">Size ↑</string>
+    <string name="files_sort_modified_down">Modified ↓</string>
+    <string name="files_sort_modified_up">Modified ↑</string>
+    <string name="files_details_description">Details for %1$s</string>
+    <string name="files_details">Details</string>
+    <string name="files_folder">Folder</string>
+    <string name="files_file">File</string>
+    <string name="files_file_type">%1$s file</string>
+    <string name="files_metadata">%1$s · %2$s</string>
+    <string name="files_modified_metadata">Modified %1$s</string>
+    <string name="files_unknown_date">Unavailable</string>
+    <string name="files_folder_size">Not calculated</string>
+    <string name="files_exact_size">%1$s (%2$s bytes)</string>
+    <string name="files_detail_name">Name</string>
+    <string name="files_detail_type">Type</string>
+    <string name="files_detail_size">Size</string>
+    <string name="files_detail_modified">Modified</string>
+    <string name="files_detail_location">Location</string>
+    <string name="files_open_folder">Open folder</string>
+    <string name="files_download">Download</string>
+    <string name="files_list_hint">%1$s · Tap a file to download</string>
+    <plurals name="files_count">
+        <item quantity="one">%d item</item>
+        <item quantity="other">%d items</item>
+    </plurals>
+</resources>

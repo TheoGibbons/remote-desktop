@@ -1,0 +1,6 @@
+<resources>
+    <style name="ThemeOverlay.RemoteDesktop.FileDialog" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorSurfaceContainerHigh">@color/rd_surface</item>
+        <item name="elevationOverlayEnabled">false</item>
+    </style>
+</resources>

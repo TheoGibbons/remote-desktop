@@ -9,6 +9,7 @@ windows/**/obj/
 
 # Android / Gradle
 android/.gradle/
+android/.kotlin/
 android/build/
 android/app/build/
 android/app/release/
