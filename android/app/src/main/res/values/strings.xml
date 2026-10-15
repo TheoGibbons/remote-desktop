@@ -12,9 +12,9 @@
     <string name="stats">Stats</string>
     <string name="privacy">Privacy</string>
     <string name="auto_privacy">Auto privacy</string>
-    <string name="auto_privacy_description">Enable the desktop privacy screen when connecting to a remote desktop session</string>
+    <string name="auto_privacy_description">Hide PC screens when viewing starts</string>
     <string name="auto_unprivacy">Auto un-privacy</string>
-    <string name="auto_unprivacy_description">Disable the desktop privacy screen when disconnecting from a remote desktop session</string>
+    <string name="auto_unprivacy_description">Restore PC screens when viewing stops</string>
     <string name="privacy_show_pc">Show PC</string>
     <string name="privacy_enable">Hide the physical PC screens and block local input</string>
     <string name="privacy_disable">Restore the physical PC screens and local input</string>

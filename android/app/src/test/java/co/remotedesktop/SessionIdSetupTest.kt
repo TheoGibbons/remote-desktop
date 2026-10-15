@@ -73,7 +73,7 @@ class SessionIdSetupTest {
             controller.pause()
             prefs.sessionKey = validKey
             controller.resume()
-            assertEquals("R8qT2m...", subtitle.text.toString())
+            assertEquals("R8qT2mZ9pK5vN7xB4dF6sW1...", subtitle.text.toString())
             assertNotEquals(activity.getColor(R.color.rd_danger), subtitle.currentTextColor)
             assertNotNull(activity.findViewById<View>(R.id.scanQrBtn))
         } finally {
