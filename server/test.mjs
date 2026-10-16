@@ -77,6 +77,33 @@ async function main() {
   tab2.ws.close();
   await sleep(150);
 
+  // Replacing a session's only peer must keep the replacement registered.
+  // The old socket may still be alive when a desktop reconnects after a
+  // network change; a later phone must discover and communicate with it.
+  const soloKey = "solo-reconnect-session-1234567890";
+  const solo1 = await connect("windows", "solo-pc", soloKey, "uid-solo-pc");
+  const solo2 = await connect("windows", "solo-pc", soloKey, "uid-solo-pc");
+  const soloPhone = await connect("android", "solo-phone", soloKey);
+  await sleep(150);
+  ok("sole peer replacement closes old socket", solo1.closed);
+  ok("phone discovers reconnected sole desktop",
+    soloPhone.welcome.peers.some((p) => p.id === solo2.welcome.id));
+  ok("reconnected sole desktop notified of phone join",
+    solo2.msgs.some((m) => m.type === "peer-joined" && m.peer.id === soloPhone.welcome.id));
+  soloPhone.ws.send(JSON.stringify({ type: "start-view", to: solo2.welcome.id }));
+  solo2.ws.send(JSON.stringify({ type: "desktop-ready", to: soloPhone.welcome.id }));
+  solo2.ws.send(Buffer.from([1, 42]));
+  await sleep(150);
+  ok("reconnected sole desktop receives routed view request",
+    solo2.msgs.some((m) => m.type === "start-view" && m.from === soloPhone.welcome.id));
+  ok("reconnected sole desktop can send control messages",
+    soloPhone.msgs.some((m) => m.type === "desktop-ready" && m.from === solo2.welcome.id));
+  ok("reconnected sole desktop can send video",
+    soloPhone.bins.some((b) => b.equals(Buffer.from([1, 42]))));
+  solo2.ws.close();
+  soloPhone.ws.close();
+  await sleep(150);
+
   // 5. Session isolation
   const other = await connect("android", "x", "a-totally-different-key-9999");
   ok("different key is isolated", other.welcome.peers.length === 0);

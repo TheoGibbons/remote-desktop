@@ -165,7 +165,6 @@ function handleHello(client, msg, helloTimer) {
   let peers = sessions.get(client.sessionHash);
   if (!peers) {
     peers = new Map();
-    sessions.set(client.sessionHash, peers);
   }
 
   // A device that reconnects (new socket, same install uid) replaces its old
@@ -180,6 +179,11 @@ function handleHello(client, msg, helloTimer) {
       }
     }
   }
+
+  // Removing the last stale peer deletes the session from the registry.
+  // Re-register this map before admitting the replacement, or it gets a
+  // welcome but later peers join a separate map and cannot discover it.
+  sessions.set(client.sessionHash, peers);
 
   send(client, {
     type: "welcome",
