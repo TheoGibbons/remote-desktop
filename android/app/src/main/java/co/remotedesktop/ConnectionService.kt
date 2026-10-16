@@ -17,8 +17,8 @@ import android.os.IBinder
  * being open on screen. Survives the launcher activity being swiped away
  * and restarts after reboots via [BootReceiver].
  *
- * Screen *sharing* still requires the one-tap MediaProjection consent
- * (an Android platform rule); this service only maintains the session.
+ * Accessibility provides default phone viewing on Android 11+. Optional smooth
+ * screen sharing still requires per-session MediaProjection consent.
  */
 class ConnectionService : Service() {
 

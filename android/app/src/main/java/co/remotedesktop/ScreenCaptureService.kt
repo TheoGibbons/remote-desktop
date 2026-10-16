@@ -42,12 +42,9 @@ class ScreenCaptureService : Service() {
 
         val isRunning: Boolean get() = instance != null
 
-        /** Fired on the main thread when the service starts/stops (the service
-         *  starts asynchronously, after the consent dialog's activity result). */
-        val stateListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
-
         private fun notifyStateChanged(context: Context) {
-            Handler(context.mainLooper).post { stateListeners.forEach { it() } }
+            PhoneScreenCapture.init(context)
+            PhoneScreenCapture.refresh()
         }
 
         fun start(context: Context, resultCode: Int, data: Intent) {
@@ -62,22 +59,10 @@ class ScreenCaptureService : Service() {
             context.stopService(Intent(context, ScreenCaptureService::class.java))
         }
 
-        /** A peer asked to view this phone's screen. */
-        fun onViewRequested(context: Context) {
-            val svc = instance
-            Handler(context.mainLooper).post {
-                android.widget.Toast.makeText(
-                    context,
-                    if (svc != null) "The desktop started viewing this phone"
-                    else "The desktop tried to view this phone — enable screen sharing in the app first",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-            }
-            svc?.setStreaming(true)
-        }
+        fun setStreaming(on: Boolean) { instance?.updateStreaming(on) }
 
-        fun onViewStopped() {
-            instance?.setStreaming(false)
+        fun resendScreenInfo() {
+            instance?.let { if (it.streaming && PhoneScreenCapture.maySendFrames(it)) it.sendScreenInfo() }
         }
     }
 
@@ -86,6 +71,7 @@ class ScreenCaptureService : Service() {
     private var imageReader: ImageReader? = null
     private var captureThread: HandlerThread? = null
     @Volatile private var streaming = false
+    @Volatile private var streamGeneration = 0L
     @Volatile private var lastFrameAt = 0L
     private var reusableBitmap: Bitmap? = null
 
@@ -132,8 +118,10 @@ class ScreenCaptureService : Service() {
         super.onDestroy()
     }
 
-    fun setStreaming(on: Boolean) {
+    private fun updateStreaming(on: Boolean) {
+        if (streaming == on) return
         streaming = on
+        streamGeneration++
         if (on) sendScreenInfo()
     }
 
@@ -170,10 +158,11 @@ class ScreenCaptureService : Service() {
             val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
                 if (!streaming) return@setOnImageAvailableListener
+                val token = streamGeneration
                 // Frames are broadcast to the whole session and any key holder
                 // can decrypt them — never send while an unapproved device is
                 // present. Resumes automatically once it is approved or leaves.
-                if (!PeerAuth.allPeersTrusted) return@setOnImageAvailableListener
+                if (!PhoneScreenCapture.maySendFrames(this)) return@setOnImageAvailableListener
                 val now = System.currentTimeMillis()
                 if (now - lastFrameAt < 1000L / maxFps) return@setOnImageAvailableListener
                 lastFrameAt = now
@@ -192,8 +181,10 @@ class ScreenCaptureService : Service() {
 
                 val out = ByteArrayOutputStream(200_000)
                 cropped.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out)
+                if (cropped !== bmp) cropped.recycle()
                 // ConnectionManager adds the frame-type byte and encrypts the JPEG.
-                ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray())
+                if (streaming && token == streamGeneration && PhoneScreenCapture.maySendFrames(this))
+                    ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray())
             } catch (_: Exception) {
             } finally {
                 image.close()

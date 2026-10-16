@@ -33,7 +33,10 @@ class Prefs(context: Context) {
     /** Consent: paired devices may view this screen and inject taps/keys. */
     var allowControl: Boolean
         get() = sp.getBoolean("allowControl", true)
-        set(v) = sp.edit().putBoolean("allowControl", v).apply()
+        set(v) {
+            sp.edit().putBoolean("allowControl", v).apply()
+            if (!v) PhoneScreenCapture.onViewStopped()
+        }
 
     /** Consent: paired devices may browse this phone's storage and push files to it. */
     var allowFileAccess: Boolean

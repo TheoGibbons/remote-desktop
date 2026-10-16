@@ -122,8 +122,6 @@ class DevicesActivity : AppCompatActivity() {
                 when (item.title) {
                     "Disconnect" -> {
                         PeerAuth.disconnectPeer(onlinePeerId!!)
-                        // Hang up whatever it was watching; it stays trusted.
-                        ScreenCaptureService.onViewStopped()
                         Toast.makeText(this@DevicesActivity,
                             "Disconnected ${d.name} (it stays trusted)", Toast.LENGTH_SHORT).show()
                     }

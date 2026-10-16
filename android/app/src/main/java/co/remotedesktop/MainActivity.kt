@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
 
     private val stateListener: (String) -> Unit = { refreshStatus() }
     private val trustListener: () -> Unit = { refreshStatus() }
+    private val captureStateListener: () -> Unit = { refreshStatus() }
     private val approvalListener: (PeerAuth.PendingRequest) -> Unit = { Ui.showApprovalDialog(this, it) }
 
     private val qrScanner = registerForActivityResult(ScanContract()) { result ->
@@ -102,6 +103,7 @@ class MainActivity : AppCompatActivity() {
         ConnectionManager.stateListeners.add(stateListener)
         PeerAuth.changeListeners.add(trustListener)
         PeerAuth.approvalListeners.add(approvalListener)
+        PhoneScreenCapture.stateListeners.add(captureStateListener)
         refreshStatus()
     }
 
@@ -110,6 +112,7 @@ class MainActivity : AppCompatActivity() {
         ConnectionManager.stateListeners.remove(stateListener)
         PeerAuth.changeListeners.remove(trustListener)
         PeerAuth.approvalListeners.remove(approvalListener)
+        PhoneScreenCapture.stateListeners.remove(captureStateListener)
     }
 
     @SuppressLint("SetTextI18n")
@@ -147,15 +150,17 @@ class MainActivity : AppCompatActivity() {
         }
 
         val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
-        // Same five items as the Permissions & Access banner: 3 OS grants + 2 consents.
-        val granted = listOf(ScreenCaptureService.isRunning,
-            InputAccessibilityService.instance != null, filesOk,
-            prefs.allowControl, prefs.allowFileAccess).count { it }
+        val persistentCapture = Build.VERSION.SDK_INT >= 30
+        val required = listOf(InputAccessibilityService.instance != null &&
+            (!persistentCapture || PhoneScreenCapture.isAvailable), filesOk,
+            prefs.allowControl, prefs.allowFileAccess) +
+            if (persistentCapture) emptyList() else listOf(ScreenCaptureService.isRunning)
+        val granted = required.count { it }
         permissionsSubtitle.text =
-            if (granted == 5) "All permissions enabled — remote features fully available"
-            else "$granted of 5 permissions enabled — tap to review"
+            if (granted == required.size) "All required permissions enabled — remote features fully available"
+            else "$granted of ${required.size} required permissions enabled — tap to review"
         permissionsSubtitle.setTextColor(
-            if (granted == 5)
+            if (granted == required.size)
                 com.google.android.material.color.MaterialColors.getColor(
                     permissionsSubtitle, com.google.android.material.R.attr.colorOnSurfaceVariant)
             else getColor(R.color.rd_warn)

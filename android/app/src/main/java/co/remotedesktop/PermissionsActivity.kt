@@ -20,7 +20,7 @@ import com.google.android.material.materialswitch.MaterialSwitch
 
 /**
  * "Permissions & Access": the two ongoing consent switches for paired devices,
- * plus the three one-time OS grants (screen sharing, accessibility, files).
+ * plus Accessibility/file grants and optional, per-session smooth screen sharing.
  */
 class PermissionsActivity : AppCompatActivity() {
 
@@ -40,7 +40,7 @@ class PermissionsActivity : AppCompatActivity() {
         registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                 ScreenCaptureService.start(this, result.resultCode, result.data!!)
-                Toast.makeText(this, "Screen sharing enabled", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Smooth screen sharing enabled for this session", Toast.LENGTH_SHORT).show()
             }
             refresh()
         }
@@ -62,6 +62,11 @@ class PermissionsActivity : AppCompatActivity() {
         screenShareStatus = findViewById(R.id.screenShareStatus)
         a11yStatus = findViewById(R.id.a11yStatus)
         fileAccessStatus = findViewById(R.id.fileAccessStatus)
+        if (Build.VERSION.SDK_INT >= 30) {
+            findViewById<TextView>(R.id.screenShareTitle).setText(R.string.smooth_screen_sharing)
+            findViewById<TextView>(R.id.a11yTitle).setText(R.string.screen_view_and_control)
+            findViewById<TextView>(R.id.a11ySub).setText(R.string.accessibility_screen_view_help)
+        }
 
         // Ongoing consent switches, checked live for every incoming peer message.
         findViewById<MaterialSwitch>(R.id.allowControlSwitch).apply {
@@ -100,13 +105,13 @@ class PermissionsActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        ScreenCaptureService.stateListeners.add(captureStateListener)
+        PhoneScreenCapture.stateListeners.add(captureStateListener)
         refresh()
     }
 
     override fun onPause() {
         super.onPause()
-        ScreenCaptureService.stateListeners.remove(captureStateListener)
+        PhoneScreenCapture.stateListeners.remove(captureStateListener)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -127,25 +132,37 @@ class PermissionsActivity : AppCompatActivity() {
         val a11y = InputAccessibilityService.instance != null
         val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
 
-        setPill(screenShareStatus, sharing)
+        val persistentCapture = Build.VERSION.SDK_INT >= 30
+        setPill(screenShareStatus, sharing, if (persistentCapture) "Optional" else "Tap to enable")
+        if (persistentCapture && !sharing) {
+            screenShareStatus.background.mutate().setTint(
+                com.google.android.material.color.MaterialColors.getColor(screenShareStatus,
+                    com.google.android.material.R.attr.colorSurfaceVariant))
+            screenShareStatus.setTextColor(com.google.android.material.color.MaterialColors.getColor(
+                screenShareStatus, com.google.android.material.R.attr.colorOnSurfaceVariant))
+        }
         setPill(a11yStatus, a11y)
         setPill(fileAccessStatus, filesOk)
         screenShareSub.text =
-            if (sharing) "Sharing is active — tap to stop"
-            else "Lets paired devices see this phone's screen"
+            if (sharing) "Smoother viewing is active for this session — tap to stop"
+            else if (persistentCapture) "Optional smoother viewing. Requires approval again after a restart."
+            else "Required to view this phone. Requires approval again after a restart."
 
-        // The two consent switches count toward the total alongside the OS grants.
-        val granted = listOf(sharing, a11y, filesOk, prefs.allowControl, prefs.allowFileAccess).count { it }
-        if (granted == 5) {
+        // Smooth sharing is optional on Android 11+; Accessibility handles default viewing.
+        val required = listOf(a11y && (!persistentCapture || PhoneScreenCapture.isAvailable),
+            filesOk, prefs.allowControl, prefs.allowFileAccess) +
+            if (persistentCapture) emptyList() else listOf(sharing)
+        val granted = required.count { it }
+        if (granted == required.size) {
             bannerTitle.text = "All good!"
-            bannerText.text = "5 of 5 permissions enabled\nRemote features are fully available."
+            bannerText.text = "$granted of ${required.size} required permissions enabled\nRemote features are fully available."
             bannerCard.setCardBackgroundColor(getColor(R.color.rd_good_container))
             bannerIcon.setColorFilter(getColor(R.color.rd_good))
             bannerTitle.setTextColor(getColor(R.color.rd_on_good_container))
             bannerText.setTextColor(getColor(R.color.rd_on_good_container))
         } else {
             bannerTitle.text = "Action needed"
-            bannerText.text = "$granted of 5 permissions enabled\nTurn on or grant the items below."
+            bannerText.text = "$granted of ${required.size} required permissions enabled\nTurn on or grant the required items below."
             bannerCard.setCardBackgroundColor(getColor(R.color.rd_warn_container))
             bannerIcon.setColorFilter(getColor(R.color.rd_warn))
             bannerTitle.setTextColor(getColor(R.color.rd_on_warn_container))

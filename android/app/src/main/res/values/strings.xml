@@ -7,7 +7,10 @@
     <string name="generate_session_id">Generate new session ID</string>
     <string name="save_and_connect">Save &amp; connect</string>
     <string name="scan_qr_code">Scan QR code</string>
-    <string name="accessibility_description">Lets your paired computer tap and swipe on this phone during a remote session. Only devices that know your session key can send input.</string>
+    <string name="accessibility_description">Lets approved paired devices view this phone using screenshots on Android 11 and newer, and send taps and gestures during a remote session. Capture starts only when an approved device requests to view and you allow remote control. Protected content cannot be captured.</string>
+    <string name="smooth_screen_sharing">Smooth screen sharing (optional)</string>
+    <string name="screen_view_and_control">Screen view and control (Accessibility)</string>
+    <string name="accessibility_screen_view_help">Default viewing and tap control. Stays enabled after restarts, with slower screen updates.</string>
     <string name="close">Close</string>
     <string name="stats">Stats</string>
     <string name="privacy">Privacy</string>

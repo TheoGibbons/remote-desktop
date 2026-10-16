@@ -371,7 +371,10 @@ object PeerAuth {
 
     /** Courtesy hang-up: the peer's viewers close, trust is kept, and it may
      *  reconnect silently. Enforcement stays local (we stop streaming). */
-    fun disconnectPeer(peerId: String) = sendResult(peerId, false, "disconnected")
+    fun disconnectPeer(peerId: String) {
+        PhoneScreenCapture.onViewStopped(peerId)
+        sendResult(peerId, false, "disconnected")
+    }
 
     // ---------- internals ----------
 

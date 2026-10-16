@@ -75,6 +75,7 @@ object ConnectionManager {
             appContext = context.applicationContext
             fs = FsHandler(appContext)
             PeerAuth.init(appContext)
+            PhoneScreenCapture.init(appContext)
         }
     }
 
@@ -98,6 +99,7 @@ object ConnectionManager {
     }
 
     fun stop() {
+        PhoneScreenCapture.onViewStopped()
         enabled = false
         ws?.close(1000, "user stop")
         ws = null
@@ -149,6 +151,7 @@ object ConnectionManager {
 
     private fun scheduleReconnect(socket: WebSocket) {
         if (!enabled || socket !== ws) return
+        PhoneScreenCapture.onViewStopped()
         peers.clear()
         PeerAuth.resetConnection()
         setState("disconnected: retrying...")
@@ -253,6 +256,7 @@ object ConnectionManager {
         val from = msg.optString("from")
         when (msg.optString("type")) {
             "welcome" -> {
+                PhoneScreenCapture.onViewStopped()
                 myId = msg.optString("id")
                 connectedAtMs = SystemClock.elapsedRealtime()
                 backoffMs = 2000L
@@ -282,6 +286,7 @@ object ConnectionManager {
             }
             "peer-left" -> {
                 val id = msg.optString("id")
+                PhoneScreenCapture.onViewStopped(id)
                 peers.removeAll { it.id == id }
                 PeerAuth.onPeerLeft(id)
                 setState(state)
@@ -301,9 +306,9 @@ object ConnectionManager {
 
             "start-view" ->
                 if (Prefs(appContext).allowControl && PeerAuth.isTrusted(from))
-                    ScreenCaptureService.onViewRequested(appContext)
+                    PhoneScreenCapture.onViewRequested(appContext, from)
             "stop-view" ->
-                if (PeerAuth.isTrusted(from)) ScreenCaptureService.onViewStopped()
+                if (PeerAuth.isTrusted(from)) PhoneScreenCapture.onViewStopped(from)
 
             // File system requests/responses. Chunks are broadcast like video,
             // so serving also requires that no unapproved peer is present.
@@ -318,7 +323,7 @@ object ConnectionManager {
      *  ViewerActivity reacts via jsonListeners (re-requests or closes). */
     private fun onAuthResult(from: String, status: String) {
         // A full hang-up: also stop streaming this phone's own screen to them.
-        if (status == "revoked" || status == "disconnected") ScreenCaptureService.onViewStopped()
+        if (status == "revoked" || status == "disconnected") PhoneScreenCapture.onViewStopped(from)
         val text = when (status) {
             "pending" -> "${peerName(from)} is asking its user to approve this phone — " +
                 "code ${PeerAuth.shortCode(PeerAuth.ownFingerprint)}"

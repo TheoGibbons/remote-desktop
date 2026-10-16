@@ -1,9 +1,11 @@
 package co.remotedesktop
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.os.Handler
+import android.os.Build
 import android.os.Looper
 import android.util.DisplayMetrics
 import android.view.WindowManager
@@ -32,16 +34,37 @@ class InputAccessibilityService : AccessibilityService() {
     }
 
     private val main = Handler(Looper.getMainLooper())
+    private var screenCapture: AccessibilityScreenCapture? = null
+
+    val canCaptureScreen: Boolean get() = screenCapture != null
+
+    fun setScreenStreaming(on: Boolean) {
+        if (Build.VERSION.SDK_INT >= 30) screenCapture?.setStreaming(on)
+    }
+
+    fun resendScreenInfo() {
+        if (Build.VERSION.SDK_INT >= 30) screenCapture?.resendScreenInfo()
+    }
 
     override fun onServiceConnected() {
         instance = this
+        if (Build.VERSION.SDK_INT >= 30) screenCapture?.close()
+        screenCapture = null
+        if (Build.VERSION.SDK_INT >= 30 &&
+            (serviceInfo.capabilities and AccessibilityServiceInfo.CAPABILITY_CAN_TAKE_SCREENSHOT) != 0) {
+            screenCapture = AccessibilityScreenCapture(this)
+        }
         // Keeps the session connected even if the process was restarted for this
         // service without the launcher activity being recreated.
         ConnectionManager.start(this)
+        PhoneScreenCapture.refresh()
     }
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        if (Build.VERSION.SDK_INT >= 30) screenCapture?.close()
+        screenCapture = null
+        PhoneScreenCapture.refresh()
         super.onDestroy()
     }
 

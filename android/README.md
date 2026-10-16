@@ -8,8 +8,8 @@ Kotlin app (min SDK 26 / Android 8.0, compile/target SDK 36 / Android 16). It:
   pinch = zoom, three-finger drag = scroll wheel, and a **full
   on-screen keyboard** with Win / Ctrl / Alt / Shift / function keys plus
   native-IME typing for long text;
-- shares its own screen (MediaProjection) so the PC can see it, and accepts
-  taps/swipes from the PC (Accessibility gesture dispatch);
+- shares its own screen using Accessibility screenshots on Android 11+ (with
+  optional smoother MediaProjection sharing), and accepts taps/swipes from the PC;
 - browses the PC's files and transfers files both ways.
 
 ## Build
@@ -60,18 +60,35 @@ consent, file transfers, and rotation on an Android 16 device or emulator.
    background (and after reboots), and the app auto-connects from then on.
 
 Then grant the capabilities you want in **Permissions & Access → System
-Permissions** (each is a one-time OS permission):
+Permissions**:
 
 | Row | Enables | Permission |
 |-----|---------|------------|
-| **Screen sharing** | PC can *see* this phone | MediaProjection consent (one dialog) |
-| **Tap control (Accessibility)** | PC can *tap/swipe* this phone | Accessibility service toggle |
+| **Screen view and control (Accessibility)** | Default phone viewing on Android 11+, plus taps/swipes | Accessibility service toggle; normally persists across reboots |
+| **Smooth screen sharing (optional)** | Smoother phone viewing while enabled | MediaProjection consent, required again after reboot or the capture session ends |
 | **File access** | PC can browse this phone's files | All-files access (Android 11+) |
 
-The OS permissions above are one-time grants; the two switches under **Allow
-Paired Devices** (*View and control this phone* and *Browse and transfer
+Accessibility viewing sends a screenshot about every 400 ms (up to 2.5 FPS), only
+while an approved device is viewing. It needs no root, USB debugging, or new
+screen-sharing approval after each reboot. The phone must first be unlocked and
+connected; manufacturer battery restrictions can affect reconnection. Protected
+content cannot be captured. Capture failures replace the previous picture with
+"Screen unavailable" and retry. Rotation updates the desktop's screen dimensions.
+
+Enable **Smooth screen sharing** for the existing faster stream (up to 10 FPS).
+It takes over from Accessibility until stopped, then default viewing resumes
+automatically. It is optional and does not count as a missing permission on
+Android 11+. Android 8–10 still require screen sharing for viewing and use
+Accessibility for input only.
+
+After updating an existing installation, Android may require turning the
+Accessibility service off and on once to load the new screenshot capability.
+
+The two switches under **Allow Paired Devices** (*View and control this phone* and *Browse and transfer
 files*) are the ongoing consent switches — turn one off and paired devices
-lose that capability immediately, without revoking the OS permission.
+lose that capability immediately, without revoking the OS permission. Disabling
+control, stopping a view, disconnecting, or revoking a viewer ends its capture
+request. Re-enabling control requires the desktop to request viewing again.
 
 **Approving devices.** The first time a device connects it must be approved on
 the **Devices** screen (tap the connection-status card; a dialog appears, or a
@@ -146,6 +163,9 @@ repeat quickly while held, after a short initial delay. The
   directories and drop it. For personal sideloading it works as-is.
 - `FOREGROUND_SERVICE_MEDIA_PROJECTION` is used for screen sharing and shows an
   ongoing notification, per Android policy.
+- The Accessibility service declares screenshot capability and describes screen
+  viewing in its system permission description. Default viewing uses this only
+  on Android 11+ and preserves the same device-approval and remote-control gates.
 
 ## Why the PC can't unlock the phone
 
