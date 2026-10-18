@@ -90,6 +90,13 @@ lose that capability immediately, without revoking the OS permission. Disabling
 control, stopping a view, disconnecting, or revoking a viewer ends its capture
 request. Re-enabling control requires the desktop to request viewing again.
 
+**Reconnecting.** The app reconnects on its own, waiting longer after each
+failure (up to 30 seconds). While it isn't connected, the refresh button on the
+connection-status card tries again immediately. If the relay refuses the
+connection, the card shows its reason. After too many session keys are tried
+from one network, the relay blocks that network for an hour, and the card says
+**Blocked until** and the time.
+
 **Approving devices.** The first time a device connects it must be approved on
 the **Devices** screen (tap the connection-status card; a dialog appears, or a
 notification if the app is in the background): compare the short **device

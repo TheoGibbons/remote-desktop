@@ -12,6 +12,7 @@
     <string name="screen_view_and_control">Screen view and control (Accessibility)</string>
     <string name="accessibility_screen_view_help">Default viewing and tap control. Stays enabled after restarts, with slower screen updates.</string>
     <string name="close">Close</string>
+    <string name="retry_now">Try to connect now</string>
     <string name="stats">Stats</string>
     <string name="privacy">Privacy</string>
     <string name="auto_privacy">Auto privacy</string>

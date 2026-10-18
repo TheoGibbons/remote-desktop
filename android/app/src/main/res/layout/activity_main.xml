@@ -132,6 +132,17 @@
                                 android:textColor="?attr/colorOnSurfaceVariant" />
                         </LinearLayout>
 
+                        <ImageButton
+                            android:id="@+id/retryNow"
+                            android:layout_width="48dp"
+                            android:layout_height="48dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="@string/retry_now"
+                            android:padding="12dp"
+                            android:src="@drawable/ic_refresh"
+                            android:visibility="gone"
+                            app:tint="?attr/colorOnSurfaceVariant" />
+
                         <ImageView
                             android:layout_width="24dp"
                             android:layout_height="24dp"

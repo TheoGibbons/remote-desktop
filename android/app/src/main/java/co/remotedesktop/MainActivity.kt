@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.text.format.DateFormat
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -25,6 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusDot: ImageView
     private lateinit var statusTitle: TextView
     private lateinit var statusSubtitle: TextView
+    private lateinit var retryBtn: ImageButton
     private lateinit var permissionsSubtitle: TextView
     private lateinit var thisPhoneName: TextView
 
@@ -62,6 +64,7 @@ class MainActivity : AppCompatActivity() {
         statusDot = findViewById(R.id.statusDot)
         statusTitle = findViewById(R.id.statusTitle)
         statusSubtitle = findViewById(R.id.statusSubtitle)
+        retryBtn = findViewById(R.id.retryNow)
         permissionsSubtitle = findViewById(R.id.permissionsSubtitle)
         thisPhoneName = findViewById(R.id.thisPhoneName)
 
@@ -75,6 +78,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<MaterialCardView>(R.id.statusCard).setOnClickListener {
             startActivity(Intent(this, DevicesActivity::class.java))
         }
+        // Try again now instead of waiting out the reconnect backoff (up to 30 s).
+        retryBtn.setOnClickListener { Ui.reconnect(this) }
         findViewById<MaterialCardView>(R.id.permissionsCard).setOnClickListener {
             startActivity(Intent(this, PermissionsActivity::class.java))
         }
@@ -138,6 +143,8 @@ class MainActivity : AppCompatActivity() {
         }
         statusTitle.text = title
         statusDot.setColorFilter(dotColor)
+        retryBtn.visibility = if (state != "connected" && prefs.sessionKey.isNotEmpty())
+            android.view.View.VISIBLE else android.view.View.GONE
 
         val peers = ConnectionManager.peers
         statusSubtitle.text = when {

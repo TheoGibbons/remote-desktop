@@ -40,6 +40,7 @@ object ConnectionManager {
         .build()
 
     private val main = Handler(Looper.getMainLooper())
+    private val reconnect = Runnable { connect() }
     private var ws: WebSocket? = null
     private var enabled = false
     private var backoffMs = 2000L
@@ -131,6 +132,9 @@ object ConnectionManager {
     }
 
     private fun connect() {
+        // A connection started directly (retry button, settings change) replaces
+        // a scheduled retry, which would otherwise open a second socket later.
+        main.removeCallbacks(reconnect)
         if (!enabled) return
         connectionAttempts.incrementAndGet()
         val prefs = Prefs(appContext)
@@ -163,7 +167,7 @@ object ConnectionManager {
         PeerAuth.resetConnection()
         // A refusal from the relay says more than "retrying"; keep showing it.
         setState(if (state == "blocked" || state.startsWith("error")) state else "disconnected: retrying...")
-        main.postDelayed({ connect() }, backoffMs)
+        main.postDelayed(reconnect, backoffMs)
         backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
     }
 

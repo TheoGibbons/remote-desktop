@@ -24,11 +24,16 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.shadows.ShadowDialog
 import org.robolectric.shadows.ShadowEnvironment
 
-/** UI setup does not exercise the hardware-backed Android identity key. */
+/** UI setup does not exercise the hardware-backed Android identity key, or the
+ *  trust store that init would prepare. Shared by every test that shadows
+ *  PeerAuth: Robolectric keeps one shadow per object across test classes. */
 @Implements(value = PeerAuth::class, isInAndroidSdk = false)
 class ShadowSessionPeerAuth {
     @Implementation
     fun init(context: Context) = Unit
+
+    @Implementation
+    fun onSessionStart(newPairId: String) = Unit
 
     @Implementation
     fun getOwnFingerprint() = "a3f29c41a3f29c41"

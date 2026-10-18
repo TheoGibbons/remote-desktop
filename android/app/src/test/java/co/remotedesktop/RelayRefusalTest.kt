@@ -3,6 +3,7 @@ package co.remotedesktop
 import android.content.Context
 import android.os.Looper
 import android.text.format.DateFormat
+import android.view.View
 import android.widget.TextView
 import org.json.JSONObject
 import org.junit.After
@@ -15,8 +16,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
-import org.robolectric.annotation.Implementation
-import org.robolectric.annotation.Implements
 import org.robolectric.shadows.ShadowSystem
 import java.io.Closeable
 import java.io.DataInputStream
@@ -28,14 +27,6 @@ import java.security.MessageDigest
 import java.time.Duration
 import java.util.Base64
 import java.util.Date
-
-/** These tests talk to a fake relay, so skip the hardware-backed identity key. */
-@Implements(value = PeerAuth::class, isInAndroidSdk = false)
-class ShadowRelayRefusalAuth {
-    @Implementation fun init(context: Context) = Unit
-    @Implementation fun onSessionStart(newPairId: String) = Unit
-    @Implementation fun getOwnFingerprint() = "a3f29c41a3f29c41"
-}
 
 /** Just enough of a WebSocket server (RFC 6455) to answer the app the way
  *  server.js does, e.g. refusing it with an `error` message and a close frame. */
@@ -93,7 +84,7 @@ private class FakeRelay : Closeable {
 }
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], shadows = [ShadowRelayRefusalAuth::class, ShadowSessionEnvironment::class],
+@Config(sdk = [35], shadows = [ShadowSessionPeerAuth::class, ShadowSessionEnvironment::class],
     instrumentedPackages = ["co.remotedesktop"])
 class RelayRefusalTest {
     private val context get() = RuntimeEnvironment.getApplication()
@@ -147,6 +138,45 @@ class RelayRefusalTest {
                 retry.sendText("""{"type":"welcome","id":"7","peers":[]}""")
                 waitFor { ConnectionManager.state == "connected" }
                 assertEquals(0L, ConnectionManager.blockedUntilMs)
+            }
+        }
+    }
+
+    @Test
+    fun retryButtonReconnectsWithoutWaitingOutTheBackoff() {
+        FakeRelay().use { relay ->
+            Prefs(context).apply {
+                serverUrl = relay.url
+                sessionKey = "relay-refusal-test-key-0123456789"
+            }
+            ConnectionManager.start(context)
+            relay.accept(5_000)!!.use { refused ->
+                refused.read()
+                refused.sendText("""{"type":"error","code":"too-many-connections",""" +
+                    """"message":"too many connections from this network"}""")
+                refused.sendClose(4002, "too-many-connections")
+                assertEquals(0x8, refused.read().first)
+            }
+            // Let the refusal schedule its retry, which the button has to replace.
+            waitFor { main.idle(); main.nextScheduledTaskTime > Duration.ZERO }
+
+            val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+            try {
+                val retry = controller.get().findViewById<View>(R.id.retryNow)
+                assertEquals(View.VISIBLE, retry.visibility)
+                retry.performClick()
+                relay.accept(5_000)!!.use { again ->
+                    assertEquals("hello", JSONObject(String(again.read().second)).getString("type"))
+                    again.sendText("""{"type":"welcome","id":"9","peers":[]}""")
+                    waitFor { ConnectionManager.state == "connected" }
+                    main.idle()
+                    assertEquals(View.GONE, retry.visibility)
+                    // The retry scheduled before the click must not open a second socket.
+                    main.idleFor(Duration.ofSeconds(35))
+                    assertNull(relay.accept(500))
+                }
+            } finally {
+                controller.pause().stop().destroy()
             }
         }
     }
