@@ -70,7 +70,9 @@ own remote pointer. By default, privacy stays active when the viewer pauses or c
 device disconnects, approval is revoked, or the relay connection drops. Android's
 **Settings → Privacy → Auto privacy** can enable privacy when viewing starts;
 **Auto un-privacy** opts that viewing session into restoring local access when
-it ends, including a dropped connection. Both are off by default. Reconnecting
+it ends, including a dropped connection. **Remember privacy screen** instead
+reapplies whatever the phone last set for this PC each time viewing starts.
+All are off by default. Reconnecting
 viewers receive the current privacy state and can tap **Show PC** to restore local
 access. Typing `unlock` locally still works without a remote session. Turning off
 remote control, locking/logging off Windows, or exiting the host also restores

@@ -515,7 +515,7 @@ class ViewerActivity : AppCompatActivity() {
             // and permission. Later local unlocks must stay unlocked.
             if (autoPrivacyPending && privacyAllowed) {
                 autoPrivacyPending = false
-                if (!privacyEnabled) requestPrivacy(true)
+                startingPrivacy()?.let { if (it != privacyEnabled) requestPrivacy(it) }
             }
         }
         if (msg.optString("type") == "screen-info" && msg.optString("from") == winId) {
@@ -705,7 +705,10 @@ class ViewerActivity : AppCompatActivity() {
             }
             addToolbarButton("Stats") { showDiagnostics() }
             privacyButton = addToolbarButton(getString(R.string.privacy)) {
-                requestPrivacy(!privacyEnabled)
+                val enabled = !privacyEnabled
+                val prefs = Prefs(this@ViewerActivity)
+                if (prefs.rememberPrivacy) pcFingerprint()?.let { prefs.setLastPrivacy(it, enabled) }
+                requestPrivacy(enabled)
             }.apply {
                 privacyButtonDefaultTint = backgroundTintList
                 privacyButtonDefaultBackground = background
@@ -1104,6 +1107,17 @@ class ViewerActivity : AppCompatActivity() {
         }
     }
 
+    /** The privacy screen this PC should get when viewing starts, or null to
+     *  leave it as it is. */
+    private fun startingPrivacy(): Boolean? {
+        val prefs = Prefs(this)
+        return if (prefs.rememberPrivacy) pcFingerprint()?.let(prefs::lastPrivacy)
+            else true.takeIf { prefs.autoPrivacy }
+    }
+
+    /** The PC's device identity, which outlives its per-connection peer id. */
+    private fun pcFingerprint(): String? = winId?.let(PeerAuth::fingerprintOfPeer)
+
     private fun requestPrivacy(enabled: Boolean) {
         privacyButton.isEnabled = false
         send(JSONObject().put("type", "privacy-mode").put("enabled", enabled))
@@ -1168,7 +1182,7 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private fun startViewer() {
-        autoPrivacyPending = Prefs(this).autoPrivacy
+        autoPrivacyPending = Prefs(this).run { autoPrivacy || rememberPrivacy }
         // stop-view removes both the host's crop and codec capability. Restore
         // them before restarting capture, even when the local view has not moved.
         lastSentRegion = null

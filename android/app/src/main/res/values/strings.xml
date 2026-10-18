@@ -18,6 +18,12 @@
     <string name="auto_privacy_description">Hide PC screens when viewing starts</string>
     <string name="auto_unprivacy">Auto un-privacy</string>
     <string name="auto_unprivacy_description">Restore PC screens when viewing stops</string>
+    <string name="remember_privacy">Remember privacy screen</string>
+    <string name="remember_privacy_description">Keep each PC\'s privacy screen as you last set it, even after you disconnect</string>
+    <string name="remember_privacy_exclusive">Remembering replaces auto privacy and auto un-privacy, so turning one on turns the other off.</string>
+    <string name="auto_privacy_off">Off</string>
+    <string name="auto_privacy_both">Hide PC screens when viewing starts, restore them when it stops</string>
+    <string name="auto_privacy_remembered">Each PC keeps the privacy screen you last set</string>
     <string name="privacy_show_pc">Show PC</string>
     <string name="privacy_enable">Hide the physical PC screens and block local input</string>
     <string name="privacy_disable">Restore the physical PC screens and local input</string>

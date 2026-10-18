@@ -76,6 +76,10 @@
             android:name=".DevicesActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".PrivacySettingsActivity"
+            android:exported="false" />
+
         <service
             android:name=".ScreenCaptureService"
             android:foregroundServiceType="mediaProjection"

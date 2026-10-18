@@ -22,13 +22,41 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("autoConnect", true)
         set(v) = sp.edit().putBoolean("autoConnect", v).apply()
 
+    // Auto (un-)privacy and rememberPrivacy both decide what happens when viewing
+    // starts and stops, so switching one on switches the other off.
     var autoPrivacy: Boolean
         get() = sp.getBoolean("autoPrivacy", false)
-        set(v) = sp.edit().putBoolean("autoPrivacy", v).apply()
+        set(v) {
+            val edit = sp.edit().putBoolean("autoPrivacy", v)
+            if (v) edit.putBoolean("rememberPrivacy", false)
+            edit.apply()
+        }
 
     var autoUnprivacy: Boolean
         get() = sp.getBoolean("autoUnprivacy", false)
-        set(v) = sp.edit().putBoolean("autoUnprivacy", v).apply()
+        set(v) {
+            val edit = sp.edit().putBoolean("autoUnprivacy", v)
+            if (v) edit.putBoolean("rememberPrivacy", false)
+            edit.apply()
+        }
+
+    /** Each PC keeps the privacy screen as it was last set in the viewer, through
+     *  disconnects, and gets it back as soon as viewing starts again. */
+    var rememberPrivacy: Boolean
+        get() = sp.getBoolean("rememberPrivacy", false)
+        set(v) {
+            val edit = sp.edit().putBoolean("rememberPrivacy", v)
+            if (v) edit.putBoolean("autoPrivacy", false).putBoolean("autoUnprivacy", false)
+            edit.apply()
+        }
+
+    /** The privacy screen last set for the PC with this identity fingerprint,
+     *  or null if it never was. */
+    fun lastPrivacy(pcFingerprint: String): Boolean? =
+        if (sp.contains("privacy:$pcFingerprint")) sp.getBoolean("privacy:$pcFingerprint", false) else null
+
+    fun setLastPrivacy(pcFingerprint: String, enabled: Boolean) =
+        sp.edit().putBoolean("privacy:$pcFingerprint", enabled).apply()
 
     /** Consent: paired devices may view this screen and inject taps/keys. */
     var allowControl: Boolean
