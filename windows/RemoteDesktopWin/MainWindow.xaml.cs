@@ -210,7 +210,7 @@ public partial class MainWindow : Window
     // (Task Manager auto-elevates, so does any UAC-elevated app). Running this
     // app elevated is the supported way to control those remotely.
 
-    private static bool IsElevated()
+    internal static bool IsElevated()
     {
         using var id = System.Security.Principal.WindowsIdentity.GetCurrent();
         return new System.Security.Principal.WindowsPrincipal(id)
