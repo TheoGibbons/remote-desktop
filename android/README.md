@@ -139,11 +139,12 @@ desktop support and remote-control permission; a manual unlock stays in effect
 until the next viewing connection. An updated Windows host also applies auto
 un-privacy after a connection drop; older hosts can only receive the restore
 command while the connection is still available.
-**Remember privacy screen** instead keeps each PC's privacy screen as it was last
-set in the viewer. It stays as it is when viewing stops, and the next viewing
-connection to that PC turns it back on or off to match, even if it was changed
-at the PC in between. PCs are told apart by their device identity. It replaces
-both auto options, so turning one on turns the other off.
+**Remember privacy screen**, on by default, instead keeps each PC's privacy
+screen as it was last set in the viewer. It stays as it is when viewing stops,
+and the next viewing connection to that PC turns it back on or off to match,
+even if it was changed at the PC in between. PCs are told apart by their device
+identity. It replaces both auto options, so turning one on turns the other off;
+an install that already used an auto option keeps it.
 In the desktop viewer, tap **Rotate (↻)** to switch the phone between portrait
 and landscape, including when Android's auto-rotate is off. The selected
 orientation stays in effect for the current viewer session.

@@ -81,6 +81,21 @@ class AutoPrivacyTest {
     }
 
     @Test
+    fun rememberingIsOnByDefaultUnlessAnAutoOptionWasAlreadyOn() {
+        val prefs = Prefs(context)
+        assertTrue(prefs.rememberPrivacy)
+        assertFalse(prefs.autoPrivacy || prefs.autoUnprivacy)
+
+        // An install that turned an auto option on before remembering existed keeps it.
+        context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear()
+            .putBoolean("autoUnprivacy", true).commit()
+        assertFalse(prefs.rememberPrivacy)
+        // Turning it off later doesn't switch remembering on by itself.
+        prefs.autoUnprivacy = false
+        assertFalse(prefs.rememberPrivacy)
+    }
+
+    @Test
     fun rememberingReplacesTheAutoOptions() {
         val controller = Robolectric.buildActivity(PrivacySettingsActivity::class.java).setup()
         try {
@@ -105,7 +120,7 @@ class AutoPrivacyTest {
 
     @Test
     fun settingsRowSummarisesAndOpensAutoPrivacy() {
-        Prefs(context).rememberPrivacy = true
+        // Remembering is on by default.
         val controller = Robolectric.buildActivity(SettingsActivity::class.java).setup()
         try {
             val activity = controller.get()

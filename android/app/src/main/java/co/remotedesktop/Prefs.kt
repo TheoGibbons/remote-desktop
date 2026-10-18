@@ -26,24 +26,25 @@ class Prefs(context: Context) {
     // starts and stops, so switching one on switches the other off.
     var autoPrivacy: Boolean
         get() = sp.getBoolean("autoPrivacy", false)
-        set(v) {
-            val edit = sp.edit().putBoolean("autoPrivacy", v)
-            if (v) edit.putBoolean("rememberPrivacy", false)
-            edit.apply()
-        }
+        set(v) = setAutoOption("autoPrivacy", v)
 
     var autoUnprivacy: Boolean
         get() = sp.getBoolean("autoUnprivacy", false)
-        set(v) {
-            val edit = sp.edit().putBoolean("autoUnprivacy", v)
-            if (v) edit.putBoolean("rememberPrivacy", false)
-            edit.apply()
-        }
+        set(v) = setAutoOption("autoUnprivacy", v)
+
+    private fun setAutoOption(key: String, on: Boolean) {
+        val edit = sp.edit().putBoolean(key, on)
+        // Switching one off also settles an unset rememberPrivacy as off, or its
+        // default would switch it on once no auto option is left.
+        if (on || !sp.contains("rememberPrivacy")) edit.putBoolean("rememberPrivacy", false)
+        edit.apply()
+    }
 
     /** Each PC keeps the privacy screen as it was last set in the viewer, through
-     *  disconnects, and gets it back as soon as viewing starts again. */
+     *  disconnects, and gets it back as soon as viewing starts again. On by
+     *  default, unless an auto option was turned on before this setting existed. */
     var rememberPrivacy: Boolean
-        get() = sp.getBoolean("rememberPrivacy", false)
+        get() = sp.getBoolean("rememberPrivacy", !autoPrivacy && !autoUnprivacy)
         set(v) {
             val edit = sp.edit().putBoolean("rememberPrivacy", v)
             if (v) edit.putBoolean("autoPrivacy", false).putBoolean("autoUnprivacy", false)
