@@ -59,6 +59,10 @@ object ConnectionManager {
         private set
     @Volatile var state: String = "disconnected"
         private set
+    /** Wall-clock end of the relay's ban on this network, or 0. While it lasts
+     *  the state stays "blocked" across retries instead of "connecting". */
+    @Volatile var blockedUntilMs = 0L
+        private set
     val peers = CopyOnWriteArrayList<Peer>()
 
     // UI listeners, invoked on the main thread.
@@ -106,6 +110,7 @@ object ConnectionManager {
         myId = null
         peers.clear()
         PeerAuth.resetConnection()
+        blockedUntilMs = 0L
         setState("disconnected")
     }
 
@@ -139,7 +144,9 @@ object ConnectionManager {
         }
 
         Log.d("ConnectionManager", "Connecting to $url")
-        setState("connecting")
+        // The relay refuses a banned network on every retry; keep saying so
+        // rather than flashing "connecting".
+        if (blockedUntilMs <= System.currentTimeMillis()) setState("connecting")
         try {
             val request = Request.Builder().url(url).build()
             ws = client.newWebSocket(request, listener)
@@ -154,7 +161,8 @@ object ConnectionManager {
         PhoneScreenCapture.onViewStopped()
         peers.clear()
         PeerAuth.resetConnection()
-        setState("disconnected: retrying...")
+        // A refusal from the relay says more than "retrying"; keep showing it.
+        setState(if (state == "blocked" || state.startsWith("error")) state else "disconnected: retrying...")
         main.postDelayed({ connect() }, backoffMs)
         backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
     }
@@ -246,6 +254,13 @@ object ConnectionManager {
             scheduleReconnect(webSocket)
         }
 
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            // Answer the relay's close so onClosed, and the reconnect, follow at
+            // once. Unanswered, the socket sat until a ping went unanswered
+            // (~40 s), so every refusal looked like a stalled connection.
+            webSocket.close(1000, null)
+        }
+
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             Log.d("ConnectionManager", "WebSocket closed: $code / $reason")
             scheduleReconnect(webSocket)
@@ -269,6 +284,7 @@ object ConnectionManager {
                     }
                 }
                 peers.forEach { PeerAuth.onPeerJoined(it.id, it.name, it.device) }
+                blockedUntilMs = 0L
                 setState("connected")
             }
             "peer-joined" -> {
@@ -291,7 +307,17 @@ object ConnectionManager {
                 PeerAuth.onPeerLeft(id)
                 setState(state)
             }
-            "error" -> setState("error: " + msg.optString("message"))
+            "error" -> {
+                // The relay is refusing this connection and closes it next. A ban
+                // says how long it lasts (retryAfter, in seconds).
+                val retryAfterS = msg.optLong("retryAfter")
+                if (retryAfterS > 0) {
+                    blockedUntilMs = System.currentTimeMillis() + retryAfterS * 1000
+                    setState("blocked")
+                } else {
+                    setState("error: " + msg.optString("message"))
+                }
+            }
 
             // Device authentication handshake (see PROTOCOL.md).
             "auth-challenge", "auth-response" -> PeerAuth.handleJson(msg)

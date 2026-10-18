@@ -44,7 +44,7 @@ route to one peer; otherwise it is broadcast to all other peers in the session.
 | `welcome`     | `id` (your peer id), `peers` (array of `{id, device, name}`) | Reply to `hello`. |
 | `peer-joined` | `peer` `{id, device, name}`            | |
 | `peer-left`   | `id`                                   | |
-| `error`       | `code`, `message`                      | e.g. `rate-limited`, `bad-hello`. Connection is closed after. |
+| `error`       | `code`, `message`, `retryAfter`?       | e.g. `rate-limited`, `banned`, `too-many-connections`, `bad-hello`. Connection is closed after. A ban carries `retryAfter`, the seconds until the relay accepts this IP again. |
 
 ## Device authentication
 
@@ -378,10 +378,15 @@ eavesdroppers.
 
 ## Server rate limiting
 
-- Per IP: max **20 `hello` attempts per 10 minutes**. Exceeding it closes the
-  connection with `error: rate-limited` and bans the IP for 1 hour.
+- Per IP: max **20 different pairing ids per 10 minutes**. A device that
+  reconnects with its own pairing id adds nothing, so flaky networks and relay
+  restarts never trip it. Exceeding it closes the connection with
+  `error: rate-limited` and bans the IP for 1 hour.
+- While banned, every connection from the IP gets `error: banned` with
+  `retryAfter` and is closed with code 4001.
 - Connections that don't send a valid `hello` within 10 seconds are dropped.
-- Max 16 concurrent connections per IP.
+- Max 16 concurrent connections per IP; more get `error: too-many-connections`
+  and close code 4002.
 
 ## Reconnection
 

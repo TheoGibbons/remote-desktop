@@ -2,6 +2,7 @@
 // exercises the protocol, then tears everything down. Run with `npm test`.
 import { spawn } from "child_process";
 import { once } from "events";
+import net from "net";
 import WebSocket from "ws";
 
 const PORT = 8099 + Math.floor(Math.random() * 300);
@@ -113,18 +114,70 @@ async function main() {
   try { await connect("android", "x", "short"); } catch (e) { shortErr = e.message === "bad-hello"; }
   ok("short key rejected", shortErr);
 
-  // 7. Brute-force rate limit (disconnect after each guess)
-  let banned = false;
+  // 7. A device that keeps reconnecting with its key is not guessing, however
+  // often a flaky network drops it (here, more often than the limit allows).
+  const flakyKey = "flaky-network-session-1234567890";
+  let rejoins = 0;
+  for (let i = 0; i < 25; i++) {
+    try {
+      const c = await connect("android", "flaky-phone", flakyKey, "uid-flaky-phone");
+      rejoins++;
+      c.ws.close();
+      await once(c.ws, "close");
+    } catch { break; }
+  }
+  ok("same-key reconnects are not rate limited", rejoins === 25);
+
+  // 8. Past the per-IP connection limit, the relay says why it refuses.
+  const crowd = Array.from({ length: 17 }, () => {
+    const c = { ws: new WebSocket(URL), error: null, code: null };
+    c.ws.on("message", (d, b) => { if (!b) c.error = JSON.parse(d); });
+    c.ws.on("close", (code) => (c.code = code));
+    c.ws.on("error", () => {});
+    return c;
+  });
+  await sleep(500);
+  ok("connection limit refusal is explained",
+    crowd.some((c) => c.error?.code === "too-many-connections" && c.code === 4002));
+  for (const c of crowd) c.ws.terminate();
+  await sleep(150);
+
+  // 9. Brute-force rate limit (disconnect after each guess)
+  let banned = null;
   for (let i = 0; i < 25 && !banned; i++) {
     await new Promise((res) => {
       const w = new WebSocket(URL);
       w.on("open", () => w.send(JSON.stringify({ type: "hello", session: "guess-" + i + "-aaaaaaaa", device: "android", name: "evil" })));
-      w.on("message", (d, b) => { if (!b) { const m = JSON.parse(d); if (m.type === "error" && m.code === "rate-limited") banned = true; w.close(); } });
+      w.on("message", (d, b) => { if (!b) { const m = JSON.parse(d); if (m.type === "error" && m.code === "rate-limited") banned = m; w.close(); } });
       w.on("close", res); w.on("error", res);
       setTimeout(res, 400);
     });
   }
   ok("rate limit bans brute force", banned);
+  ok("ban reports its length", banned?.retryAfter === 3600);
+
+  // 10. While banned, every connection is refused with the time left.
+  const refusal = await new Promise((res) => {
+    const w = new WebSocket(URL);
+    let error = null;
+    w.on("message", (d, b) => { if (!b) error = JSON.parse(d); });
+    w.on("close", (code) => res({ error, code }));
+    w.on("error", () => res({ error, code: null }));
+    setTimeout(() => res({ error, code: null }), 2000);
+  });
+  ok("banned connection is told how long is left",
+    refusal.error?.code === "banned" && refusal.error.retryAfter > 3500 && refusal.code === 4001);
+
+  // 11. A malformed frame on a refused connection must not crash the relay.
+  const raw = net.connect(PORT, "127.0.0.1");
+  raw.on("error", () => {});
+  raw.write("GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+  await once(raw, "data");
+  raw.write(Buffer.from([0xc1, 0x81, 1, 2, 3, 4, 0x41 ^ 1])); // RSV1 set: invalid without compression
+  await sleep(300);
+  raw.destroy();
+  ok("malformed frame on a refused connection keeps the relay up", server.exitCode === null);
 
   let pass = 0;
   for (const [name, p] of results) { console.log((p ? "PASS" : "FAIL") + "  " + name); if (p) pass++; }

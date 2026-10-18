@@ -10,7 +10,7 @@ const PORT = Number(process.env.PORT || 8090);
 const HELLO_TIMEOUT_MS = 10_000;
 const MAX_CONNS_PER_IP = 16;
 const HELLO_WINDOW_MS = 10 * 60_000;
-const HELLO_MAX_PER_WINDOW = 20;
+const MAX_KEYS_PER_WINDOW = 20;
 const BAN_MS = 60 * 60_000;
 const MIN_SESSION_KEY_LEN = 16;
 
@@ -27,7 +27,7 @@ const CH_FILE = 2;
 
 /** sessionKeyHash -> Map<peerId, client> */
 const sessions = new Map();
-/** ip -> { attempts: number[], bannedUntil: number, conns: number } */
+/** ip -> { keys: Map<sessionHash, lastTriedMs>, bannedUntil: number, conns: number } */
 const ipState = new Map();
 
 function ipOf(req) {
@@ -42,10 +42,16 @@ function ipOf(req) {
 function getIpState(ip) {
   let s = ipState.get(ip);
   if (!s) {
-    s = { attempts: [], bannedUntil: 0, conns: 0 };
+    s = { keys: new Map(), bannedUntil: 0, conns: 0 };
     ipState.set(ip, s);
   }
   return s;
+}
+
+function forgetOldKeys(s, now) {
+  for (const [hash, t] of s.keys) {
+    if (now - t >= HELLO_WINDOW_MS) s.keys.delete(hash);
+  }
 }
 
 // Session keys are never stored in plain text server-side.
@@ -59,11 +65,14 @@ function send(client, obj) {
   }
 }
 
-function closeWithError(ws, code, message) {
+// Rejections with their own close code; every other error closes with 4000.
+const CLOSE_CODES = { banned: 4001, "too-many-connections": 4002 };
+
+function closeWithError(ws, code, message, extra = {}) {
   try {
-    ws.send(JSON.stringify({ type: "error", code, message }));
+    ws.send(JSON.stringify({ type: "error", code, message, ...extra }));
   } catch {}
-  ws.close(4000, code);
+  ws.close(CLOSE_CODES[code] ?? 4000, code);
 }
 
 const server = http.createServer((req, res) => {
@@ -76,16 +85,22 @@ const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 16 * 1024 * 1
 let nextPeerId = 1;
 
 wss.on("connection", (ws, req) => {
+  // Before any early return: a malformed frame on a rejected connection emits
+  // "error", and with no listener that throws and takes down the relay.
+  ws.on("error", () => {});
+
   const ip = ipOf(req);
   const ipS = getIpState(ip);
   const now = Date.now();
 
+  // Clients show these, so a refusal never looks like a network fault.
   if (ipS.bannedUntil > now) {
-    ws.close(4001, "banned");
+    closeWithError(ws, "banned", "too many join attempts from this network",
+      { retryAfter: Math.ceil((ipS.bannedUntil - now) / 1000) });
     return;
   }
   if (ipS.conns >= MAX_CONNS_PER_IP) {
-    ws.close(4002, "too-many-connections");
+    closeWithError(ws, "too-many-connections", "too many connections from this network");
     return;
   }
   ipS.conns++;
@@ -131,32 +146,36 @@ wss.on("connection", (ws, req) => {
     ipS.conns = Math.max(0, ipS.conns - 1);
     leaveSession(client);
   });
-
-  ws.on("error", () => {});
 });
 
 function handleHello(client, msg, helloTimer) {
   const ipS = getIpState(client.ip);
   const now = Date.now();
+  const key = typeof msg.session === "string" ? msg.session.trim() : "";
+  const sessionHash = hashKey(key);
 
-  // Rate-limit join attempts so session keys can't be brute-forced.
-  ipS.attempts = ipS.attempts.filter((t) => now - t < HELLO_WINDOW_MS);
-  ipS.attempts.push(now);
-  if (ipS.attempts.length > HELLO_MAX_PER_WINDOW) {
+  // Rate-limit join attempts so session keys can't be brute-forced. Count the
+  // distinct keys an IP tries, not its hellos: every guess needs a new key,
+  // while a device that keeps reconnecting presents the same one. Counting
+  // hellos once banned two phones for an hour because a VPN they shared kept
+  // dropping their connections.
+  forgetOldKeys(ipS, now);
+  ipS.keys.set(sessionHash, now);
+  if (ipS.keys.size > MAX_KEYS_PER_WINDOW) {
     ipS.bannedUntil = now + BAN_MS;
-    console.log(`[ban] ${client.ip} exceeded hello rate limit`);
-    closeWithError(client.ws, "rate-limited", "too many join attempts; banned temporarily");
+    console.log(`[ban] ${client.ip} tried more than ${MAX_KEYS_PER_WINDOW} session keys`);
+    closeWithError(client.ws, "rate-limited", "too many join attempts; banned temporarily",
+      { retryAfter: BAN_MS / 1000 });
     return;
   }
 
-  const key = typeof msg.session === "string" ? msg.session.trim() : "";
   if (key.length < MIN_SESSION_KEY_LEN) {
     closeWithError(client.ws, "bad-hello", `session key must be at least ${MIN_SESSION_KEY_LEN} characters`);
     return;
   }
 
   clearTimeout(helloTimer);
-  client.sessionHash = hashKey(key);
+  client.sessionHash = sessionHash;
   client.device = msg.device === "windows" ? "windows" : "android";
   client.name = String(msg.name || client.device).slice(0, 64);
   client.uid = typeof msg.uid === "string" && msg.uid ? msg.uid.slice(0, 64) : null;
@@ -261,8 +280,8 @@ setInterval(() => {
 setInterval(() => {
   const now = Date.now();
   for (const [ip, s] of ipState) {
-    s.attempts = s.attempts.filter((t) => now - t < HELLO_WINDOW_MS);
-    if (s.attempts.length === 0 && s.conns === 0 && s.bannedUntil < now) ipState.delete(ip);
+    forgetOldKeys(s, now);
+    if (s.keys.size === 0 && s.conns === 0 && s.bannedUntil < now) ipState.delete(ip);
   }
 }, 60_000);
 

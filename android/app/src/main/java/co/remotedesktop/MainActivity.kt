@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.text.format.DateFormat
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -12,6 +13,7 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.journeyapps.barcodescanner.ScanContract
+import java.util.Date
 
 class MainActivity : AppCompatActivity() {
 
@@ -129,6 +131,8 @@ class MainActivity : AppCompatActivity() {
         val (title, dotColor) = when {
             state == "connected" -> "Connected" to getColor(R.color.rd_good)
             state == "connecting" -> "Connecting…" to getColor(R.color.rd_warn)
+            state == "blocked" -> "Blocked until " + DateFormat.getTimeFormat(this)
+                .format(Date(ConnectionManager.blockedUntilMs)) to getColor(R.color.rd_danger)
             state.startsWith("error") -> "Connection error" to getColor(R.color.rd_danger)
             else -> "Not connected" to getColor(R.color.rd_danger)
         }
@@ -136,9 +140,13 @@ class MainActivity : AppCompatActivity() {
         statusDot.setColorFilter(dotColor)
 
         val peers = ConnectionManager.peers
-        statusSubtitle.text =
-            if (peers.isEmpty()) "No paired devices online"
-            else "Paired: " + peers.joinToString { "${it.name} (${it.device})" }
+        statusSubtitle.text = when {
+            // Why the relay refused, e.g. "session key must be at least 16 characters".
+            state == "blocked" -> "Too many join attempts from this network. Retrying automatically."
+            state.startsWith("error: ") -> state.removePrefix("error: ").replaceFirstChar { it.uppercase() }
+            peers.isEmpty() -> "No paired devices online"
+            else -> "Paired: " + peers.joinToString { "${it.name} (${it.device})" }
+        }
         // The desktop actions live with the connected-devices card and only
         // appear while a computer is actually online in the session.
         val hasWindows = peers.any { it.device == "windows" }

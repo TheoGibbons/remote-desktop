@@ -346,8 +346,9 @@ version, commit, and tagging steps.
   relay only ever sees ciphertext.** A wrong key simply fails to pair. The relay
   can still see connection metadata (IP, timing/size, each device's type and
   name, routing ids) — see [PROTOCOL.md](PROTOCOL.md#end-to-end-encryption).
-- **Rate limiting:** max 20 join attempts per IP per 10 minutes; exceeding it
-  bans the IP for 1 hour. Max 16 concurrent connections per IP. Connections that
+- **Rate limiting:** max 20 different session keys tried per IP per 10 minutes
+  (a device reconnecting with its own key doesn't count); exceeding it bans the
+  IP for 1 hour. Max 16 concurrent connections per IP. Connections that
   don't present a valid pairing id within 10s are dropped. Behind any proxy set
   `RELAY_TRUST_PROXY=1`, or every client looks like one IP.
 - **Transport:** even though content is E2E encrypted, run the relay behind a TLS
