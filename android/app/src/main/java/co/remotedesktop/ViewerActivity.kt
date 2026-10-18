@@ -637,12 +637,8 @@ class ViewerActivity : AppCompatActivity() {
         diagnosticsPanel = buildDiagnosticsPanel()
         onBackPressedDispatcher.addCallback(this, diagnosticsBackCallback)
         val panelMargin = (8 * resources.displayMetrics.density).toInt()
-        val panelWidth = minOf(
-            (resources.displayMetrics.widthPixels * 0.72f).toInt(),
-            (460 * resources.displayMetrics.density).toInt(),
-        )
         root.addView(diagnosticsPanel, FrameLayout.LayoutParams(
-            panelWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.TOP or Gravity.START
+            diagnosticsPanelWidth(), FrameLayout.LayoutParams.MATCH_PARENT, Gravity.TOP or Gravity.START
         ).apply {
             leftMargin = panelMargin
             rightMargin = panelMargin
@@ -900,6 +896,22 @@ class ViewerActivity : AppCompatActivity() {
         }
         diagnosticsUpdater = updater
         updater.run()
+    }
+
+    private fun diagnosticsPanelWidth(): Int = minOf(
+        (resources.displayMetrics.widthPixels * 0.72f).toInt(),
+        (460 * resources.displayMetrics.density).toInt(),
+    )
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Rotation keeps this activity, so a width sized for landscape would
+        // push the stats panel's Close button off a portrait screen.
+        if (::diagnosticsPanel.isInitialized) {
+            diagnosticsPanel.layoutParams = diagnosticsPanel.layoutParams.apply {
+                width = diagnosticsPanelWidth()
+            }
+        }
     }
 
     private fun hideDiagnostics() {
