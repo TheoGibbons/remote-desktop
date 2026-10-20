@@ -1,46 +1,152 @@
 <Window x:Class="RemoteDesktopWin.FileExplorerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Phone files" Height="540" Width="640"
+        Title="Phone files" Height="560" Width="640" MinWidth="460" MinHeight="360"
+        Background="{StaticResource RdBackgroundBrush}"
+        FontFamily="Segoe UI"
         AllowDrop="True" PreviewDragEnter="Window_DragOver" PreviewDragOver="Window_DragOver"
         PreviewDragLeave="Window_DragLeave" PreviewDrop="Window_Drop">
-    <Grid Margin="10" Background="Transparent">
+    <Window.Resources>
+        <Style TargetType="ScrollBar" BasedOn="{StaticResource RdScrollBar}"/>
+
+        <!-- File row: rounded highlight on hover and selection. -->
+        <Style x:Key="FileRow" TargetType="ListBoxItem">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Padding" Value="10,7"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="Bd" CornerRadius="8" Background="Transparent"
+                                Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource RdBackgroundBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource RdPrimaryFaintBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="18" Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <DockPanel Grid.Row="0">
-            <Button DockPanel.Dock="Left" Content="⬆ Up" Padding="10,3" Click="Up_Click"/>
-            <Button DockPanel.Dock="Right" Content="⟳" Padding="10,3" Margin="6,0,0,0" Click="Refresh_Click"/>
-            <TextBox x:Name="PathBox" Margin="6,0" VerticalContentAlignment="Center" KeyDown="PathBox_KeyDown"/>
-        </DockPanel>
+        <!-- ============ Path bar ============ -->
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button Content="&#xE74A;" Style="{StaticResource RdIconButton}" Click="Up_Click"
+                    ToolTip="Up one folder"/>
+            <TextBox x:Name="PathBox" Grid.Column="1" Style="{StaticResource RdTextBox}" Margin="6,0"
+                     KeyDown="PathBox_KeyDown"/>
+            <Button Grid.Column="2" Content="&#xE72C;" Style="{StaticResource RdIconButton}" Click="Refresh_Click"
+                    ToolTip="Refresh"/>
+        </Grid>
 
-        <ListView x:Name="EntryList" Grid.Row="1" Margin="0,8" SelectionMode="Single" MouseDoubleClick="Entry_DoubleClick">
-            <ListView.View>
-                <GridView>
-                    <GridViewColumn Header="Name" Width="360" DisplayMemberBinding="{Binding Display}"/>
-                    <GridViewColumn Header="Size" Width="110" DisplayMemberBinding="{Binding SizeText}"/>
-                    <GridViewColumn Header="Modified" Width="130" DisplayMemberBinding="{Binding MTimeText}"/>
-                </GridView>
-            </ListView.View>
-        </ListView>
+        <!-- ============ Folder contents ============ -->
+        <Border Grid.Row="1" Style="{StaticResource RdCard}" Padding="6" Margin="0,12">
+            <Grid>
+                <ListBox x:Name="EntryList" SelectionMode="Single" MouseDoubleClick="Entry_DoubleClick"
+                         Background="Transparent" BorderThickness="0" Padding="0"
+                         ItemContainerStyle="{StaticResource FileRow}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         VirtualizingPanel.ScrollUnit="Pixel">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="80"/>
+                                    <ColumnDefinition Width="130"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="Icon" Text="&#xF12B;" FontFamily="Segoe MDL2 Assets" FontSize="16"
+                                           Foreground="{StaticResource RdPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="13"
+                                           Foreground="{StaticResource RdOnSurfaceBrush}"
+                                           TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="{Binding SizeText}" Style="{StaticResource RdCaption}"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="3" Text="{Binding MTimeText}" Style="{StaticResource RdCaption}"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding Dir}" Value="False">
+                                    <Setter TargetName="Icon" Property="Text" Value="&#xE7C3;"/>
+                                    <Setter TargetName="Icon" Property="Foreground" Value="{StaticResource RdOnSurfaceVariantBrush}"/>
+                                </DataTrigger>
+                            </DataTemplate.Triggers>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
 
-        <DockPanel Grid.Row="2">
-            <Button Content="⬇ Download" Padding="10,4" Click="Download_Click"/>
-            <Button Content="⬆ Upload files to phone..." Padding="10,4" Margin="8,0,0,0" Click="Upload_Click"
-                    ToolTip="You can also drag files onto this window"/>
-            <TextBlock x:Name="StatusText" VerticalAlignment="Center" Margin="12,0,0,0"/>
-        </DockPanel>
+                <TextBlock Text="This folder is empty" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           IsHitTestVisible="False">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource RdCaption}">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <!-- ItemsSource is null while a folder loads, so this
+                                     only shows once an empty listing arrives. -->
+                                <DataTrigger Binding="{Binding ItemsSource.Count, ElementName=EntryList}" Value="0">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
+        </Border>
+
+        <!-- ============ Status + actions ============ -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="StatusText" Style="{StaticResource RdCaption}" TextWrapping="NoWrap"
+                       TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="2,0,12,0"/>
+            <Button Grid.Column="1" Style="{StaticResource RdOutlinedButton}" Click="Download_Click">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock Text="Download"/>
+                </StackPanel>
+            </Button>
+            <Button Grid.Column="2" Style="{StaticResource RdPrimaryButton}" Margin="8,0,0,0" Click="Upload_Click"
+                    ToolTip="You can also drag files onto this window">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE898;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock Text="Upload files to phone..."/>
+                </StackPanel>
+            </Button>
+        </Grid>
 
         <Grid x:Name="DropOverlay" Grid.RowSpan="3" Visibility="Collapsed" IsHitTestVisible="False">
-            <Rectangle Fill="#EBF2F8FF" Stroke="#2B7CD3" StrokeThickness="2" StrokeDashArray="4 3" RadiusX="6" RadiusY="6"/>
-            <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center"
-                       Foreground="#1F5FA8" FontSize="16">
-                ⬆ Drop files to upload<LineBreak/>
-                <Run FontSize="12" Text="They're saved to the phone's Downloads folder"/>
-            </TextBlock>
+            <Rectangle Fill="#F2EDF3FD" Stroke="{StaticResource RdPrimaryBrush}" StrokeThickness="2"
+                       StrokeDashArray="4 3" RadiusX="14" RadiusY="14"/>
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="&#xE898;" FontFamily="Segoe MDL2 Assets" FontSize="28"
+                           Foreground="{StaticResource RdPrimaryBrush}" HorizontalAlignment="Center"/>
+                <TextBlock Text="Drop files to upload" FontSize="16" FontWeight="SemiBold"
+                           Foreground="{StaticResource RdPrimaryBrush}" HorizontalAlignment="Center" Margin="0,10,0,0"/>
+                <TextBlock Text="They're saved to the phone's Downloads folder" Style="{StaticResource RdCaption}"
+                           HorizontalAlignment="Center" Margin="0,4,0,0"/>
+            </StackPanel>
         </Grid>
     </Grid>
 </Window>

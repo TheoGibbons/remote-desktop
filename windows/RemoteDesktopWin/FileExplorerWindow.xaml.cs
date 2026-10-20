@@ -34,7 +34,6 @@ public partial class FileExplorerWindow : Window
         public bool Dir { get; init; }
         public long Size { get; init; }
         public long MTime { get; init; }
-        public string Display => (Dir ? "📁 " : "📄 ") + Name;
         public string SizeText => Dir ? "" : FormatSize(Size);
         public string MTimeText => MTime == 0 ? "" : DateTimeOffset.FromUnixTimeMilliseconds(MTime).LocalDateTime.ToString("yyyy-MM-dd HH:mm");
 
