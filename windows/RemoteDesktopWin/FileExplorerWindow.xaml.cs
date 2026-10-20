@@ -44,14 +44,21 @@ public partial class FileExplorerWindow : Window
         _sort = Enum.TryParse(settings.FileBrowserSort, out FileSort sort) && Enum.IsDefined(sort) ? sort : FileSort.NameAsc;
         UpdateSortButton();
         _fs.TransferStatus += OnTransferStatus;
-        Closed += (_, _) => _fs.TransferStatus -= OnTransferStatus;
+        _fs.TransferProgress += OnTransferProgress;
+        Closed += (_, _) =>
+        {
+            _fs.TransferStatus -= OnTransferStatus;
+            _fs.TransferProgress -= OnTransferProgress;
+        };
         if (MainWindow.IsElevated()) Loaded += (_, _) => AcceptElevatedFileDrops();
         RequestList("");
     }
 
-    private void SetStatus(string text)
+    /// <param name="sending">Set for transfer progress, which gets an up or down arrow.</param>
+    private void SetStatus(string text, bool? sending = null)
     {
-        StatusText.Text = text;
+        if (sending is bool up) StatusText.ShowTransfer(up, text);
+        else StatusText.Text = text;
         StatusText.ToolTip = text == _uploadStatus ? _uploadPath : null;
     }
 
@@ -65,6 +72,13 @@ public partial class FileExplorerWindow : Window
         else Dispatcher.BeginInvoke(() => SetStatus(s));
     }
 
+    private void OnTransferProgress(bool sending, int percent, string name)
+    {
+        var text = $"{percent}% {name}";
+        if (Dispatcher.CheckAccess()) SetStatus(text + UploadProgress, sending);
+        else Dispatcher.BeginInvoke(() => SetStatus(text, sending));
+    }
+
     public void OnUploadResult(JsonNode msg)
     {
         if (msg["from"]?.GetValue<string>() != _phoneId ||
@@ -73,7 +87,7 @@ public partial class FileExplorerWindow : Window
         if (id == _lastUploadId)
         {
             _uploadPath = msg["path"]?.GetValue<string>();
-            SetStatus(StatusText.Text);
+            if (StatusText.Text == _uploadStatus) StatusText.ToolTip = _uploadPath;
         }
         if (_path == _downloadsPath) RequestList(_path);
     }

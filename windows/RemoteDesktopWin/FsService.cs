@@ -22,6 +22,7 @@ public class FsService
         public required string TempPath;
         public long Expected;
         public long Received;
+        public int Percent = -1; // last reported, so each whole percent is reported once
         public Action<string>? OnDone; // final path or null via OnError
         public Action<string>? OnError;
     }
@@ -63,6 +64,11 @@ public class FsService
     }
 
     public event Action<string>? TransferStatus;
+
+    /// <param name="sending">true while this PC sends the file, false while it receives it.</param>
+    public delegate void TransferProgressHandler(bool sending, int percent, string name);
+
+    public event TransferProgressHandler? TransferProgress;
 
     public FsService(WsClient ws)
     {
@@ -121,12 +127,21 @@ public class FsService
         // [2][xferId uint32 BE][data]
         if (frame.Length < 5) return;
         uint id = (uint)((frame[1] << 24) | (frame[2] << 16) | (frame[3] << 8) | frame[4]);
+        int percent;
+        string name;
         lock (_incoming)
         {
             if (!_incoming.TryGetValue(id, out var t)) return;
             t.Stream.Write(frame, 5, frame.Length - 5);
             t.Received += frame.Length - 5;
+            if (t.Expected <= 0) return;
+            percent = (int)Math.Min(100, t.Received * 100 / t.Expected);
+            if (percent == t.Percent) return;
+            t.Percent = percent;
+            name = Path.GetFileName(t.FinalPath);
         }
+        // Outside the lock: handlers wait on the UI thread, which takes it in ExpectDownload.
+        TransferProgress?.Invoke(false, percent, name);
     }
 
     private void HandleList(JsonNode msg)
@@ -225,7 +240,7 @@ public class FsService
                 int tries = 0;
                 while (!_ws.SendBinary(2, payload) && tries++ < 600) await Task.Delay(50);
                 sent += n;
-                TransferStatus?.Invoke($"Sending {fi.Name}: {sent * 100 / Math.Max(1, fi.Length)}%");
+                TransferProgress?.Invoke(true, (int)(sent * 100 / Math.Max(1, fi.Length)), fi.Name);
             }
 
             _ws.SendJson(new JsonObject { ["type"] = "fs-end", ["to"] = toPeer, ["xferId"] = xferId, ["ok"] = true });

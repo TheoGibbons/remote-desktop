@@ -122,6 +122,8 @@ public partial class MainWindow : Window
         _ws.JsonReceived += m => Dispatcher.Invoke(() => OnJson(m));
         _ws.BinaryReceived += OnBinary;
         _fs.TransferStatus += s => Dispatcher.Invoke(() => TransferText.Text = s);
+        _fs.TransferProgress += (sending, percent, name) =>
+            Dispatcher.Invoke(() => TransferText.ShowTransfer(sending, $"{percent}% {name}"));
 
         SetupTray();
         // Closing the window hides to the tray so paired devices can still
