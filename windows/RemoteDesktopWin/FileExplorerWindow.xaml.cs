@@ -2,8 +2,11 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 
 namespace RemoteDesktopWin;
 
@@ -27,31 +30,19 @@ public partial class FileExplorerWindow : Window
     private bool _uploading;
     private bool _navigateToDownloads;
     private TaskCompletionSource<bool>? _downloadsNavigation;
+    private readonly AppSettings _settings;
+    private FileSort _sort;
+    private List<FileEntry> _entries = new();
 
-    public class Entry
-    {
-        public required string Name { get; init; }
-        public bool Dir { get; init; }
-        public long Size { get; init; }
-        public long MTime { get; init; }
-        public string SizeText => Dir ? "" : FormatSize(Size);
-        public string MTimeText => MTime == 0 ? "" : DateTimeOffset.FromUnixTimeMilliseconds(MTime).LocalDateTime.ToString("yyyy-MM-dd HH:mm");
-
-        private static string FormatSize(long s) => s switch
-        {
-            < 1024 => $"{s} B",
-            < 1024 * 1024 => $"{s / 1024.0:F1} KB",
-            < 1024L * 1024 * 1024 => $"{s / 1024.0 / 1024:F1} MB",
-            _ => $"{s / 1024.0 / 1024 / 1024:F2} GB",
-        };
-    }
-
-    public FileExplorerWindow(WsClient ws, FsService fs, string phoneId)
+    public FileExplorerWindow(WsClient ws, FsService fs, string phoneId, AppSettings settings)
     {
         InitializeComponent();
         _ws = ws;
         _fs = fs;
         _phoneId = phoneId;
+        _settings = settings;
+        _sort = Enum.TryParse(settings.FileBrowserSort, out FileSort sort) && Enum.IsDefined(sort) ? sort : FileSort.NameAsc;
+        UpdateSortButton();
         _fs.TransferStatus += OnTransferStatus;
         Closed += (_, _) => _fs.TransferStatus -= OnTransferStatus;
         if (MainWindow.IsElevated()) Loaded += (_, _) => AcceptElevatedFileDrops();
@@ -124,10 +115,10 @@ public partial class FileExplorerWindow : Window
             return;
         }
         PathBox.Text = _path;
-        var entries = new List<Entry>();
+        _entries = new List<FileEntry>();
         foreach (var e in msg["entries"]!.AsArray())
         {
-            entries.Add(new Entry
+            _entries.Add(new FileEntry
             {
                 Name = e!["name"]!.GetValue<string>(),
                 Dir = e["dir"]?.GetValue<bool>() ?? false,
@@ -135,8 +126,54 @@ public partial class FileExplorerWindow : Window
                 MTime = e["mtime"]?.GetValue<long>() ?? 0,
             });
         }
-        EntryList.ItemsSource = entries.OrderByDescending(x => x.Dir).ThenBy(x => x.Name).ToList();
-        if (!_uploading) SetStatus($"{entries.Count} items");
+        EntryList.ItemsSource = _entries.Sorted(_sort);
+        if (!_uploading) SetStatus($"{_entries.Count} items");
+    }
+
+    private void UpdateSortButton()
+    {
+        SortText.Text = _sort.Summary();
+        SortButton.ToolTip = $"Sort: {_sort.Label()}. Folders always first.";
+    }
+
+    private void Sort_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu { Style = (Style)FindResource("RdMenu") };
+        foreach (var sort in Enum.GetValues<FileSort>())
+        {
+            var header = new StackPanel { Orientation = Orientation.Horizontal };
+            header.Children.Add(new TextBlock
+            {
+                Text = "",
+                FontFamily = new FontFamily("Segoe MDL2 Assets"),
+                Foreground = (Brush)FindResource("RdPrimaryBrush"),
+                Width = 24,
+                VerticalAlignment = VerticalAlignment.Center,
+                Visibility = sort == _sort ? Visibility.Visible : Visibility.Hidden,
+            });
+            header.Children.Add(new TextBlock { Text = sort.Label() });
+            var item = new MenuItem { Header = header, Style = (Style)FindResource("RdMenuItem") };
+            item.Click += (_, _) => ApplySort(sort);
+            menu.Items.Add(item);
+        }
+        menu.PlacementTarget = (UIElement)sender;
+        menu.Placement = PlacementMode.Bottom;
+        menu.IsOpen = true;
+    }
+
+    private void ApplySort(FileSort sort)
+    {
+        _sort = sort;
+        _settings.FileBrowserSort = sort.ToString();
+        _settings.Save();
+        UpdateSortButton();
+        // ItemsSource is null while a folder loads; that listing sorts itself.
+        if (EntryList.ItemsSource == null) return;
+        var selected = EntryList.SelectedItem;
+        EntryList.ItemsSource = _entries.Sorted(_sort);
+        if (selected == null) return;
+        EntryList.SelectedItem = selected;
+        EntryList.ScrollIntoView(selected);
     }
 
     private string Join(string dir, string name) =>
@@ -144,7 +181,7 @@ public partial class FileExplorerWindow : Window
 
     private void Entry_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (EntryList.SelectedItem is not Entry entry) return;
+        if (EntryList.SelectedItem is not FileEntry entry) return;
         if (entry.Dir) RequestList(Join(_path, entry.Name));
     }
 
@@ -165,7 +202,7 @@ public partial class FileExplorerWindow : Window
 
     private void Download_Click(object sender, RoutedEventArgs e)
     {
-        if (EntryList.SelectedItem is not Entry entry || entry.Dir)
+        if (EntryList.SelectedItem is not FileEntry entry || entry.Dir)
         {
             SetStatus("Select a file first");
             return;

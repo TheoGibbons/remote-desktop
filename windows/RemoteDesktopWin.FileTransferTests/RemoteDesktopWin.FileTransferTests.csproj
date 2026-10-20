@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../RemoteDesktopWin/FsService.cs" Link="FsService.cs" />
+    <Compile Include="../RemoteDesktopWin/FileEntry.cs" Link="FileEntry.cs" />
   </ItemGroup>
 </Project>

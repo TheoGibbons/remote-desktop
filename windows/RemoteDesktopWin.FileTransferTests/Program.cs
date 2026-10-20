@@ -71,6 +71,37 @@ internal static class Program
             Console.WriteLine("PASS: complete, duplicate, incomplete, cancelled, unknown-size, empty, denied and failed-save transfers");
         }
         finally { Directory.Delete(dir, true); }
+        CheckSortOrders();
+    }
+
+    // Same listing and expectations as the Android FileExplorerActivityTest.
+    private static void CheckSortOrders()
+    {
+        FileEntry F(string name, bool dir, long size, long mtime) => new() { Name = name, Dir = dir, Size = size, MTime = mtime };
+        var sample = new[]
+        {
+            F("report.pdf", false, 1536, 1_791_998_400_000),
+            F("Projects", true, 0, 1_791_912_000_000),
+            F("archive.zip", false, 4_194_304, 1_791_825_600_000),
+            F("Backups", true, 0, 1_791_739_200_000),
+            F("empty.txt", false, 0, 0),
+        };
+        var expected = new Dictionary<FileSort, string[]>
+        {
+            [FileSort.NameAsc] = new[] { "Backups", "Projects", "archive.zip", "empty.txt", "report.pdf" },
+            [FileSort.NameDesc] = new[] { "Projects", "Backups", "report.pdf", "empty.txt", "archive.zip" },
+            [FileSort.SizeDesc] = new[] { "Backups", "Projects", "archive.zip", "report.pdf", "empty.txt" },
+            [FileSort.SizeAsc] = new[] { "Backups", "Projects", "empty.txt", "report.pdf", "archive.zip" },
+            [FileSort.ModifiedDesc] = new[] { "Projects", "Backups", "report.pdf", "archive.zip", "empty.txt" },
+            [FileSort.ModifiedAsc] = new[] { "Backups", "Projects", "empty.txt", "archive.zip", "report.pdf" },
+        };
+        Check(expected.Count == Enum.GetValues<FileSort>().Length, "Every sort order is covered");
+        foreach (var (sort, names) in expected)
+        {
+            Check(sample.Sorted(sort).Select(e => e.Name).SequenceEqual(names), $"{sort} keeps folders first in the right order");
+            Check(sample.Reverse().Sorted(sort).Select(e => e.Name).SequenceEqual(names), $"{sort} ignores the listing's order");
+        }
+        Console.WriteLine("PASS: all six sort orders keep folders first");
     }
 
     private static void Check(bool condition, string message)

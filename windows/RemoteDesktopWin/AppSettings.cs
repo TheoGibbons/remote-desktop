@@ -19,6 +19,8 @@ public class AppSettings
     // a restart cannot silently re-enable access the user turned off.
     public bool AllowRemoteControl { get; set; } = true;
     public bool AllowFileAccess { get; set; } = true;
+    // A FileSort name, kept as text so a bad value can't fail the whole load.
+    public string FileBrowserSort { get; set; } = nameof(FileSort.NameAsc);
     // Stable per-install id so the relay can replace this device's stale
     // connection on reconnect instead of listing it twice.
     public string DeviceUid { get; set; } = Guid.NewGuid().ToString("N");

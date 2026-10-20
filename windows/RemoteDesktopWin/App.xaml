@@ -208,10 +208,12 @@
 
         <!-- Themed dropdown for the per-row "⋯" menu. The font must be pinned:
              a ContextMenu inherits FontFamily from its PlacementTarget, and the
-             "⋯" icon button uses Segoe MDL2 Assets, which has no letter glyphs. -->
+             "⋯" icon button uses Segoe MDL2 Assets, which has no letter glyphs.
+             Text buttons are SemiBold, which the items would inherit too. -->
         <Style x:Key="RdMenu" TargetType="ContextMenu">
             <Setter Property="OverridesDefaultStyle" Value="True"/>
             <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontWeight" Value="Normal"/>
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Template">

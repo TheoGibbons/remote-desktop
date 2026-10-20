@@ -47,12 +47,20 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <Button Content="&#xE74A;" Style="{StaticResource RdIconButton}" Click="Up_Click"
                     ToolTip="Up one folder"/>
             <TextBox x:Name="PathBox" Grid.Column="1" Style="{StaticResource RdTextBox}" Margin="6,0"
                      KeyDown="PathBox_KeyDown"/>
-            <Button Grid.Column="2" Content="&#xE72C;" Style="{StaticResource RdIconButton}" Click="Refresh_Click"
+            <Button x:Name="SortButton" Grid.Column="2" Style="{StaticResource RdTextButton}" Margin="0,0,2,0"
+                    Click="Sort_Click">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE8CB;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <TextBlock x:Name="SortText"/>
+                </StackPanel>
+            </Button>
+            <Button Grid.Column="3" Content="&#xE72C;" Style="{StaticResource RdIconButton}" Click="Refresh_Click"
                     ToolTip="Refresh"/>
         </Grid>
 

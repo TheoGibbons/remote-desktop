@@ -936,7 +936,7 @@ public partial class MainWindow : Window
         if (peer == null) { Toast.Show("That device is no longer online."); return; }
         if (_fileExplorer == null || !_fileExplorer.IsLoaded)
         {
-            _fileExplorer = new FileExplorerWindow(_ws, _fs, peer.Id);
+            _fileExplorer = new FileExplorerWindow(_ws, _fs, peer.Id, _settings);
             _fileExplorer.Closed += (_, _) => _fileExplorer = null;
             _fileExplorer.Show();
         }
