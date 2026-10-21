@@ -68,8 +68,10 @@ class FileExplorerActivityTest {
         (field("jsonListener") as (JSONObject) -> Unit)(message)
     }
 
-    private fun result(entries: List<DesktopFileEntry>, path: String = "C:\\Work", reqId: String = field("lastReqId") as String) {
+    private fun result(entries: List<DesktopFileEntry>, path: String = "C:\\Work", reqId: String = field("lastReqId") as String,
+                       downloads: String? = null) {
         deliver(JSONObject().put("type", "fs-list-result").put("from", "pc").put("reqId", reqId).put("path", path)
+            .put("downloadsPath", downloads)
             .put("entries", JSONArray().apply {
                 entries.forEach { put(JSONObject().put("name", it.name).put("dir", it.dir)
                     .put("size", it.size).put("mtime", it.mtime)) }
@@ -122,6 +124,44 @@ class FileExplorerActivityTest {
         assertEquals(DesktopFileSort.SIZE_DESC, field("sort"))
         result(sample)
         assertEquals(expected[DesktopFileSort.SIZE_DESC], names())
+    }
+
+    @Test
+    fun opensInTheDesktopDownloadsFolderWithoutDrawingTheDrivesFirst() {
+        val downloads = "D:\\Owner\\Downloads"
+        assertEquals("", field("requestedPath"))
+        result(listOf(DesktopFileEntry("C:\\", true, 0, 0)), path = "", downloads = downloads)
+        assertEquals(downloads, field("requestedPath"))
+        assertEquals(emptyList<String>(), names())
+        assertFalse(activity.findViewById<ListView>(R.id.filesList).isEnabled)
+
+        result(sample, path = downloads, downloads = downloads)
+        assertEquals(downloads, activity.findViewById<TextView>(R.id.filesPath).text.toString())
+        assertEquals(sample.size, names().size)
+        assertTrue(activity.findViewById<TextView>(R.id.filesStatus).text.contains("5 items"))
+
+        // Rotating or going back to the drives later must not jump to Downloads again.
+        controller.recreate()
+        activity = controller.get()
+        assertEquals(downloads, field("requestedPath"))
+        result(sample, path = downloads, downloads = downloads)
+        activity.findViewById<ImageButton>(R.id.filesUp).performClick()
+        result(emptyList(), path = "D:\\Owner", downloads = downloads)
+        activity.findViewById<ImageButton>(R.id.filesUp).performClick()
+        result(emptyList(), path = "D:\\", downloads = downloads)
+        activity.findViewById<ImageButton>(R.id.filesUp).performClick()
+        assertEquals("", field("requestedPath"))
+        result(listOf(DesktopFileEntry("C:\\", true, 0, 0)), path = "", downloads = downloads)
+        assertEquals("This PC", activity.findViewById<TextView>(R.id.filesPath).text.toString())
+        assertEquals(listOf("C:\\"), names())
+    }
+
+    @Test
+    fun olderDesktopsWithoutADownloadsPathOpenAtTheDrives() {
+        result(listOf(DesktopFileEntry("C:\\", true, 0, 0)), path = "")
+        assertEquals("This PC", activity.findViewById<TextView>(R.id.filesPath).text.toString())
+        assertEquals(listOf("C:\\"), names())
+        assertTrue(activity.findViewById<ListView>(R.id.filesList).isEnabled)
     }
 
     @Test

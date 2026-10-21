@@ -35,9 +35,10 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * Browses the paired desktop's filesystem. Tap a folder to open it, tap a file
- * to download it into the phone's Downloads folder, or use Upload
- * to push files from the phone to the desktop.
+ * Browses the paired desktop's filesystem, starting in its Downloads folder.
+ * Tap a folder to open it, tap a file to download it into the phone's
+ * Downloads folder, or use Upload to push files from the phone to the
+ * desktop's Downloads folder, which the browser then shows.
  */
 class FileExplorerActivity : AppCompatActivity() {
 
@@ -56,6 +57,10 @@ class FileExplorerActivity : AppCompatActivity() {
     private var winId: String? = null
     private var path = ""
     private var requestedPath = ""
+    // Where uploads land on the desktop. Older desktops don't advertise it.
+    private var downloadsPath: String? = null
+    // Go to Downloads once the desktop's next listing says where it is.
+    private var openDownloads = true
     private var lastReqId = ""
     private var pendingScroll: Bundle? = null
     private val entries = ArrayList<DesktopFileEntry>()
@@ -68,9 +73,12 @@ class FileExplorerActivity : AppCompatActivity() {
                 uploadButton.isEnabled = fileAccessAllowed
                 val uris = pendingUploadUris
                 pendingUploadUris = emptyList()
+                if (uris.isNotEmpty() && fileAccessAllowed) showDownloads()
                 uris.forEach { uploadUri(it) }
             }
             "fs-list-result" -> if (msg.optString("reqId") == lastReqId) showResult(msg)
+            // Show each uploaded file once the desktop has saved it.
+            "fs-saved" -> if (msg.optString("from") == winId && isDownloads(shownPath)) requestList(shownPath, quiet = true)
             "peer-left" -> if (msg.optString("id") == winId) { finish() }
         }
     }
@@ -100,6 +108,7 @@ class FileExplorerActivity : AppCompatActivity() {
         }
 
         path = savedInstanceState?.getString("path") ?: ""
+        openDownloads = savedInstanceState?.getBoolean("openDownloads") ?: true
         pendingScroll = savedInstanceState?.getBundle("scroll")
         sort = DesktopFileSort.entries.firstOrNull {
             it.name == getSharedPreferences("file_browser", MODE_PRIVATE).getString("sort", null)
@@ -158,6 +167,7 @@ class FileExplorerActivity : AppCompatActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("path", if (listing) requestedPath else path)
+        outState.putBoolean("openDownloads", openDownloads)
         outState.putBundle("scroll", captureScroll())
         super.onSaveInstanceState(outState)
     }
@@ -194,12 +204,13 @@ class FileExplorerActivity : AppCompatActivity() {
         ConnectionManager.fs.transferStatus.remove(transferListener)
     }
 
-    private fun requestList(p: String) {
+    /** @param quiet keeps the status line, e.g. upload progress, while the folder reloads. */
+    private fun requestList(p: String, quiet: Boolean = false) {
         pendingScroll = if (p == path) captureScroll() else null
         requestedPath = p
         setListing(true)
         emptyText.setText(R.string.files_loading)
-        setStatus(getString(R.string.files_loading))
+        if (!quiet) setStatus(getString(R.string.files_loading))
         // Replies from the previous activity must not match a request after rotation.
         lastReqId = UUID.randomUUID().toString()
         ConnectionManager.sendJson(
@@ -211,12 +222,18 @@ class FileExplorerActivity : AppCompatActivity() {
     @SuppressLint("SetTextI18n")
     private fun showResult(msg: JSONObject) {
         setListing(false)
+        (msg.opt("downloadsPath") as? String)?.takeIf { it.isNotEmpty() }?.let { downloadsPath = it }
         val err = msg.opt("error")
         if (err != null && err != JSONObject.NULL) {
             if (entries.isNotEmpty()) pendingScroll = null
             emptyText.setText(R.string.files_error)
             setStatus("Error: $err")
             return
+        }
+        if (openDownloads) {
+            openDownloads = false
+            // Skip drawing the drives the desktop listed on the way there.
+            downloadsPath?.let { if (!isDownloads(msg.optString("path"))) { requestList(it); return } }
         }
         path = msg.optString("path")
         val scroll = pendingScroll?.takeIf { it.getString("path") == path }
@@ -230,8 +247,21 @@ class FileExplorerActivity : AppCompatActivity() {
         }
         applySort(scroll)
         emptyText.setText(R.string.files_empty)
-        setStatus(getString(R.string.files_list_hint,
+        // Leave transfer progress that replaced "Loading" while the folder loaded.
+        if (statusText.text.toString() == getString(R.string.files_loading)) setStatus(getString(R.string.files_list_hint,
             resources.getQuantityString(R.plurals.files_count, entries.size, entries.size)))
+    }
+
+    /** The folder on screen, or the one replacing it. */
+    private val shownPath get() = if (listing) requestedPath else path
+
+    // Windows paths ignore case.
+    private fun isDownloads(p: String) = downloadsPath?.equals(p, ignoreCase = true) == true
+
+    private fun showDownloads() {
+        val downloads = downloadsPath
+        if (downloads == null) openDownloads = true
+        else if (!isDownloads(shownPath)) requestList(downloads)
     }
 
     private fun setListing(active: Boolean) {
@@ -436,8 +466,8 @@ class FileExplorerActivity : AppCompatActivity() {
             { progress -> runOnUiThread { setStatus(progress) } },
             { ok, result -> runOnUiThread {
                 if (ok) Toast.makeText(
-                    this, "“$result” sent to the desktop's Downloads folder " +
-                        "(not the folder you are browsing)", Toast.LENGTH_LONG
+                    this, "“$result” sent to the desktop's Downloads folder" +
+                        if (isDownloads(shownPath)) "" else " (not the folder you are browsing)", Toast.LENGTH_LONG
                 ).show()
                 else setStatus(result ?: "Could not send the selected file")
             } })

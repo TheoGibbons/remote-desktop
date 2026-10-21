@@ -4,7 +4,11 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
+import android.os.Looper
 import android.widget.Button
+import android.widget.ImageButton
+import android.widget.TextView
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -17,6 +21,7 @@ import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.android.controller.ActivityController
+import org.robolectric.shadows.ShadowToast
 import java.io.ByteArrayInputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
@@ -62,11 +67,17 @@ class MultipleFileUploadTest {
     private fun field(name: String): Any? = FileExplorerActivity::class.java
         .getDeclaredField(name).apply { isAccessible = true }.get(activity)
 
-    private fun fileAccess(allowed: Boolean) {
+    private fun deliver(message: JSONObject) {
         @Suppress("UNCHECKED_CAST")
-        val listener = field("jsonListener") as (JSONObject) -> Unit
-        listener(JSONObject().put("type", "file-access").put("from", "pc").put("allowed", allowed))
+        (field("jsonListener") as (JSONObject) -> Unit)(message)
     }
+
+    private fun fileAccess(allowed: Boolean) =
+        deliver(JSONObject().put("type", "file-access").put("from", "pc").put("allowed", allowed))
+
+    private fun listed(path: String, downloads: String) =
+        deliver(JSONObject().put("type", "fs-list-result").put("from", "pc").put("reqId", field("lastReqId"))
+            .put("path", path).put("downloadsPath", downloads).put("entries", JSONArray()))
 
     private fun selectFiles(result: Intent?, resultCode: Int = Activity.RESULT_OK) {
         (field("uploadButton") as Button).performClick()
@@ -107,6 +118,40 @@ class MultipleFileUploadTest {
         executor.submit {}.get(5, TimeUnit.SECONDS)
         assertTrue(streams.all { it.closeCount == 1 })
         assertEquals(emptyList<Uri>(), field("pendingUploadUris"))
+    }
+
+    @Test
+    fun uploadingShowsTheDesktopDownloadsFolderAndReloadsItAsFilesAreSaved() {
+        val downloads = "C:\\Users\\Owner\\Downloads"
+        listed("", downloads)
+        listed(downloads, downloads)
+        (field("upButton") as ImageButton).performClick()
+        listed("C:\\Users\\Owner", downloads)
+        assertEquals("C:\\Users\\Owner", field("path"))
+
+        val uri = Uri.parse("content://uploads/single")
+        val stream = SelectedStream()
+        shadowOf(activity.contentResolver).registerInputStream(uri, stream)
+        selectFiles(Intent().setData(uri))
+        assertEquals("C:\\Users\\Owner", field("requestedPath"))
+        fileAccess(true)
+        assertEquals(downloads, field("requestedPath"))
+        executor.submit {}.get(5, TimeUnit.SECONDS)
+        shadowOf(Looper.getMainLooper()).idle()
+        // Finished before the Downloads listing arrived, which is still where the browser is heading.
+        assertEquals("“shared-file” sent to the desktop's Downloads folder", ShadowToast.getTextOfLatestToast())
+        listed(downloads, downloads)
+        assertEquals(downloads, field("path"))
+        val status = activity.findViewById<TextView>(R.id.filesStatus)
+        val sentStatus = status.text.toString()
+        assertTrue(sentStatus, sentStatus.startsWith("Sent "))
+
+        val listRequest = field("lastReqId")
+        deliver(JSONObject().put("type", "fs-saved").put("from", "pc").put("xferId", 1).put("path", "$downloads\\single"))
+        assertNotEquals(listRequest, field("lastReqId"))
+        assertEquals(downloads, field("requestedPath"))
+        listed(downloads, downloads)
+        assertEquals("Reloading Downloads keeps the upload result", sentStatus, status.text.toString())
     }
 
     @Test

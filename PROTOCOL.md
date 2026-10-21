@@ -150,7 +150,7 @@ the viewer simply decodes the type-3 stream (below) and sends these.
 | type             | fields | notes |
 |------------------|--------|-------|
 | `fs-list`        | `to`, `path`, `reqId` | Empty `path` = roots (drives on Windows, storage root on Android). |
-| `fs-list-result` | `reqId`, `path`, `entries` `[{name, dir, size, mtime}]`, `error?`, `downloadsPath?` | Android optionally advertises its absolute upload destination in `downloadsPath`, so the sender can browse there as an upload starts. |
+| `fs-list-result` | `reqId`, `path`, `entries` `[{name, dir, size, mtime}]`, `error?`, `downloadsPath?` | Both apps advertise their absolute upload destination in `downloadsPath`, so the browsing device can open there and return there as an upload starts. Older peers omit it. |
 | `fs-get`         | `to`, `path`, `xferId` | Ask peer to send me a file. |
 | `fs-begin`       | `to`, `xferId`, `name`, `size` | Sender announces an incoming file (used for both push-upload and get-response). |
 | `fs-end`         | `to`, `xferId`, `ok`, `error?` | |

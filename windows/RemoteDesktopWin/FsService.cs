@@ -191,6 +191,7 @@ public class FsService
             ["to"] = from,
             ["reqId"] = reqId,
             ["path"] = path,
+            ["downloadsPath"] = IncomingDir,
             ["entries"] = entries,
             ["error"] = error,
         });
