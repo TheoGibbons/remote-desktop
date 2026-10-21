@@ -7,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace RemoteDesktopWin;
 
@@ -274,6 +275,12 @@ public partial class FileExplorerWindow : Window
     private const uint WM_COPYDATA = 0x004A;
     private const int WM_DROPFILES = 0x0233;
     private const uint MSGFLT_ALLOW = 1;
+    private const int VK_LBUTTON = 0x01;
+    private const int VK_RBUTTON = 0x02;
+    private const uint GA_ROOT = 2;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
 
     [DllImport("ole32.dll")]
     private static extern int RevokeDragDrop(IntPtr hwnd);
@@ -290,6 +297,23 @@ public partial class FileExplorerWindow : Window
     [DllImport("shell32.dll")]
     private static extern void DragFinish(IntPtr hDrop);
 
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int key);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    private bool _heldOutside;
+
     private void AcceptElevatedFileDrops()
     {
         if (PresentationSource.FromVisual(this) is not HwndSource source) return;
@@ -299,12 +323,30 @@ public partial class FileExplorerWindow : Window
             ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, IntPtr.Zero);
         DragAcceptFiles(hwnd, true);
         source.AddHook(DropFilesHook);
+        var dragPoll = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+        dragPoll.Tick += (_, _) => ShowDropZoneWhileDragging(hwnd);
+        dragPoll.Start();
+        Closed += (_, _) => dragPoll.Stop();
+    }
+
+    // WM_DROPFILES brings no drag-over messages, only the drop itself, so the
+    // drop zone shows while a mouse button that went down outside this window
+    // is held over it. Moving or resizing this window can also carry a held
+    // button over it, but those leave this window in front.
+    private void ShowDropZoneWhileDragging(IntPtr hwnd)
+    {
+        var held = GetAsyncKeyState(VK_LBUTTON) < 0 || GetAsyncKeyState(VK_RBUTTON) < 0;
+        var over = GetCursorPos(out var point) && GetAncestor(WindowFromPoint(point), GA_ROOT) == hwnd;
+        _heldOutside = held && (_heldOutside || !over);
+        var dragging = _heldOutside && over && GetForegroundWindow() != hwnd;
+        DropOverlay.Visibility = dragging ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private IntPtr DropFilesHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg != WM_DROPFILES) return IntPtr.Zero;
         handled = true;
+        DropOverlay.Visibility = Visibility.Collapsed;
         var paths = new List<string>();
         try
         {
