@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 8-9 save received files by path; share them with viewer apps via FileProvider. -->
+<paths>
+    <external-path name="downloads" path="Download/" />
+</paths>

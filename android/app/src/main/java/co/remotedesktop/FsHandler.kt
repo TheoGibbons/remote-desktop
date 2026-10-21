@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -279,7 +280,7 @@ class FsHandler(private val context: Context) {
             return
         }
         try {
-            val saved = saveToDownloads(t.temp, t.name)
+            val (saved, uri) = saveToDownloads(t.temp, t.name)
             t.temp.delete()
             ConnectionManager.sendJson(
                 JSONObject().put("type", "fs-saved").put("to", msg.optString("from"))
@@ -287,15 +288,16 @@ class FsHandler(private val context: Context) {
             )
             status("Saved $saved")
             t.onDone?.invoke(saved)
-            ReceivedFileNotification.show(context, saved, xferId)
+            ReceivedFileNotification.show(context, saved, uri, xferId)
         } catch (e: Exception) {
             status("Save failed: ${e.message}")
             t.onError?.invoke(e.message ?: "save failed")
         }
     }
 
-    /** Copies a finished temp file into the public Downloads collection. */
-    private fun saveToDownloads(src: File, name: String): String {
+    /** Copies a finished temp file into the public Downloads collection.
+     *  @return the saved path and a content URI other apps can be granted to open it. */
+    private fun saveToDownloads(src: File, name: String): Pair<String, Uri> {
         if (Build.VERSION.SDK_INT >= 29) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
@@ -314,19 +316,19 @@ class FsHandler(private val context: Context) {
             )?.use { cursor ->
                 if (cursor.moveToFirst()) {
                     val path = cursor.getString(0)
-                    if (!path.isNullOrEmpty()) return path
+                    if (!path.isNullOrEmpty()) return path to uri
                 }
             }
             throw Exception("Cannot resolve saved file path")
         } else {
-            @Suppress("DEPRECATION")
-            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            // The same root as received_file_paths.xml, so FileProvider below always resolves it.
+            val dir = File(root, Environment.DIRECTORY_DOWNLOADS)
             dir.mkdirs()
             var dest = File(dir, name)
             var i = 1
             while (dest.exists()) dest = File(dir, "${name.substringBeforeLast('.')} (${i++}).${name.substringAfterLast('.', "bin")}")
             src.inputStream().use { ins -> FileOutputStream(dest).use { ins.copyTo(it) } }
-            return dest.path
+            return dest.path to FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", dest)
         }
     }
 }

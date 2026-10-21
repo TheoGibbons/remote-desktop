@@ -60,6 +60,26 @@
             </intent-filter>
         </activity>
 
+        <!-- Invisible hop from a received-file notification to the viewer or
+             file manager; its own empty affinity keeps the app's task in the background. -->
+        <activity
+            android:name=".ReceivedFileActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:exported="false" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:grantUriPermissions="true"
+            android:exported="false">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/received_file_paths" />
+        </provider>
+
         <activity
             android:name=".PermissionsActivity"
             android:exported="false" />
