@@ -32,6 +32,7 @@ import kotlin.math.roundToInt
  * capitalizes the next letter; double-tapping it locks uppercase typing, while
  * holding it works as a physical Shift modifier for every desktop key.
  * Printable keys use literal text unless a desktop modifier is held.
+ * Every key except the toggles repeats while held, like a physical keyboard.
  */
 @SuppressLint("ViewConstructor", "SetTextI18n")
 class KeyboardPanel(context: Context) : LinearLayout(context) {
@@ -215,7 +216,7 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         addView(buildNavigationRow())
         if (fnLayer) {
             for (start in listOf(1, 7)) addView(row(*(start until start + 6).map { i ->
-                key("F$i", textSp = 16f) { emitKeyPress("F$i") }
+                key("F$i", textSp = 16f, repeatOnHold = true) { emitKeyPress("F$i") }
             }.toTypedArray()))
         }
         if (symbols) buildSymbols() else buildLetters()
@@ -248,8 +249,9 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         icon: String? = null,
         resetsShiftTap: Boolean = true,
         repeatOnHold: Boolean = false,
+        pressOnTouchDown: Boolean = false,
         onTap: () -> Unit,
-    ): Button = KeyboardButton(context, icon, repeatOnHold) { heldTypingShift }.apply {
+    ): Button = KeyboardButton(context, icon, repeatOnHold) { pressOnTouchDown || heldTypingShift }.apply {
         text = if (icon == null) label else ""
         contentDescription = label
         isAllCaps = false
@@ -323,7 +325,7 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
 
     private fun control(label: String, code: String) =
         key(label, compact = true, special = true, textSp = 11f,
-            repeatOnHold = code == "DELETE") { emitKeyPress(code) }
+            repeatOnHold = true, pressOnTouchDown = true) { emitKeyPress(code) }
 
     private fun buildNavigationRow() = row(
         control("Del", "DELETE"), control("Home", "HOME"), control("End", "END"),
@@ -334,7 +336,7 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         control("▶", "RIGHT").apply { contentDescription = "Right arrow" },
     )
 
-    private fun printable(glyph: String) = key(glyph) { emitPrintable(glyph, glyph.uppercase()) }
+    private fun printable(glyph: String) = key(glyph, repeatOnHold = true) { emitPrintable(glyph, glyph.uppercase()) }
 
     private fun buildLetters() {
         fun letter(char: Char) = printable(if (uppercaseLetters) char.uppercase() else char.toString())
@@ -382,19 +384,19 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         ))
     }
 
-    private fun backspace() = key("Backspace", 1.5f, special = true, icon = "backspace", repeatOnHold = true) {
-        emitKeyPress("BACKSPACE")
-    }
+    private fun backspace() = key("Backspace", 1.5f, special = true, icon = "backspace",
+        repeatOnHold = true, pressOnTouchDown = true) { emitKeyPress("BACKSPACE") }
 
     private fun buildBottomRow() = row(
         key(if (symbols) "ABC" else "?123", 1.5f, special = true, pill = true, textSp = 16f) {
             symbols = !symbols; extraSymbols = false; buildAll()
         },
-        key(",", special = true) { emitPrintable(",", ",") },
+        key(",", special = true, repeatOnHold = true) { emitPrintable(",", ",") },
         key("Emoji and phone keyboard", icon = "emoji") { onOpenIme?.invoke() },
-        key("English", 4f, textSp = 14f) { emitPrintable(" ", "SPACE") }.apply { contentDescription = "Space" },
-        key(".", special = true) { emitPrintable(".", ".") },
-        key("Enter", 1.5f, special = true, pill = true, icon = "enter") { emitKeyPress("ENTER") },
+        key("English", 4f, textSp = 14f, repeatOnHold = true) { emitPrintable(" ", "SPACE") }
+            .apply { contentDescription = "Space" },
+        key(".", special = true, repeatOnHold = true) { emitPrintable(".", ".") },
+        key("Enter", 1.5f, special = true, pill = true, icon = "enter", repeatOnHold = true) { emitKeyPress("ENTER") },
     )
 
     private fun refreshModHighlights() {
@@ -417,7 +419,8 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
         } else glyph)
         if (letter && typingShift == TypingShift.ONCE) {
             typingShift = TypingShift.OFF
-            if (heldTypingShift) refreshTypingShift() else buildAll()
+            // Update in place: rebuilding would detach a held letter and stop its repeat.
+            refreshTypingShift()
         }
     }
 
@@ -456,20 +459,26 @@ private class KeyboardButton(
     private val keyIcon = icon?.let { KeyboardIcon(it, resources.displayMetrics.density) }
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var immediateTouch = false
+    private var customTouch = false
+    private var repeated = false
     private val repeatPress = object : Runnable {
         override fun run() {
             if (!isPressed || !isEnabled || !isShown) {
                 stopRepeating()
                 return
             }
+            repeated = true
             performClick()
             if (isPressed) postDelayed(this, 50L)
         }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN) immediateTouch = repeatOnHold || pressOnTouchDown()
-        if (!immediateTouch) return super.onTouchEvent(event)
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            immediateTouch = pressOnTouchDown()
+            customTouch = immediateTouch || repeatOnHold
+        }
+        if (!customTouch) return super.onTouchEvent(event)
         if (!isEnabled) {
             stopRepeating()
             return true
@@ -477,16 +486,23 @@ private class KeyboardButton(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 stopRepeating()
+                repeated = false
                 isPressed = true
                 drawableHotspotChanged(event.x, event.y)
-                performClick()
-                if (repeatOnHold && isPressed) postDelayed(repeatPress, 350L)
+                if (immediateTouch) performClick()
+                if (repeatOnHold && isPressed) postDelayed(repeatPress, 400L)
             }
             MotionEvent.ACTION_MOVE -> {
                 if (event.x < -touchSlop || event.x >= width + touchSlop ||
                     event.y < -touchSlop || event.y >= height + touchSlop) stopRepeating()
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> stopRepeating()
+            MotionEvent.ACTION_UP -> {
+                // Quick taps on typing keys fire on release, so sliding off a mistyped key cancels it.
+                val tap = isPressed && !immediateTouch && !repeated
+                stopRepeating()
+                if (tap) performClick()
+            }
+            MotionEvent.ACTION_CANCEL -> stopRepeating()
         }
         return true
     }

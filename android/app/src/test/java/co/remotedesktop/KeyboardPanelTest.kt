@@ -28,6 +28,9 @@ import java.time.Duration
 @Config(sdk = [35], qualifiers = "w411dp-h891dp-port-420dpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class KeyboardPanelTest {
+    private val TOUCH_DOWN_KEYS = listOf("Esc" to "ESC", "Tab" to "TAB", "Del" to "DELETE", "Backspace" to "BACKSPACE",
+        "Home" to "HOME", "End" to "END", "PgUp" to "PGUP", "PgDn" to "PGDN", "Left arrow" to "LEFT", "Up arrow" to "UP", "Down arrow" to "DOWN", "Right arrow" to "RIGHT")
+
     private fun buttons(view: View): List<Button> = when (view) {
         is Button -> listOf(view)
         is ViewGroup -> (0 until view.childCount).flatMap { buttons(view.getChildAt(it)) }
@@ -150,7 +153,7 @@ class KeyboardPanelTest {
         val backspace = panel.center("Backspace")
         touch(panel, MotionEvent.ACTION_DOWN, shift)
         touch(panel, MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT), shift, backspace)
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(450))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
         assertEquals(listOf("CTRL" to "down", "SHIFT" to "down") + List(4) { "BACKSPACE" to "press" }, keys)
         touch(panel, MotionEvent.ACTION_POINTER_UP or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT), shift, backspace)
         touch(panel, MotionEvent.ACTION_UP, shift)
@@ -231,12 +234,12 @@ class KeyboardPanelTest {
     }
 
     @Test
-    fun deletionKeysFireImmediatelyAndQuickTapsDoNotRepeatOnRelease() {
+    fun touchDownKeysFireImmediatelyAndQuickTapsDoNotRepeatOnRelease() {
         for (layer in listOf("letters", "symbols", "extraSymbols", "function")) {
             val panel = touchPanel(layer)
             val keys = mutableListOf<Pair<String, String>>()
             panel.onKey = { code, action -> keys.add(code to action) }
-            for ((label, code) in listOf("Del" to "DELETE", "Backspace" to "BACKSPACE")) {
+            for ((label, code) in TOUCH_DOWN_KEYS) {
                 keys.clear()
                 val point = panel.center(label)
                 touch(panel, MotionEvent.ACTION_DOWN, point)
@@ -252,14 +255,14 @@ class KeyboardPanelTest {
     }
 
     @Test
-    fun holdingDeletionKeysRepeatsQuicklyAfterADelayAndStopsOnRelease() {
-        for ((label, code) in listOf("Del" to "DELETE", "Backspace" to "BACKSPACE")) {
+    fun holdingTouchDownKeysRepeatsQuicklyAfterADelayAndStopsOnRelease() {
+        for ((label, code) in TOUCH_DOWN_KEYS) {
             val panel = touchPanel()
             val keys = mutableListOf<Pair<String, String>>()
             panel.onKey = { key, action -> keys.add(key to action) }
             val point = panel.center(label)
             touch(panel, MotionEvent.ACTION_DOWN, point)
-            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(300))
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(350))
             assertEquals(listOf(code to "press"), keys)
             shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(250))
             assertEquals(List(6) { code to "press" }, keys)
@@ -271,15 +274,15 @@ class KeyboardPanelTest {
     }
 
     @Test
-    fun deletionRepeatStopsOnCancellationMovingAwayRebuildHideAndDetach() {
-        for (label in listOf("Del", "Backspace")) {
+    fun keyRepeatStopsOnCancellationMovingAwayRebuildHideAndDetach() {
+        for ((label, _) in TOUCH_DOWN_KEYS) {
             for (stop in listOf("cancel", "move", "releaseAll", "layer", "hide", "detach")) {
                 val panel = touchPanel()
                 val keys = mutableListOf<Pair<String, String>>()
                 panel.onKey = { code, action -> keys.add(code to action) }
                 val point = panel.center(label)
                 touch(panel, MotionEvent.ACTION_DOWN, point)
-                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(450))
+                shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
                 val beforeStop = keys.toList()
                 when (stop) {
                     "cancel" -> touch(panel, MotionEvent.ACTION_CANCEL, point)
@@ -298,6 +301,67 @@ class KeyboardPanelTest {
     }
 
     @Test
+    fun typingKeysFireOnReleaseAndRepeatWhenHeld() {
+        for ((layer, label) in listOf("letters" to "w", "letters" to "Space", "letters" to ",", "letters" to ".",
+                "letters" to "Enter", "symbols" to "7", "function" to "F5")) {
+            val panel = touchPanel(layer)
+            val typed = mutableListOf<String>()
+            panel.onText = { typed.add(it) }
+            panel.onKey = { code, action -> typed.add("$code $action") }
+            val point = panel.center(label)
+            touch(panel, MotionEvent.ACTION_DOWN, point)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+            assertEquals(label, emptyList<String>(), typed)
+            touch(panel, MotionEvent.ACTION_UP, point)
+            assertEquals(label, 1, typed.size)
+            typed.clear()
+            touch(panel, MotionEvent.ACTION_DOWN, point)
+            touch(panel, MotionEvent.ACTION_MOVE, -100f to -100f)
+            touch(panel, MotionEvent.ACTION_UP, -100f to -100f)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertEquals(label, emptyList<String>(), typed)
+            touch(panel, MotionEvent.ACTION_DOWN, point)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(350))
+            assertEquals(label, emptyList<String>(), typed)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(250))
+            assertEquals(label, 5, typed.size)
+            touch(panel, MotionEvent.ACTION_UP, point)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertEquals(label, 5, typed.size)
+            assertEquals(label, 1, typed.distinct().size)
+            assertFalse(panel.button(label).isPressed)
+        }
+    }
+
+    @Test
+    fun holdingALetterAfterOneShotShiftRepeatsInLowercase() {
+        val panel = touchPanel()
+        val text = mutableListOf<String>()
+        panel.onText = { text.add(it) }
+        panel.tap("Shift")
+        panel.layoutKeys()
+        val point = panel.center("W")
+        touch(panel, MotionEvent.ACTION_DOWN, point)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
+        touch(panel, MotionEvent.ACTION_UP, point)
+        assertEquals(listOf("W", "w", "w"), text)
+        assertFalse(panel.button("Shift").isSelected)
+    }
+
+    @Test
+    fun togglesDoNotRepeatWhenHeld() {
+        val panel = touchPanel()
+        val keys = mutableListOf<Pair<String, String>>()
+        panel.onKey = { code, action -> keys.add(code to action) }
+        val ctrl = panel.center("Ctrl")
+        touch(panel, MotionEvent.ACTION_DOWN, ctrl)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+        touch(panel, MotionEvent.ACTION_UP, ctrl)
+        assertEquals(listOf("CTRL" to "down"), keys)
+        assertTrue(panel.button("Ctrl").isSelected)
+    }
+
+    @Test
     fun simultaneousDeletionHoldsStopIndependentlyAndRespectModifiers() {
         val panel = touchPanel()
         val keys = mutableListOf<Pair<String, String>>()
@@ -309,7 +373,7 @@ class KeyboardPanelTest {
         val backspace = panel.center("Backspace")
         touch(panel, MotionEvent.ACTION_DOWN, delete)
         touch(panel, MotionEvent.ACTION_POINTER_DOWN or (1 shl MotionEvent.ACTION_POINTER_INDEX_SHIFT), delete, backspace)
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(450))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(500))
         assertEquals(4, keys.count { it == "DELETE" to "press" })
         assertEquals(4, keys.count { it == "BACKSPACE" to "press" })
         touch(panel, MotionEvent.ACTION_POINTER_UP, delete, backspace)
