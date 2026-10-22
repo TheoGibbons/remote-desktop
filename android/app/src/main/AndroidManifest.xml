@@ -70,6 +70,23 @@
             android:noHistory="true"
             android:exported="false" />
 
+        <!-- "Copy to PC" in the text-selection menu of other apps. Invisible
+             unless it has to ask which PC, so it never pulls the app's task forward. -->
+        <activity
+            android:name=".CopyToPcActivity"
+            android:label="@string/copy_to_pc"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

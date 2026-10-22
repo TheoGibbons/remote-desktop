@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace RemoteDesktopWin;
 
@@ -28,6 +29,13 @@ public partial class PcViewWindow : Window
 {
     private readonly WsClient _ws;
     private readonly string _peerId;
+    private readonly string _name;
+
+    // The Copy button's request: only the latest answer counts, and a host too
+    // old to know clip-get never answers at all.
+    private string? _clipReq;
+    private int _clipCounter;
+    private readonly DispatcherTimer _clipTimeout = new() { Interval = TimeSpan.FromSeconds(10) };
 
     // Dirty-rect compositing state (mirrors ViewerActivity on Android).
     private WriteableBitmap? _compose;
@@ -50,10 +58,20 @@ public partial class PcViewWindow : Window
         InitializeComponent();
         _ws = ws;
         _peerId = peerId;
+        _name = name;
         Title = "Remote: " + name;
+        _clipTimeout.Tick += (_, _) =>
+        {
+            EndCopy();
+            Toast.Show($"{_name} didn't answer. Update Remote Desktop on that PC to copy from it.");
+        };
 
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _peerId });
-        Closed += (_, _) => _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _peerId });
+        Closed += (_, _) =>
+        {
+            _clipTimeout.Stop();
+            _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _peerId });
+        };
         Loaded += (_, _) => { Focusable = true; Focus(); Keyboard.Focus(this); };
     }
 
@@ -327,5 +345,55 @@ public partial class PcViewWindow : Window
     {
         _ws.SendJson(new JsonObject { ["type"] = "cad", ["to"] = _peerId });
         Focus(); Keyboard.Focus(this);
+    }
+
+    // Ctrl+C in this window goes to the remote PC like any other key, which
+    // copies onto *its* clipboard. This button brings the selection here.
+    private void Copy_Click(object sender, RoutedEventArgs e)
+    {
+        _clipReq = (++_clipCounter).ToString();
+        _ws.SendJson(new JsonObject { ["type"] = "clip-get", ["to"] = _peerId, ["reqId"] = _clipReq });
+        CopyButton.IsEnabled = false;
+        _clipTimeout.Start();
+        Focus(); Keyboard.Focus(this);
+    }
+
+    private void EndCopy()
+    {
+        _clipReq = null;
+        _clipTimeout.Stop();
+        CopyButton.IsEnabled = true;
+    }
+
+    /// <summary>The remote PC's answer to Copy: put it on this PC's clipboard.</summary>
+    public void OnClipResult(JsonNode msg)
+    {
+        if (_clipReq == null || ClipboardService.Str(msg["reqId"]) != _clipReq) return;
+        EndCopy();
+        if (ClipboardService.Str(msg["error"]) is { } error)
+        {
+            Toast.Show(error);
+            return;
+        }
+        if (msg["files"] is JsonArray { Count: > 0 } files)
+        {
+            Toast.Show($"{_name} copied {files.Count} file{(files.Count == 1 ? "" : "s")}. Use Files to transfer them.");
+            return;
+        }
+        var (text, html, fitError) = ClipboardFormat.Fit(ClipboardService.Str(msg["text"]), ClipboardService.Str(msg["html"]));
+        if (fitError != null || string.IsNullOrEmpty(text))
+        {
+            Toast.Show(fitError ?? $"{_name} sent nothing to copy.");
+            return;
+        }
+        if (!ClipboardService.Write(text, html, out var writeError))
+        {
+            Toast.Show(writeError!);
+            return;
+        }
+        bool fresh = msg["fresh"] is not JsonValue flag || !flag.TryGetValue<bool>(out var value) || value;
+        Toast.Show(fresh
+            ? $"Copied from {_name}"
+            : $"Nothing was selected on {_name}, so this is what was already on its clipboard");
     }
 }

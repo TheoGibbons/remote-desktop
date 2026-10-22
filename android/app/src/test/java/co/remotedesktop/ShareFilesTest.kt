@@ -60,6 +60,22 @@ class ShareFilesTest {
     }
 
     @Test
+    fun onlyTextSharedOnItsOwnIsForThePcClipboard() {
+        fun text(type: String, extra: String) = Intent(Intent.ACTION_SEND).setType(type).putExtra(Intent.EXTRA_TEXT, extra)
+        // Browsers attach a preview image to a shared link as clipData; it's still a link.
+        val link = text("text/plain", "https://example.com/a").apply {
+            clipData = ClipData.newRawUri("preview", Uri.parse("content://browser/preview.png"))
+        }
+        assertEquals("https://example.com/a", SharedFiles.textFromIntent(link))
+        assertNull(SharedFiles.textFromIntent(text("text/plain", "  ")))
+        assertNull(SharedFiles.textFromIntent(text("image/jpeg", "caption")))
+        assertNull(SharedFiles.textFromIntent(text("text/plain", "notes")
+            .putExtra(Intent.EXTRA_STREAM, Uri.parse("content://files/notes.txt"))))
+        assertNull(SharedFiles.textFromIntent(Intent(Intent.ACTION_SEND_MULTIPLE).setType("text/plain")
+            .putExtra(Intent.EXTRA_TEXT, "many")))
+    }
+
+    @Test
     fun chosenDesktopRemainsFixedAndEachFileNeedsAccessAndSaveConfirmation() {
         assertFalse(model.canSend)
         model.select("b") // Same display name as "a", different device code.

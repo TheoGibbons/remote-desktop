@@ -161,7 +161,7 @@
                             <StackPanel>
                                 <TextBlock Text="View and control this computer" FontSize="13"
                                            Foreground="{StaticResource RdOnSurfaceBrush}"/>
-                                <TextBlock Text="Screen, mouse and keyboard" Style="{StaticResource RdCaption}" Margin="0,2,0,0"/>
+                                <TextBlock Text="Screen, mouse, keyboard and clipboard" Style="{StaticResource RdCaption}" Margin="0,2,0,0"/>
                             </StackPanel>
                             <CheckBox Grid.Column="1" x:Name="AllowStreamCheck" Style="{StaticResource RdSwitch}"
                                       Checked="Consent_Changed" Unchecked="Consent_Changed"/>

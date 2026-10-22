@@ -270,7 +270,16 @@ class FsHandler(private val context: Context) {
     private fun handleEnd(msg: JSONObject) {
         val xferId = msg.optInt("xferId")
         val ok = msg.optBoolean("ok")
-        val t = incoming.remove(xferId) ?: return
+        val t = incoming.remove(xferId) ?: run {
+            // A refused or missing file ends without fs-begin. Tell whoever asked
+            // for it, or its download waits forever.
+            if (!ok) pendingGets.remove(xferId)?.let { (_, onError) ->
+                val err = msg.optString("error", "unknown error")
+                status("Receive failed: $err")
+                onError(err)
+            }
+            return
+        }
         t.out.close()
         if (!ok) {
             t.temp.delete()

@@ -6,6 +6,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <Image x:Name="ScreenImage" Grid.Row="0" Stretch="Uniform"
@@ -17,5 +18,11 @@
             <Button Content="● Home" Padding="14,6" Margin="4,0" Click="Home_Click"/>
             <Button Content="■ Recents" Padding="14,6" Margin="4,0" Click="Recents_Click"/>
         </StackPanel>
+
+        <!-- The phone adds "Copy to PC" to its own text-selection menu; this is
+             the only way to discover it from here. -->
+        <TextBlock Grid.Row="2" Foreground="#999" FontSize="11" TextWrapping="Wrap" TextAlignment="Center"
+                   Margin="8,0,8,6"
+                   Text="To copy from the phone, select text there and choose Copy to PC (it may be under ⋮)."/>
     </Grid>
 </Window>

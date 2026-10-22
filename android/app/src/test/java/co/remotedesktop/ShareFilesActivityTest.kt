@@ -61,8 +61,21 @@ class ShareFilesActivityTest {
     }
 
     @Test
-    fun textOnlyShareShowsAnEmptyStateWithSendingDisabled() {
+    fun textOnlyShareGoesToThePcClipboard() {
         val intent = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "hello")
+        val controller = Robolectric.buildActivity(ShareFilesActivity::class.java, intent).setup()
+        try {
+            val activity = controller.get()
+            val next = shadowOf(activity).nextStartedActivity
+            assertEquals(CopyToPcActivity::class.java.name, next.component?.className)
+            assertEquals("hello", next.getStringExtra(Intent.EXTRA_PROCESS_TEXT))
+            assertTrue(activity.isFinishing)
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    @Test
+    fun shareWithNothingReadableShowsAnEmptyStateWithSendingDisabled() {
+        val intent = Intent(Intent.ACTION_SEND).setType("image/jpeg")
         val controller = Robolectric.buildActivity(ShareFilesActivity::class.java, intent).setup()
         try {
             val activity = controller.get()

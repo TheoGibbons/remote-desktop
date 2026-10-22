@@ -43,6 +43,9 @@ object PhoneScreenCapture {
         refresh()
     }
 
+    /** Whether this peer has asked to view this phone and not stopped since. */
+    fun isViewing(peerId: String): Boolean = viewers.contains(peerId)
+
     /** Clear requests on disconnect/revocation so a later session never resumes an old view. */
     fun onViewStopped(peerId: String? = null) {
         if (peerId == null) viewers.clear() else viewers.remove(peerId)

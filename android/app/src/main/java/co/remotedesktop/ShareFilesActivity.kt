@@ -32,6 +32,12 @@ class ShareFilesActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Text on its own goes to the PC's clipboard, the same as "Copy to PC".
+        if (savedInstanceState == null) SharedFiles.textFromIntent(intent)?.let { text ->
+            startActivity(Intent(this, CopyToPcActivity::class.java).putExtra(Intent.EXTRA_PROCESS_TEXT, text))
+            finish()
+            return
+        }
         title = "Send to desktop"
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         ConnectionManager.init(this)

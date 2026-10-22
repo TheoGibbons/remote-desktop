@@ -80,9 +80,9 @@ fingerprint, and:
   then `trusted` or `denied` once the user decides. Denials are remembered for
   the rest of the process so a hostile peer cannot spam prompts by reconnecting.
 
-**Enforcement.** Messages that view, control, or touch files (`start-view`,
-`request-keyframe`, `privacy-mode`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
-`touch`, `pinch`, `back`, `homebtn`, `recents`, `fs-*`) are dropped unless the
+**Enforcement.** Messages that view, control, or touch files or the clipboard
+(`start-view`, `request-keyframe`, `privacy-mode`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
+`touch`, `pinch`, `back`, `homebtn`, `recents`, `fs-*`, `clip-get`, `clip-set`) are dropped unless the
 sending peer is trusted. Because **binary frames are broadcast** and every key
 holder can decrypt them, a host additionally sends no video frames and serves
 no file transfers while *any* unapproved peer is present in the session (the
@@ -155,6 +155,21 @@ the viewer simply decodes the type-3 stream (below) and sends these.
 | `fs-begin`       | `to`, `xferId`, `name`, `size` | Sender announces an incoming file (used for both push-upload and get-response). |
 | `fs-end`         | `to`, `xferId`, `ok`, `error?` | |
 | `fs-saved`       | `to`, `xferId`, `path?`, `error?` | Receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Windows replies with `error` if saving fails or a known-size file is incomplete. Older peers may omit this reply; Android share-sheet sends wait for confirmation and show an unconfirmed result on timeout. |
+
+**Clipboard** (only a Windows host serves these; the phone sends them)
+
+| type              | fields | notes |
+|-------------------|--------|-------|
+| `clip-get`        | `to`, `reqId` | Copy the selection in the window in front and send back the clipboard. The host presses Ctrl+C, or Ctrl+Insert in a terminal (where Ctrl+C with nothing selected stops the running program), then waits up to 1.5 s for the clipboard to change. Needs remote-control consent. |
+| `clip-get-result` | `to`, `reqId`, `text?`, `html?`, `files?`, `folders?`, `fresh`, `sensitive?`, `error?` | `html` is the copied fragment of the clipboard's HTML version, when the source app offered one. `files` lists the absolute paths of copied files (for `fs-get`) when the clipboard holds files rather than text; copied folders are left out and counted in `folders`. `fresh: false` means the copy changed nothing (nothing was selected), so this is what was already on the clipboard. `sensitive: true` means the source asked to keep the copy out of clipboard history, as password managers do; Android then hides it from its copy preview. `error` is a human-readable reason, e.g. the window in front runs as administrator, the PC is locked, or the clipboard holds only an image. |
+| `clip-set`        | `to`, `reqId`, `text`, `html?`, `paste?` | Put this text on the receiver's clipboard. With `paste: true` the receiver also presses Ctrl+V (Shift+Insert in a terminal), which needs remote-control consent like any other input; without it, an approved peer is enough and Windows shows a toast saying what arrived. |
+| `clip-set-result` | `to`, `reqId`, `error?` | |
+
+`text` plus `html` is at most **200,000** UTF-16 code units. Android passes a
+clip to the system through Binder, whose buffer is about 1 MB, and a large
+control message holds up any input queued behind it. A sender drops `html`
+first and refuses text that is still too long; receivers apply the same rule.
+Older apps ignore these messages, so senders give up after about 10 seconds.
 
 ## Binary frames
 

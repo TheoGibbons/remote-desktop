@@ -13,6 +13,8 @@
 
         <DockPanel Grid.Row="0" Background="#1e1e1e" LastChildFill="False">
             <Button Content="Ctrl+Alt+Del" DockPanel.Dock="Left" Margin="6,4" Padding="10,4" Click="Cad_Click"/>
+            <Button x:Name="CopyButton" Content="Copy to this PC" DockPanel.Dock="Left" Margin="0,4,6,4" Padding="10,4"
+                    Click="Copy_Click" ToolTip="Copy what's selected on the remote PC onto this PC's clipboard"/>
             <TextBlock x:Name="HintText" DockPanel.Dock="Left" Foreground="#aaa"
                        VerticalAlignment="Center" Margin="8,0"
                        Text="Your keyboard and mouse control the remote PC while this window is focused."/>

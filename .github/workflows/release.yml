@@ -65,7 +65,7 @@ jobs:
           [IO.File]::WriteAllBytes($keystorePath, [Convert]::FromBase64String($env:ANDROID_KEYSTORE_BASE64))
           "ANDROID_KEYSTORE_FILE=$keystorePath" >> $env:GITHUB_ENV
 
-      - name: Validate Windows capture, privacy and file transfers
+      - name: Validate Windows capture, privacy, file transfers and clipboard
         shell: pwsh
         run: |
           dotnet run --project windows/RemoteDesktopWin.Tests --configuration Release
@@ -74,6 +74,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows privacy checks failed.' }
           dotnet run --project windows/RemoteDesktopWin.FileTransferTests --configuration Release
           if ($LASTEXITCODE -ne 0) { throw 'Windows file-transfer checks failed.' }
+          dotnet run --project windows/RemoteDesktopWin.ClipboardTests --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw 'Windows clipboard checks failed.' }
 
       - name: Build Windows app
         shell: pwsh

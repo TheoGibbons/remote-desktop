@@ -13,6 +13,7 @@ public partial class MainWindow : Window
     private readonly WsClient _ws = new();
     private readonly ScreenStreamer _streamer;
     private readonly FsService _fs;
+    private readonly ClipboardService _clip;
     private readonly PeerAuth _auth;
     private readonly PrivacyOverlayManager _privacy;
     private readonly HashSet<string> _autoUnprivacyViewers = new();
@@ -74,6 +75,7 @@ public partial class MainWindow : Window
             MaxWidth = _settings.MaxStreamWidth,
         };
         _fs = new FsService(_ws);
+        _clip = new ClipboardService(_ws.SendJson);
         _privacy = new PrivacyOverlayManager(Dispatcher);
         _privacy.Changed += error =>
         {
@@ -639,6 +641,25 @@ public partial class MainWindow : Window
             case "text":
                 if (controlAllowed)
                     InputInjector.TypeText(msg["text"]?.GetValue<string>() ?? "");
+                break;
+
+            case "clip-get":
+                // Copying presses keys in the window in front, so it needs the
+                // same consent as input. Unapproved peers get no answer at all.
+                if (!_auth.IsTrusted(from) || from == null) break;
+                if (controlAllowed) _ = _clip.HandleGetAsync(from, ClipboardService.Str(msg["reqId"]) ?? "");
+                else _clip.RefuseGet(from, ClipboardService.Str(msg["reqId"]));
+                break;
+
+            case "clip-set":
+                // Writing the clipboard needs an approved device; pasting also
+                // presses keys, which HandleSet checks against the control switch.
+                if (_auth.IsTrusted(from) && from != null)
+                    _clip.HandleSet(msg, from, PeerName(from), controlAllowed);
+                break;
+
+            case "clip-get-result":
+                if (_pcView != null && _pcView.PeerId == from) _pcView.OnClipResult(msg);
                 break;
 
             case "screen-info":

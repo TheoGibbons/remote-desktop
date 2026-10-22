@@ -163,6 +163,16 @@ public static class InputInjector
     }
 
     /// <summary>
+    /// Presses a shortcut such as CTRL+C in one SendInput call, so no other
+    /// input lands between its four events. Names are the ones <see cref="KeyEvent"/> takes.
+    /// </summary>
+    public static void Shortcut(string modifier, string key)
+    {
+        ushort mod = VkMap[modifier], vk = VkMap[key];
+        Send(Key(mod, false), Key(vk, false), Key(vk, true), Key(mod, true));
+    }
+
+    /// <summary>
     /// Best-effort Ctrl+Alt+Del. Injecting the real secure attention sequence
     /// is blocked by Windows for normal apps; SendSAS works only when allowed
     /// by policy, so fall back to opening Task Manager (the most common reason

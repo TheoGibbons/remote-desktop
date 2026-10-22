@@ -12,6 +12,7 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -40,6 +41,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
 import java.util.Locale
+import java.util.UUID
 
 /**
  * Full-screen viewer for controlling the paired Windows desktop. Renders the
@@ -73,6 +75,22 @@ class ViewerActivity : AppCompatActivity() {
     }
     private val stateListener: (String) -> Unit = { state ->
         if (state != "connected") resetPrivacy()
+    }
+    private lateinit var copyButton: Button
+    private lateinit var pasteButton: Button
+    // Clipboard requests awaiting the PC's reply. A reply to any other id is stale.
+    private var pendingCopyReq: String? = null
+    private var pendingPasteReq: String? = null
+    private val clipboardHandler = Handler(Looper.getMainLooper())
+    private val copyTimeout = Runnable {
+        pendingCopyReq = null
+        copyButton.isEnabled = true
+        Toast.makeText(this, R.string.clip_no_reply, Toast.LENGTH_LONG).show()
+    }
+    private val pasteTimeout = Runnable {
+        pendingPasteReq = null
+        pasteButton.isEnabled = true
+        Toast.makeText(this, R.string.clip_no_reply, Toast.LENGTH_LONG).show()
     }
     private var imePrev = ""
     private var imeGuard = false
@@ -538,6 +556,19 @@ class ViewerActivity : AppCompatActivity() {
             pendingPingNonce = -1L
             pingTimedOut = false
         }
+        if (msg.optString("type") == "clip-get-result" && msg.optString("from") == winId &&
+            pendingCopyReq != null && msg.optString("reqId") == pendingCopyReq
+        ) {
+            onCopyResult(msg)
+        }
+        if (msg.optString("type") == "clip-set-result" && msg.optString("from") == winId &&
+            pendingPasteReq != null && msg.optString("reqId") == pendingPasteReq
+        ) {
+            pendingPasteReq = null
+            clipboardHandler.removeCallbacks(pasteTimeout)
+            pasteButton.isEnabled = true
+            PcClipboard.errorOf(msg)?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+        }
     }
 
     @SuppressLint("SetTextI18n")
@@ -698,6 +729,16 @@ class ViewerActivity : AppCompatActivity() {
                     keyboard.releaseAll(); View.GONE
                 } else View.VISIBLE
                 keyboard.post { updateBottomOcclusion() }
+            }
+            copyButton = addToolbarButton(getString(R.string.copy_from_pc)) { copyFromPc() }.apply {
+                contentDescription = getString(R.string.copy_from_pc_description)
+                tooltipText = contentDescription
+                textSize = 12f
+            }
+            pasteButton = addToolbarButton(getString(R.string.paste_to_pc)) { pasteToPc() }.apply {
+                contentDescription = getString(R.string.paste_to_pc_description)
+                tooltipText = contentDescription
+                textSize = 12f
             }
             addToolbarButton("↻") { rotateScreen() }.apply {
                 contentDescription = getString(R.string.rotate_screen)
@@ -1147,6 +1188,136 @@ class ViewerActivity : AppCompatActivity() {
         } else privacyButtonDefaultTextColors)
     }
 
+    /** Asks the PC to copy its selection. The reply goes on this phone's clipboard. */
+    private fun copyFromPc() {
+        // A latched Ctrl, Alt or Win is held down on the PC and would turn its
+        // Ctrl+C into a different shortcut.
+        keyboard.releaseAll()
+        val reqId = UUID.randomUUID().toString()
+        pendingCopyReq = reqId
+        copyButton.isEnabled = false
+        send(JSONObject().put("type", "clip-get").put("reqId", reqId))
+        clipboardHandler.removeCallbacks(copyTimeout)
+        clipboardHandler.postDelayed(copyTimeout, PcClipboard.REPLY_TIMEOUT_MS)
+    }
+
+    /** Sends this phone's clipboard to the PC, which pastes it where its focus is. */
+    private fun pasteToPc() {
+        val (text, html) = PcClipboard.read(this) ?: run {
+            Toast.makeText(this, R.string.clip_nothing_to_paste, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val (fitText, fitHtml) = PcClipboard.fit(text, html) ?: run {
+            Toast.makeText(this, getString(R.string.clip_too_large, text.length, PcClipboard.MAX_CHARS),
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        keyboard.releaseAll() // Ctrl+V needs to arrive as Ctrl+V, as with Copy.
+        val reqId = UUID.randomUUID().toString()
+        pendingPasteReq = reqId
+        pasteButton.isEnabled = false
+        send(JSONObject().put("type", "clip-set").put("reqId", reqId).put("text", fitText)
+            .put("html", fitHtml).put("paste", true))
+        clipboardHandler.removeCallbacks(pasteTimeout)
+        clipboardHandler.postDelayed(pasteTimeout, PcClipboard.REPLY_TIMEOUT_MS)
+    }
+
+    private fun onCopyResult(msg: JSONObject) {
+        pendingCopyReq = null
+        clipboardHandler.removeCallbacks(copyTimeout)
+        copyButton.isEnabled = true
+        PcClipboard.errorOf(msg)?.let {
+            Toast.makeText(this, it, Toast.LENGTH_LONG).show()
+            return
+        }
+        val files = msg.optJSONArray("files")?.let { paths ->
+            (0 until paths.length()).mapNotNull { paths.optString(it).takeIf(String::isNotEmpty) }
+        }.orEmpty()
+        if (files.isNotEmpty()) {
+            offerClipboardFiles(files, msg.optInt("folders"))
+            return
+        }
+        val text = PcClipboard.stringOf(msg, "text")
+        if (text == null) {
+            Toast.makeText(this, if (msg.optInt("folders") > 0) R.string.clip_only_folders else R.string.clip_no_text,
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        val (fitText, fitHtml) = PcClipboard.fit(text, PcClipboard.stringOf(msg, "html")) ?: run {
+            Toast.makeText(this, getString(R.string.clip_too_large, text.length, PcClipboard.MAX_CHARS),
+                Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!PcClipboard.put(this, fitText, fitHtml, msg.optBoolean("sensitive"))) {
+            Toast.makeText(this, R.string.clip_put_failed, Toast.LENGTH_LONG).show()
+            return
+        }
+        // Android 13 confirms a copy itself, so only an older phone needs telling
+        // that it worked. Falling back to an old clipboard is worth saying on any.
+        if (!msg.optBoolean("fresh", true)) {
+            Toast.makeText(this, R.string.clip_copied_existing, Toast.LENGTH_LONG).show()
+        } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+            Toast.makeText(this, getString(R.string.clip_copied_from_pc, pcName()), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Files can't go on Android's clipboard, but their paths are enough to
+     *  download them the way the file browser does. */
+    private fun offerClipboardFiles(paths: List<String>, folders: Int) {
+        val names = paths.map { it.substringAfterLast('\\').substringAfterLast('/') }
+        val message = buildString {
+            append(resources.getQuantityString(R.plurals.clip_files_offer, paths.size, paths.size))
+            append("\n\n").append(names.take(MAX_LISTED_FILES).joinToString("\n"))
+            if (names.size > MAX_LISTED_FILES) append("\n…")
+            if (folders > 0) append("\n\n").append(getString(R.string.clip_folders_skipped))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.clip_files_title)
+            .setMessage(message)
+            .setPositiveButton(R.string.clip_files_save) { _, _ -> downloadClipboardFiles(paths, names) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    /** One at a time, like the share sheet's uploads: the next file is asked for
+     *  once the previous one has saved or failed. */
+    private fun downloadClipboardFiles(paths: List<String>, names: List<String>) {
+        val pc = winId ?: return
+        val app = applicationContext
+        val main = Handler(Looper.getMainLooper())
+        var saved = 0
+        var firstFailure: String? = null
+        fun next(index: Int) {
+            if (index == paths.size) {
+                val summary = firstFailure?.let { app.getString(R.string.clip_files_partly_saved, saved, paths.size, it) }
+                    ?: app.resources.getQuantityString(R.plurals.clip_files_saved, saved, saved)
+                Toast.makeText(app, summary, Toast.LENGTH_LONG).show()
+                return
+            }
+            val xferId = ConnectionManager.fs.nextXferId()
+            // FsHandler calls back on the network thread.
+            ConnectionManager.fs.expectDownload(xferId,
+                { main.post { saved++; next(index + 1) } },
+                { error -> main.post { if (firstFailure == null) firstFailure = "${names[index]}: $error"; next(index + 1) } })
+            ConnectionManager.sendJson(JSONObject().put("type", "fs-get").put("to", pc)
+                .put("path", paths[index]).put("xferId", xferId))
+        }
+        Toast.makeText(app, app.resources.getQuantityString(R.plurals.clip_files_saving, paths.size, paths.size),
+            Toast.LENGTH_SHORT).show()
+        next(0)
+    }
+
+    private fun pcName(): String = ConnectionManager.peers.firstOrNull { it.id == winId }?.name ?: "the PC"
+
+    private fun resetClipboardRequests() {
+        pendingCopyReq = null
+        pendingPasteReq = null
+        clipboardHandler.removeCallbacks(copyTimeout)
+        clipboardHandler.removeCallbacks(pasteTimeout)
+        if (::copyButton.isInitialized) copyButton.isEnabled = true
+        if (::pasteButton.isInitialized) pasteButton.isEnabled = true
+    }
+
     override fun onResume() {
         super.onResume()
         viewerResumed = true
@@ -1166,6 +1337,8 @@ class ViewerActivity : AppCompatActivity() {
         ConnectionManager.jsonListeners.remove(jsonListener)
         ConnectionManager.stateListeners.remove(stateListener)
         resetPrivacy()
+        // The reply listener is gone until resume, so nothing would ever answer these.
+        resetClipboardRequests()
         if (::keyboard.isInitialized) keyboard.releaseAll()
         if (::screen.isInitialized) {
             screen.releaseInput()
@@ -1225,5 +1398,6 @@ class ViewerActivity : AppCompatActivity() {
         const val STATS_REFRESH_MS = 1_000L
         const val PING_INTERVAL_MS = 2_000L
         const val PING_TIMEOUT_MS = 5_000L
+        const val MAX_LISTED_FILES = 5
     }
 }

@@ -31,4 +31,39 @@
     <string name="privacy_no_reply">No privacy response from the desktop. Checking status…</string>
     <string name="rotate_screen">Rotate screen between portrait and landscape</string>
     <string name="highlight_dirty_rectangles">Highlight updated rectangles in red</string>
+    <string name="copy_from_pc">Copy</string>
+    <string name="copy_from_pc_description">Copy the PC\'s selection to this phone</string>
+    <string name="paste_to_pc">Paste</string>
+    <string name="paste_to_pc_description">Paste this phone\'s clipboard into the PC</string>
+    <string name="clip_no_reply">The PC didn\'t answer. If this keeps happening, update Remote Desktop on the PC.</string>
+    <string name="clip_copied_from_pc">Copied from %1$s</string>
+    <string name="clip_copied_existing">Nothing was selected on the PC, so this is what was already on its clipboard</string>
+    <string name="clip_no_text">The PC\'s clipboard has no text to copy</string>
+    <string name="clip_nothing_to_paste">This phone\'s clipboard has no text to paste</string>
+    <string name="clip_too_large">Too much text for the clipboard: %1$,d characters, and the limit is %2$,d</string>
+    <string name="clip_put_failed">Android couldn\'t put that on this phone\'s clipboard</string>
+    <string name="clip_only_folders">The PC copied only folders, which can\'t be saved this way. Use Files instead.</string>
+    <string name="clip_files_title">Save files from the PC?</string>
+    <plurals name="clip_files_offer">
+        <item quantity="one">The PC copied a file. Save it to this phone\'s Downloads?</item>
+        <item quantity="other">The PC copied %d files. Save them to this phone\'s Downloads?</item>
+    </plurals>
+    <string name="clip_folders_skipped">Folders are skipped.</string>
+    <string name="clip_files_save">Save</string>
+    <plurals name="clip_files_saving">
+        <item quantity="one">Saving the file to Downloads…</item>
+        <item quantity="other">Saving %d files to Downloads…</item>
+    </plurals>
+    <plurals name="clip_files_saved">
+        <item quantity="one">Saved the file to Downloads</item>
+        <item quantity="other">Saved %d files to Downloads</item>
+    </plurals>
+    <string name="clip_files_partly_saved">Saved %1$d of %2$d files. %3$s</string>
+    <string name="copy_to_pc">Copy to PC</string>
+    <string name="copy_to_pc_done">Copied to %1$s</string>
+    <string name="copy_to_pc_no_reply">%1$s didn\'t answer. If this keeps happening, update Remote Desktop on the PC.</string>
+    <string name="copy_to_pc_choose">Copy to which PC?</string>
+    <string name="copy_to_pc_connecting">Connecting to your PC…</string>
+    <string name="copy_to_pc_unreachable">Couldn\'t reach your PC. Check that it\'s on and Remote Desktop is running.</string>
+    <string name="copy_to_pc_not_set_up">Set up Remote Desktop on this phone first</string>
 </resources>

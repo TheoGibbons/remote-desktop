@@ -24,4 +24,17 @@ object SharedFiles {
             emptyList()
         }
     }
+
+    /** Text shared on its own, such as a link, goes to the PC's clipboard rather
+     *  than its Downloads. A share that attaches a file stays a file share, and
+     *  clipData is ignored: for a link it is often just a preview image. */
+    fun textFromIntent(intent: Intent): String? {
+        if (intent.action != Intent.ACTION_SEND || intent.type?.startsWith("text/") != true) return null
+        return try {
+            if (IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java) != null) null
+            else intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.takeIf { it.isNotBlank() }
+        } catch (_: RuntimeException) {
+            null
+        }
+    }
 }

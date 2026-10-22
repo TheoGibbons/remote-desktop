@@ -53,6 +53,28 @@ save confirmations, duplicate names, incomplete and cancelled transfers,
 unknown sizes, empty files and save failures. These checks use temporary files
 and a transport double, without connecting to a relay.
 
+Run `dotnet run --project windows/RemoteDesktopWin.ClipboardTests` for the
+clipboard's HTML envelope (including non-ASCII offsets), its size limit and the
+terminal shortcuts. They never touch the real clipboard or press keys.
+
+## Clipboard
+
+When a phone taps **Copy**, this app presses Ctrl+C in the window in front, waits
+for the clipboard to change, and sends back the text along with its HTML version
+when the app offered one. In console windows, Windows Terminal, mintty and ConEmu
+it presses Ctrl+Insert instead, because Ctrl+C with nothing selected would stop
+the running program; PuTTY already copies on select, so nothing is pressed there.
+If nothing was selected, the phone gets what was already on the clipboard and is
+told so. Copied files arrive as paths the phone can download.
+
+A phone's **Paste** puts its text on this clipboard and presses Ctrl+V (Shift+Insert
+in terminals). Text sent with **Copy to PC** only lands on the clipboard, with a
+toast. Copying and pasting press keys, so they need **View and control this
+computer**; like any injected input they can't reach a window running as
+administrator unless this app runs elevated too, and the phone is told which of
+those it hit. The PC viewer's **Copy to this PC** button asks another PC for its
+selection the same way.
+
 ## Privacy mode
 
 While viewing from Android, tap **Privacy** to cover each physical Windows

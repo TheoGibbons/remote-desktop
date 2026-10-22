@@ -108,6 +108,30 @@ internal static class PrivacyLifecycleTests
             Invoke(host, "OnState", "disconnected: network lost");
             ExpectPrivate("unapproved peer tries to register auto un-privacy");
             Console.WriteLine("PASS: opted-in viewers restore privacy on close, disconnect, revocation and relay loss");
+
+            // Clipboard requests follow the input rules: no answer at all for
+            // unapproved peers, and copying or pasting needs the control switch.
+            // Only refusals run here; a real copy would press keys on this desktop.
+            var sent = new List<JsonObject>();
+            typeof(MainWindow).GetField("_clip", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(host, new ClipboardService(sent.Add));
+            Invoke(host, "OnJson", new JsonObject { ["type"] = "clip-get", ["from"] = "unapproved", ["reqId"] = "1" });
+            Invoke(host, "OnJson", new JsonObject { ["type"] = "clip-set", ["from"] = "unapproved", ["reqId"] = "2", ["text"] = "x" });
+            if (sent.Count != 0) throw new Exception("An unapproved peer got a clipboard answer");
+            // Keep the switch below out of the saved settings.
+            typeof(MainWindow).GetField("_settingsInitialized", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(host, false);
+            host.AllowStreamCheck.IsChecked = false;
+            trusted.Add(peer);
+            Invoke(host, "OnJson", new JsonObject { ["type"] = "clip-get", ["from"] = peer, ["reqId"] = "3" });
+            Invoke(host, "OnJson", new JsonObject
+                { ["type"] = "clip-set", ["from"] = peer, ["reqId"] = "4", ["text"] = "x", ["paste"] = true });
+            if (sent.Count != 2 ||
+                sent[0]["type"]?.GetValue<string>() != "clip-get-result" || sent[0]["reqId"]?.GetValue<string>() != "3" ||
+                sent[1]["type"]?.GetValue<string>() != "clip-set-result" || sent[1]["reqId"]?.GetValue<string>() != "4" ||
+                sent.Any(m => m["error"]?.GetValue<string>() != ClipboardService.ControlOffError))
+                throw new Exception("Clipboard requests went through with remote control turned off");
+            Console.WriteLine("PASS: clipboard requests need an approved peer, and copying or pasting needs the control switch");
         }
         finally
         {
