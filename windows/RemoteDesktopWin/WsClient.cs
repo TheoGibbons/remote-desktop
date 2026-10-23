@@ -1,6 +1,7 @@
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 
@@ -416,11 +417,20 @@ public class WsClient : IDisposable
     private void EnqueueText(JsonObject obj)
         => EnqueueReliable(new OutFrame(Encoding.UTF8.GetBytes(obj.ToJsonString()), Lane.Control));
 
+    // The default encoder escapes everything outside ASCII, and < > & ' too:
+    // six bytes a character, which a clipboard of Chinese text or HTML pays on
+    // nearly every character. The payload is encrypted and only ever parsed as
+    // JSON by the other app, so plain UTF-8 is safe here.
+    private static readonly JsonSerializerOptions PayloadJson = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     /// <summary>Queue a JSON message, encrypted end-to-end. Ordered against
     /// other control messages and file chunks; overtakes queued video.</summary>
     public void SendJson(JsonObject obj)
     {
-        var blob = Crypto.Encrypt(_encKey, Encoding.UTF8.GetBytes(obj.ToJsonString()), Crypto.ChJson);
+        var blob = Crypto.Encrypt(_encKey, Encoding.UTF8.GetBytes(obj.ToJsonString(PayloadJson)), Crypto.ChJson);
         var env = new JsonObject { ["type"] = "enc", ["d"] = Convert.ToBase64String(blob) };
         var to = obj["to"]?.GetValue<string>();
         if (to != null) env["to"] = to; // lift routing target into the cleartext envelope

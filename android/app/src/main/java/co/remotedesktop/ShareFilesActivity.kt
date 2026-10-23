@@ -10,6 +10,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.ViewModelProvider
@@ -34,7 +35,10 @@ class ShareFilesActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         // Text on its own goes to the PC's clipboard, the same as "Copy to PC".
         if (savedInstanceState == null) SharedFiles.textFromIntent(intent)?.let { text ->
-            startActivity(Intent(this, CopyToPcActivity::class.java).putExtra(Intent.EXTRA_PROCESS_TEXT, text))
+            // Refused here: passing it on would put the whole of it through Binder again.
+            if (PcClipboard.fit(text, null) == null) Toast.makeText(this,
+                getString(R.string.clip_too_large, text.length, PcClipboard.MAX_CHARS), Toast.LENGTH_LONG).show()
+            else startActivity(Intent(this, CopyToPcActivity::class.java).putExtra(Intent.EXTRA_PROCESS_TEXT, text))
             finish()
             return
         }

@@ -74,22 +74,24 @@ class ViewerActivity : AppCompatActivity() {
         Toast.makeText(this, R.string.privacy_no_reply, Toast.LENGTH_SHORT).show()
     }
     private val stateListener: (String) -> Unit = { state ->
-        if (state != "connected") resetPrivacy()
+        if (state != "connected") {
+            resetPrivacy()
+            // The answer can no longer arrive; say so now rather than at the timeout.
+            if (pendingCopyReq != null || pendingPasteReq != null) {
+                endClipboardRequest()
+                Toast.makeText(this, R.string.clip_connection_lost, Toast.LENGTH_LONG).show()
+            }
+        }
     }
     private lateinit var copyButton: Button
     private lateinit var pasteButton: Button
-    // Clipboard requests awaiting the PC's reply. A reply to any other id is stale.
+    // The Copy or Paste request awaiting the PC's reply. There is only ever one,
+    // so the PC never handles both at once, and a reply to any other id is stale.
     private var pendingCopyReq: String? = null
     private var pendingPasteReq: String? = null
     private val clipboardHandler = Handler(Looper.getMainLooper())
-    private val copyTimeout = Runnable {
-        pendingCopyReq = null
-        copyButton.isEnabled = true
-        Toast.makeText(this, R.string.clip_no_reply, Toast.LENGTH_LONG).show()
-    }
-    private val pasteTimeout = Runnable {
-        pendingPasteReq = null
-        pasteButton.isEnabled = true
+    private val clipboardTimeout = Runnable {
+        endClipboardRequest()
         Toast.makeText(this, R.string.clip_no_reply, Toast.LENGTH_LONG).show()
     }
     private var imePrev = ""
@@ -564,9 +566,7 @@ class ViewerActivity : AppCompatActivity() {
         if (msg.optString("type") == "clip-set-result" && msg.optString("from") == winId &&
             pendingPasteReq != null && msg.optString("reqId") == pendingPasteReq
         ) {
-            pendingPasteReq = null
-            clipboardHandler.removeCallbacks(pasteTimeout)
-            pasteButton.isEnabled = true
+            endClipboardRequest()
             PcClipboard.errorOf(msg)?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
         }
     }
@@ -717,8 +717,10 @@ class ViewerActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#88000000"))
             fun addToolbarButton(label: String, onClick: () -> Unit): Button {
                 val button = tb(label, onClick)
+                // Each label gets its own width and the spare room is shared,
+                // so a portrait phone doesn't cut off "Privacy" or "Show PC".
                 addView(button, LinearLayout.LayoutParams(
-                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
                     (36 * density).toInt(),
                     1f,
                 ))
@@ -733,6 +735,9 @@ class ViewerActivity : AppCompatActivity() {
             copyButton = addToolbarButton(getString(R.string.copy_from_pc)) { copyFromPc() }.apply {
                 contentDescription = getString(R.string.copy_from_pc_description)
                 tooltipText = contentDescription
+                // Held down: the PC's clipboard as it is, for something already
+                // copied there, such as with Copy link address.
+                setOnLongClickListener { copyFromPc(press = false); true }
                 textSize = 12f
             }
             pasteButton = addToolbarButton(getString(R.string.paste_to_pc)) { pasteToPc() }.apply {
@@ -806,7 +811,7 @@ class ViewerActivity : AppCompatActivity() {
 
     private fun showGestureHelp() {
         AlertDialog.Builder(this)
-            .setTitle("Mouse gestures")
+            .setTitle("Gestures and buttons")
             .setMessage(
                 """
                 Move pointer — drag with one finger
@@ -817,6 +822,10 @@ class ViewerActivity : AppCompatActivity() {
                 Pan — drag with two fingers
                 Zoom — pinch with two fingers
                 Mouse wheel — drag up or down with three fingers
+
+                Copy — copies what's selected on the PC to this phone
+                Copy, held down — takes the PC's clipboard as it is
+                Paste — pastes this phone's clipboard on the PC
                 """.trimIndent()
             )
             .setPositiveButton("OK", null)
@@ -1188,44 +1197,69 @@ class ViewerActivity : AppCompatActivity() {
         } else privacyButtonDefaultTextColors)
     }
 
-    /** Asks the PC to copy its selection. The reply goes on this phone's clipboard. */
-    private fun copyFromPc() {
-        // A latched Ctrl, Alt or Win is held down on the PC and would turn its
-        // Ctrl+C into a different shortcut.
-        keyboard.releaseAll()
+    /**
+     * Clipboard requests go only to a PC both ends have approved. The PC drops
+     * anything else without a reply, and this phone must not hand its
+     * clipboard to a device it hasn't approved.
+     */
+    private fun clipboardReady(): Boolean {
+        // One request at a time, even if a disabled button is clicked programmatically.
+        if (pendingCopyReq != null || pendingPasteReq != null) return false
+        val pc = winId
+        val problem = when {
+            pc == null || ConnectionManager.state != "connected" -> R.string.clip_not_connected
+            !PeerAuth.isTrusted(pc) -> R.string.clip_pc_not_approved
+            !PeerAuth.trustedBy(pc) -> R.string.clip_awaiting_approval
+            else -> return true
+        }
+        Toast.makeText(this, problem, Toast.LENGTH_LONG).show()
+        return false
+    }
+
+    /** Sends Copy's or Paste's request. Both buttons wait for its answer. */
+    private fun sendClipboardRequest(msg: JSONObject, copy: Boolean) {
         val reqId = UUID.randomUUID().toString()
-        pendingCopyReq = reqId
+        if (copy) pendingCopyReq = reqId else pendingPasteReq = reqId
         copyButton.isEnabled = false
-        send(JSONObject().put("type", "clip-get").put("reqId", reqId))
-        clipboardHandler.removeCallbacks(copyTimeout)
-        clipboardHandler.postDelayed(copyTimeout, PcClipboard.REPLY_TIMEOUT_MS)
+        pasteButton.isEnabled = false
+        send(msg.put("reqId", reqId))
+        clipboardHandler.removeCallbacks(clipboardTimeout)
+        clipboardHandler.postDelayed(clipboardTimeout, PcClipboard.REPLY_TIMEOUT_MS)
+    }
+
+    /** Asks the PC to copy its selection, or with [press] false to send its
+     *  clipboard as it is. The reply goes on this phone's clipboard. */
+    private fun copyFromPc(press: Boolean = true) {
+        if (!clipboardReady()) return
+        // A latched Ctrl, Alt or Win is held down on the PC and would turn its
+        // copy shortcut into a different one.
+        keyboard.releaseAll()
+        val msg = JSONObject().put("type", "clip-get")
+        if (!press) msg.put("press", false)
+        sendClipboardRequest(msg, copy = true)
     }
 
     /** Sends this phone's clipboard to the PC, which pastes it where its focus is. */
     private fun pasteToPc() {
-        val (text, html) = PcClipboard.read(this) ?: run {
+        if (!clipboardReady()) return
+        val clip = PcClipboard.read(this) ?: run {
             Toast.makeText(this, R.string.clip_nothing_to_paste, Toast.LENGTH_SHORT).show()
             return
         }
-        val (fitText, fitHtml) = PcClipboard.fit(text, html) ?: run {
-            Toast.makeText(this, getString(R.string.clip_too_large, text.length, PcClipboard.MAX_CHARS),
+        val (fitText, fitHtml) = PcClipboard.fit(clip.text, clip.html) ?: run {
+            Toast.makeText(this, getString(R.string.clip_too_large, clip.text.length, PcClipboard.MAX_CHARS),
                 Toast.LENGTH_LONG).show()
             return
         }
         keyboard.releaseAll() // Ctrl+V needs to arrive as Ctrl+V, as with Copy.
-        val reqId = UUID.randomUUID().toString()
-        pendingPasteReq = reqId
-        pasteButton.isEnabled = false
-        send(JSONObject().put("type", "clip-set").put("reqId", reqId).put("text", fitText)
-            .put("html", fitHtml).put("paste", true))
-        clipboardHandler.removeCallbacks(pasteTimeout)
-        clipboardHandler.postDelayed(pasteTimeout, PcClipboard.REPLY_TIMEOUT_MS)
+        val msg = JSONObject().put("type", "clip-set").put("text", fitText).put("html", fitHtml).put("paste", true)
+        // A password copied here stays out of Windows' clipboard history and cloud sync.
+        if (clip.sensitive) msg.put("sensitive", true)
+        sendClipboardRequest(msg, copy = false)
     }
 
     private fun onCopyResult(msg: JSONObject) {
-        pendingCopyReq = null
-        clipboardHandler.removeCallbacks(copyTimeout)
-        copyButton.isEnabled = true
+        endClipboardRequest()
         PcClipboard.errorOf(msg)?.let {
             Toast.makeText(this, it, Toast.LENGTH_LONG).show()
             return
@@ -1248,17 +1282,33 @@ class ViewerActivity : AppCompatActivity() {
                 Toast.LENGTH_LONG).show()
             return
         }
-        if (!PcClipboard.put(this, fitText, fitHtml, msg.optBoolean("sensitive"))) {
+        val sensitive = msg.optBoolean("sensitive")
+        if (msg.optBoolean("fresh", true)) putFromPc(fitText, fitHtml, sensitive)
+        else confirmExistingClipboard(fitText, fitHtml, sensitive)
+    }
+
+    private fun putFromPc(text: String, html: String?, sensitive: Boolean) {
+        if (!PcClipboard.put(this, text, html, sensitive)) {
             Toast.makeText(this, R.string.clip_put_failed, Toast.LENGTH_LONG).show()
             return
         }
-        // Android 13 confirms a copy itself, so only an older phone needs telling
-        // that it worked. Falling back to an old clipboard is worth saying on any.
-        if (!msg.optBoolean("fresh", true)) {
-            Toast.makeText(this, R.string.clip_copied_existing, Toast.LENGTH_LONG).show()
-        } else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+        // Android 13 confirms a copy itself, so only an older phone needs telling that it worked.
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
             Toast.makeText(this, getString(R.string.clip_copied_from_pc, pcName()), Toast.LENGTH_SHORT).show()
         }
+    }
+
+    /** The PC's clipboard didn't change, so what it sent was there before —
+     *  possibly something copied long ago, or an app took longer than the PC
+     *  waited. Show it before it replaces this phone's clipboard. */
+    private fun confirmExistingClipboard(text: String, html: String?, sensitive: Boolean) {
+        val shown = if (sensitive) getString(R.string.clip_existing_hidden) else PcClipboard.preview(text)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.clip_existing_title)
+            .setMessage(getString(R.string.clip_existing_message) + "\n\n" + shown)
+            .setPositiveButton(R.string.clip_use_it) { _, _ -> putFromPc(text, html, sensitive) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     /** Files can't go on Android's clipboard, but their paths are enough to
@@ -1280,25 +1330,29 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     /** One at a time, like the share sheet's uploads: the next file is asked for
-     *  once the previous one has saved or failed. */
+     *  once the previous one has saved. The first failure stops the rest, which
+     *  would mostly fail the same way (file access off, connection gone). */
     private fun downloadClipboardFiles(paths: List<String>, names: List<String>) {
         val pc = winId ?: return
         val app = applicationContext
         val main = Handler(Looper.getMainLooper())
         var saved = 0
-        var firstFailure: String? = null
+        fun summarize(failure: String?) {
+            val summary = failure?.let { app.getString(R.string.clip_files_partly_saved, saved, paths.size, it) }
+                ?: app.resources.getQuantityString(R.plurals.clip_files_saved, saved, saved)
+            Toast.makeText(app, summary, Toast.LENGTH_LONG).show()
+        }
         fun next(index: Int) {
             if (index == paths.size) {
-                val summary = firstFailure?.let { app.getString(R.string.clip_files_partly_saved, saved, paths.size, it) }
-                    ?: app.resources.getQuantityString(R.plurals.clip_files_saved, saved, saved)
-                Toast.makeText(app, summary, Toast.LENGTH_LONG).show()
+                summarize(null)
                 return
             }
             val xferId = ConnectionManager.fs.nextXferId()
             // FsHandler calls back on the network thread.
             ConnectionManager.fs.expectDownload(xferId,
                 { main.post { saved++; next(index + 1) } },
-                { error -> main.post { if (firstFailure == null) firstFailure = "${names[index]}: $error"; next(index + 1) } })
+                { error -> main.post { summarize("${names[index]}: $error") } },
+                from = pc)
             ConnectionManager.sendJson(JSONObject().put("type", "fs-get").put("to", pc)
                 .put("path", paths[index]).put("xferId", xferId))
         }
@@ -1309,11 +1363,10 @@ class ViewerActivity : AppCompatActivity() {
 
     private fun pcName(): String = ConnectionManager.peers.firstOrNull { it.id == winId }?.name ?: "the PC"
 
-    private fun resetClipboardRequests() {
+    private fun endClipboardRequest() {
         pendingCopyReq = null
         pendingPasteReq = null
-        clipboardHandler.removeCallbacks(copyTimeout)
-        clipboardHandler.removeCallbacks(pasteTimeout)
+        clipboardHandler.removeCallbacks(clipboardTimeout)
         if (::copyButton.isInitialized) copyButton.isEnabled = true
         if (::pasteButton.isInitialized) pasteButton.isEnabled = true
     }
@@ -1338,7 +1391,7 @@ class ViewerActivity : AppCompatActivity() {
         ConnectionManager.stateListeners.remove(stateListener)
         resetPrivacy()
         // The reply listener is gone until resume, so nothing would ever answer these.
-        resetClipboardRequests()
+        endClipboardRequest()
         if (::keyboard.isInitialized) keyboard.releaseAll()
         if (::screen.isInitialized) {
             screen.releaseInput()

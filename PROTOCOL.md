@@ -156,14 +156,30 @@ the viewer simply decodes the type-3 stream (below) and sends these.
 | `fs-end`         | `to`, `xferId`, `ok`, `error?` | |
 | `fs-saved`       | `to`, `xferId`, `path?`, `error?` | Receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Windows replies with `error` if saving fails or a known-size file is incomplete. Older peers may omit this reply; Android share-sheet sends wait for confirmation and show an unconfirmed result on timeout. |
 
-**Clipboard** (only a Windows host serves these; the phone sends them)
+**Clipboard** (only a Windows host serves these; a phone or another PC sends them)
 
 | type              | fields | notes |
 |-------------------|--------|-------|
-| `clip-get`        | `to`, `reqId` | Copy the selection in the window in front and send back the clipboard. The host presses Ctrl+C, or Ctrl+Insert in a terminal (where Ctrl+C with nothing selected stops the running program), then waits up to 1.5 s for the clipboard to change. Needs remote-control consent. |
-| `clip-get-result` | `to`, `reqId`, `text?`, `html?`, `files?`, `folders?`, `fresh`, `sensitive?`, `error?` | `html` is the copied fragment of the clipboard's HTML version, when the source app offered one. `files` lists the absolute paths of copied files (for `fs-get`) when the clipboard holds files rather than text; copied folders are left out and counted in `folders`. `fresh: false` means the copy changed nothing (nothing was selected), so this is what was already on the clipboard. `sensitive: true` means the source asked to keep the copy out of clipboard history, as password managers do; Android then hides it from its copy preview. `error` is a human-readable reason, e.g. the window in front runs as administrator, the PC is locked, or the clipboard holds only an image. |
-| `clip-set`        | `to`, `reqId`, `text`, `html?`, `paste?` | Put this text on the receiver's clipboard. With `paste: true` the receiver also presses Ctrl+V (Shift+Insert in a terminal), which needs remote-control consent like any other input; without it, an approved peer is enough and Windows shows a toast saying what arrived. |
+| `clip-get`        | `to`, `reqId`, `press?` | Copy the selection in the window in front and send back the clipboard. The host presses copy (see below), then waits up to 1.5 s for the clipboard to change. `press: false` skips the key and sends the clipboard as it is. |
+| `clip-get-result` | `to`, `reqId`, `text?`, `html?`, `files?`, `folders?`, `fresh`, `sensitive?`, `error?` | `html` is the copied fragment of the clipboard's HTML version, when the source app offered one. `files` lists the absolute paths of copied files (for `fs-get`) when the clipboard holds files rather than text: at most 100, only while the host's file access is on, folders left out and counted in `folders`. `fresh: false` means the copy changed nothing, so this is what was already on the clipboard; a viewer should ask before using it. `sensitive: true` means the source asked to keep the copy out of clipboard history, as password managers do; a host never sends such a copy with `fresh: false`, and Android hides it from its copy preview. `error` is a human-readable reason, e.g. the window in front runs as administrator, the PC is locked, or the clipboard holds only a picture. |
+| `clip-set`        | `to`, `reqId`, `text`, `html?`, `paste?`, `sensitive?` | Put this text on the receiver's clipboard, with Windows line breaks. With `paste: true` the receiver also presses paste (see below). `sensitive: true` keeps it out of Windows clipboard history and cloud sync. Without `paste`, Windows shows a toast saying what arrived. |
 | `clip-set-result` | `to`, `reqId`, `error?` | |
+
+Every clipboard request, including a plain `clip-set`, needs remote-control
+consent: it presses keys, or changes what the PC pastes next. A host answers
+one at a time, re-checks consent when each request's turn comes, and refuses
+while the PC is locked.
+
+Which keys a host presses depends on the window in front. Copy is
+**Ctrl+Insert**, which is copy in Office, browsers, Electron apps, VS Code, the
+JetBrains IDEs and terminals, and which never stops a running program the way
+Ctrl+C does in a terminal with nothing selected; an editor's integrated
+terminal can't be told apart from the editor by its window class. File
+Explorer and the desktop get Ctrl+C. A classic console window gets its own
+Edit > Copy and Edit > Paste commands (`WM_SYSCOMMAND` `0xFFF0` / `0xFFF1`),
+so no key reaches the program at all. PuTTY copies on select, so nothing is
+pressed and the result is never `fresh`. Paste is Shift+Insert in terminals and
+Ctrl+V elsewhere. Any other modifier already down is released first.
 
 `text` plus `html` is at most **200,000** UTF-16 code units. Android passes a
 clip to the system through Binder, whose buffer is about 1 MB, and a large

@@ -16,6 +16,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowToast
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35, 36], shadows = [ShadowSessionPeerAuth::class], instrumentedPackages = ["co.remotedesktop"])
@@ -69,6 +70,19 @@ class ShareFilesActivityTest {
             val next = shadowOf(activity).nextStartedActivity
             assertEquals(CopyToPcActivity::class.java.name, next.component?.className)
             assertEquals("hello", next.getStringExtra(Intent.EXTRA_PROCESS_TEXT))
+            assertTrue(activity.isFinishing)
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    @Test
+    fun tooMuchSharedTextIsRefusedBeforeItIsPassedOn() {
+        val text = "x".repeat(PcClipboard.MAX_CHARS + 1)
+        val intent = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+        val controller = Robolectric.buildActivity(ShareFilesActivity::class.java, intent).setup()
+        try {
+            val activity = controller.get()
+            assertNull(shadowOf(activity).nextStartedActivity)
+            assertTrue(ShadowToast.getTextOfLatestToast().startsWith("Too much text"))
             assertTrue(activity.isFinishing)
         } finally { controller.pause().stop().destroy() }
     }

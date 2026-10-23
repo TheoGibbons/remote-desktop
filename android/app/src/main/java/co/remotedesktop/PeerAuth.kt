@@ -74,6 +74,9 @@ object PeerAuth {
     private val outstandingNonce = HashMap<String, ByteArray>()
     private val peerFingerprint = HashMap<String, String>()       // verified peers
     private val trustedPeers = HashSet<String>()
+    // What each peer last said about this phone (auth-result). A peer drops
+    // this phone's requests until it has said "trusted".
+    private val resultFrom = HashMap<String, String>()
 
     /** True while every peer in the session is verified and approved. Gates
      *  broadcast sends (video frames) — any key holder can decrypt those. */
@@ -191,6 +194,7 @@ object PeerAuth {
         outstandingNonce.clear()
         peerFingerprint.clear()
         trustedPeers.clear()
+        resultFrom.clear()
         pending.clear()
         recomputeAllTrustedLocked()
     }
@@ -218,6 +222,7 @@ object PeerAuth {
             outstandingNonce.remove(id)
             peerFingerprint.remove(id)
             trustedPeers.remove(id)
+            resultFrom.remove(id)
             dropped = pending.filter { it.peerId == id }
             pending.removeAll { it.peerId == id }
             recomputeAllTrustedLocked()
@@ -228,6 +233,19 @@ object PeerAuth {
 
     fun isTrusted(peerId: String?): Boolean =
         peerId != null && synchronized(lock) { trustedPeers.contains(peerId) }
+
+    /** A peer's auth-result: where this phone stands with it on this connection. */
+    fun onResultFrom(peerId: String, status: String) {
+        synchronized(lock) { resultFrom[peerId] = status }
+        notifyChanged()
+    }
+
+    /** The last auth-result status this peer sent ("trusted", "pending", "denied", …), if any. */
+    fun resultFrom(peerId: String?): String? =
+        peerId?.let { synchronized(lock) { resultFrom[it] } }
+
+    /** Whether this peer has approved this phone, so it will act on what the phone sends. */
+    fun trustedBy(peerId: String?): Boolean = resultFrom(peerId) == "trusted"
 
     fun fingerprintOfPeer(peerId: String): String? =
         synchronized(lock) { peerFingerprint[peerId] }

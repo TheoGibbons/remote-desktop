@@ -59,21 +59,31 @@ terminal shortcuts. They never touch the real clipboard or press keys.
 
 ## Clipboard
 
-When a phone taps **Copy**, this app presses Ctrl+C in the window in front, waits
+When a phone taps **Copy**, this app presses copy in the window in front, waits
 for the clipboard to change, and sends back the text along with its HTML version
-when the app offered one. In console windows, Windows Terminal, mintty and ConEmu
-it presses Ctrl+Insert instead, because Ctrl+C with nothing selected would stop
-the running program; PuTTY already copies on select, so nothing is pressed there.
-If nothing was selected, the phone gets what was already on the clipboard and is
-told so. Copied files arrive as paths the phone can download.
+when the app offered one. Copy is Ctrl+Insert rather than Ctrl+C almost
+everywhere: with nothing selected, Ctrl+C stops the program running in a
+terminal, and VS Code's or an IDE's terminal shares its window class with the
+editor, so it can't be singled out. File Explorer gets Ctrl+C, a classic console
+window gets its own Edit > Copy command, and PuTTY copies on select. If the
+clipboard didn't change, the phone is shown what was already on it and asked
+before using it; something a password manager marked private is never sent
+that way. Long-pressing **Copy** on the phone takes the clipboard as it is,
+without pressing anything. Copied files arrive as paths the phone can download
+while **Browse and transfer files** is on.
 
 A phone's **Paste** puts its text on this clipboard and presses Ctrl+V (Shift+Insert
 in terminals). Text sent with **Copy to PC** only lands on the clipboard, with a
-toast. Copying and pasting press keys, so they need **View and control this
-computer**; like any injected input they can't reach a window running as
-administrator unless this app runs elevated too, and the phone is told which of
-those it hit. The PC viewer's **Copy to this PC** button asks another PC for its
-selection the same way.
+toast. Everything the clipboard does needs **View and control this computer**,
+and nothing happens while the PC is locked. Like any injected input, the keys
+can't reach a window running as administrator unless this app runs elevated
+too, and the phone is told which of those it hit. Private copies arriving here
+are kept out of clipboard history and cloud sync.
+
+The PC viewer's **Copy to this PC** and **Paste from this PC** buttons do the
+same with another PC. Clipboard work runs on its own threads with a time
+limit, so an app that is slow to hand over what it copied can't stall the
+connection.
 
 ## Privacy mode
 

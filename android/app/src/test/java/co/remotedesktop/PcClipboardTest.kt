@@ -3,7 +3,9 @@ package co.remotedesktop
 import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
+import android.content.Intent
 import android.net.Uri
+import android.os.PersistableBundle
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -57,6 +59,12 @@ class PcClipboardTest {
     }
 
     @Test
+    fun windowsLineEndingsBecomeAndroidOnes() {
+        assertTrue(PcClipboard.put(context, "one\r\ntwo\rthree\n", null, sensitive = false))
+        assertEquals("one\ntwo\nthree\n", clipboard.primaryClip!!.getItemAt(0).text.toString())
+    }
+
+    @Test
     fun sensitiveClipsAreFlaggedForAndroidsCopyPreview() {
         assertTrue(PcClipboard.put(context, "hunter2", null, sensitive = true))
         assertTrue(clipboard.primaryClip!!.description.extras!!.getBoolean(ClipDescription.EXTRA_IS_SENSITIVE))
@@ -67,13 +75,52 @@ class PcClipboardTest {
         clipboard.clearPrimaryClip()
         assertNull(PcClipboard.read(context))
         clipboard.setPrimaryClip(ClipData.newPlainText("note", "hello"))
-        assertEquals("hello" to null, PcClipboard.read(context))
+        assertEquals(PcClipboard.PhoneClip("hello", null, false), PcClipboard.read(context))
         clipboard.setPrimaryClip(ClipData.newHtmlText("page", "Bold", "<b>Bold</b>"))
-        assertEquals("Bold" to "<b>Bold</b>", PcClipboard.read(context))
+        assertEquals(PcClipboard.PhoneClip("Bold", "<b>Bold</b>", false), PcClipboard.read(context))
         clipboard.setPrimaryClip(ClipData(ClipDescription("photo", arrayOf("image/png")),
             ClipData.Item(Uri.parse("content://media/external/images/1"))))
         assertNull(PcClipboard.read(context))
         clipboard.setPrimaryClip(ClipData.newPlainText("empty", ""))
         assertNull(PcClipboard.read(context))
+    }
+
+    @Test
+    fun readingNeverOpensAStreamOrAnIntent() {
+        // A text file by URI would be read whole on the main thread; it isn't read at all.
+        clipboard.setPrimaryClip(ClipData(ClipDescription("notes", arrayOf("text/plain")),
+            ClipData.Item(Uri.parse("content://files/huge.txt"))))
+        assertNull(PcClipboard.read(context))
+        clipboard.setPrimaryClip(ClipData(ClipDescription("shortcut", arrayOf(ClipDescription.MIMETYPE_TEXT_INTENT)),
+            ClipData.Item(Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com")))))
+        assertNull(PcClipboard.read(context))
+        // A web link is the one URI worth pasting as text.
+        clipboard.setPrimaryClip(ClipData.newRawUri("link", Uri.parse("https://example.com/a")))
+        assertEquals("https://example.com/a", PcClipboard.read(context)!!.text)
+    }
+
+    @Test
+    fun anHtmlOnlyClipStillHasText() {
+        // Android insists on some plain text beside HTML, but it can be empty.
+        clipboard.setPrimaryClip(ClipData(ClipDescription("page", arrayOf(ClipDescription.MIMETYPE_TEXT_HTML)),
+            ClipData.Item("", "<p>Hello <b>there</b></p>")))
+        assertEquals(PcClipboard.PhoneClip("Hello there", "<p>Hello <b>there</b></p>", false), PcClipboard.read(context))
+    }
+
+    @Test
+    fun aClipMarkedSensitiveSaysSo() {
+        clipboard.setPrimaryClip(ClipData.newPlainText("password", "hunter2").apply {
+            description.extras = PersistableBundle().apply { putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true) }
+        })
+        assertEquals(PcClipboard.PhoneClip("hunter2", null, true), PcClipboard.read(context))
+    }
+
+    @Test
+    fun previewsShowTheStartOfLongText() {
+        assertEquals("short", PcClipboard.preview("short"))
+        assertEquals("a\nb", PcClipboard.preview("a\r\nb"))
+        val lines = (1..20).joinToString("\n") { "line $it" }
+        assertEquals((1..8).joinToString("\n") { "line $it" } + "…", PcClipboard.preview(lines))
+        assertEquals("x".repeat(300) + "…", PcClipboard.preview("x".repeat(1000)))
     }
 }

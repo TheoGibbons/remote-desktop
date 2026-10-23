@@ -3,12 +3,9 @@ package co.remotedesktop
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
 import android.os.PersistableBundle
-import android.widget.Toast
+import android.text.Html
 import org.json.JSONObject
-import java.util.UUID
 
 /**
  * Clipboard exchange with a paired PC (see PROTOCOL.md, "Clipboard"). Copies
@@ -21,9 +18,17 @@ object PcClipboard {
      *  the input queued behind it. */
     const val MAX_CHARS = 200_000
     const val REPLY_TIMEOUT_MS = 10_000L
+    /** Android hands a text selection to another app trimmed to this many
+     *  characters (TextUtils.trimToParcelableSize), without saying so. */
+    const val SELECTION_LIMIT = 100_000
     private const val LABEL = "Remote Desktop"
     // ClipDescription.EXTRA_IS_SENSITIVE (API 33). Older versions ignore it.
     private const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
+    private const val PREVIEW_CHARS = 300
+    private const val PREVIEW_LINES = 8
+
+    /** This phone's clipboard as Paste sends it. */
+    data class PhoneClip(val text: String, val html: String?, val sensitive: Boolean)
 
     /** What fits under [MAX_CHARS]: the HTML version goes first, and text too
      *  long on its own doesn't fit at all (null). */
@@ -40,12 +45,21 @@ object PcClipboard {
     /** A reply's `error`, treating missing, JSON null and "null" alike. */
     fun errorOf(msg: JSONObject): String? = msg.optString("error").takeIf { it.isNotEmpty() && it != "null" }
 
+    /** The start of some text, for a dialog that asks before it is sent or used. */
+    fun preview(text: String): String {
+        val lf = text.replace("\r\n", "\n").replace('\r', '\n')
+        val shown = lf.take(PREVIEW_CHARS).split('\n').take(PREVIEW_LINES).joinToString("\n")
+        return if (shown.length < lf.length) "$shown…" else shown
+    }
+
     /** Puts text, and its HTML version if there is one, on this phone's clipboard.
      *  @return false if Android refused even the plain text. */
     fun put(context: Context, text: String, html: String?, sensitive: Boolean): Boolean {
         val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return false
+        // Windows ends lines with CRLF; Android apps expect LF and some show the CR.
+        val lf = text.replace("\r\n", "\n").replace('\r', '\n')
         fun clip(withHtml: Boolean) =
-            (if (withHtml && html != null) ClipData.newHtmlText(LABEL, text, html) else ClipData.newPlainText(LABEL, text))
+            (if (withHtml && html != null) ClipData.newHtmlText(LABEL, lf, html) else ClipData.newPlainText(LABEL, lf))
                 .apply {
                     // Keeps a password out of Android 13's copy preview and keyboard suggestions.
                     if (sensitive) description.extras = PersistableBundle().apply { putBoolean(EXTRA_IS_SENSITIVE, true) }
@@ -64,44 +78,23 @@ object PcClipboard {
         }
     }
 
-    /** This phone's clipboard as text plus any HTML version, or null when it
-     *  holds no text. An image must never be pasted as its content:// address. */
-    fun read(context: Context): Pair<String, String?>? {
+    /**
+     * This phone's clipboard as text plus any HTML version, or null when it
+     * holds no text. Only text already in the clip is used: coerceToText would
+     * read a content URI's whole stream on the main thread (a big file, a slow
+     * cloud provider), paste an exception's message if that failed, and turn an
+     * Intent into an intent: URI. A web link is the one URI worth pasting.
+     */
+    fun read(context: Context): PhoneClip? {
         val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip ?: return null
-        if (clip.itemCount == 0 || !clip.description.hasMimeType("text/*")) return null
+        if (clip.itemCount == 0) return null
         val item = clip.getItemAt(0)
-        val text = item.coerceToText(context)?.toString().orEmpty()
-        if (text.isEmpty()) return null
-        return text to item.htmlText?.takeIf { it.isNotEmpty() }
+        val html = item.htmlText?.takeIf { it.isNotEmpty() }
+        val text = item.text?.toString()?.takeIf { it.isNotEmpty() }
+            ?: html?.let { Html.fromHtml(it, Html.FROM_HTML_MODE_LEGACY).toString().trim() }?.takeIf { it.isNotEmpty() }
+            ?: item.uri?.takeIf { it.scheme == "http" || it.scheme == "https" }?.toString()
+            ?: return null
+        val sensitive = clip.description.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true
+        return PhoneClip(text, html, sensitive)
     }
-
-    /** Puts text on a PC's clipboard ("Copy to PC", shared text). The screen
-     *  that asked has usually closed by the time the PC answers, so the outcome
-     *  is a toast from the app context. */
-    fun push(context: Context, peerId: String, peerName: String, text: String) {
-        val app = context.applicationContext
-        val main = Handler(Looper.getMainLooper())
-        val reqId = UUID.randomUUID().toString()
-        lateinit var listener: (JSONObject) -> Unit
-        val timeout = Runnable {
-            ConnectionManager.jsonListeners.remove(listener)
-            toast(app, app.getString(R.string.copy_to_pc_no_reply, peerName))
-        }
-        listener = { msg ->
-            if (msg.optString("type") == "clip-set-result" && msg.optString("from") == peerId &&
-                msg.optString("reqId") == reqId
-            ) {
-                ConnectionManager.jsonListeners.remove(listener)
-                main.removeCallbacks(timeout)
-                toast(app, errorOf(msg) ?: app.getString(R.string.copy_to_pc_done, peerName))
-            }
-        }
-        ConnectionManager.jsonListeners.add(listener)
-        main.postDelayed(timeout, REPLY_TIMEOUT_MS)
-        ConnectionManager.sendJson(
-            JSONObject().put("type", "clip-set").put("to", peerId).put("reqId", reqId).put("text", text)
-        )
-    }
-
-    private fun toast(context: Context, text: String) = Toast.makeText(context, text, Toast.LENGTH_LONG).show()
 }

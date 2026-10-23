@@ -43,6 +43,8 @@ object ConnectionManager {
     private val reconnect = Runnable { connect() }
     private var ws: WebSocket? = null
     private var enabled = false
+    // A retry is waiting out its backoff, with no attempt in flight.
+    @Volatile private var retryScheduled = false
     private var backoffMs = 2000L
     private lateinit var appContext: Context
     private val receivedWireBytes = AtomicLong()
@@ -106,11 +108,14 @@ object ConnectionManager {
     fun stop() {
         PhoneScreenCapture.onViewStopped()
         enabled = false
+        retryScheduled = false
+        main.removeCallbacks(reconnect)
         ws?.close(1000, "user stop")
         ws = null
         myId = null
         peers.clear()
         PeerAuth.resetConnection()
+        if (::fs.isInitialized) fs.abort(reason = "The connection was closed")
         blockedUntilMs = 0L
         setState("disconnected")
     }
@@ -131,10 +136,19 @@ object ConnectionManager {
         )
     }
 
+    /** Retries now instead of waiting out the backoff (up to 30 s) — for
+     *  something the user is waiting on. An attempt already under way is left
+     *  to finish, and a ban from the relay to run out. */
+    fun reconnectNow() {
+        if (!enabled || !retryScheduled || blockedUntilMs > System.currentTimeMillis()) return
+        connect()
+    }
+
     private fun connect() {
         // A connection started directly (retry button, settings change) replaces
         // a scheduled retry, which would otherwise open a second socket later.
         main.removeCallbacks(reconnect)
+        retryScheduled = false
         if (!enabled) return
         connectionAttempts.incrementAndGet()
         val prefs = Prefs(appContext)
@@ -165,9 +179,12 @@ object ConnectionManager {
         PhoneScreenCapture.onViewStopped()
         peers.clear()
         PeerAuth.resetConnection()
+        // Transfers on the old socket can never finish; say so instead of waiting forever.
+        if (::fs.isInitialized) fs.abort(reason = "The connection was lost")
         // A refusal from the relay says more than "retrying"; keep showing it.
         setState(if (state == "blocked" || state.startsWith("error")) state else "disconnected: retrying...")
         main.postDelayed(reconnect, backoffMs)
+        retryScheduled = true
         backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
     }
 
@@ -307,8 +324,10 @@ object ConnectionManager {
             "peer-left" -> {
                 val id = msg.optString("id")
                 PhoneScreenCapture.onViewStopped(id)
+                val name = peerName(id)
                 peers.removeAll { it.id == id }
                 PeerAuth.onPeerLeft(id)
+                if (::fs.isInitialized) fs.abort(id, "$name disconnected")
                 setState(state)
             }
             "error" -> {
@@ -352,6 +371,7 @@ object ConnectionManager {
     /** A peer told us where we stand with it (this phone is the viewer here).
      *  ViewerActivity reacts via jsonListeners (re-requests or closes). */
     private fun onAuthResult(from: String, status: String) {
+        PeerAuth.onResultFrom(from, status)
         // A full hang-up: also stop streaming this phone's own screen to them.
         if (status == "revoked" || status == "disconnected") PhoneScreenCapture.onViewStopped(from)
         val text = when (status) {

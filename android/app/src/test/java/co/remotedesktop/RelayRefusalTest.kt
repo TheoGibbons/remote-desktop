@@ -182,6 +182,57 @@ class RelayRefusalTest {
     }
 
     @Test
+    fun reconnectNowSkipsTheBackoffButNeverOpensASecondSocket() {
+        FakeRelay().use { relay ->
+            Prefs(context).apply {
+                serverUrl = relay.url
+                sessionKey = "relay-refusal-test-key-0123456789"
+            }
+            ConnectionManager.start(context)
+            relay.accept(5_000)!!.use { refused ->
+                refused.read()
+                refused.sendText("""{"type":"error","code":"too-many-connections",""" +
+                    """"message":"too many connections from this network"}""")
+                refused.sendClose(4002, "too-many-connections")
+                assertEquals(0x8, refused.read().first)
+            }
+            waitFor { main.idle(); main.nextScheduledTaskTime > Duration.ZERO }
+
+            // Copy to PC is waiting on the connection: retry now, not in up to 30 s.
+            ConnectionManager.reconnectNow()
+            relay.accept(5_000)!!.use { again ->
+                assertEquals("hello", JSONObject(String(again.read().second)).getString("type"))
+                // That attempt is under way; asking again must not start another.
+                ConnectionManager.reconnectNow()
+                main.idleFor(Duration.ofSeconds(35))
+                assertNull(relay.accept(500))
+            }
+        }
+    }
+
+    @Test
+    fun reconnectNowWaitsOutABan() {
+        FakeRelay().use { relay ->
+            Prefs(context).apply {
+                serverUrl = relay.url
+                sessionKey = "relay-refusal-test-key-0123456789"
+            }
+            ConnectionManager.start(context)
+            relay.accept(5_000)!!.use { refused ->
+                refused.read()
+                refused.sendText("""{"type":"error","code":"banned",""" +
+                    """"message":"too many join attempts from this network","retryAfter":600}""")
+                refused.sendClose(4001, "banned")
+                assertEquals(0x8, refused.read().first)
+            }
+            waitFor { main.idle(); main.nextScheduledTaskTime > Duration.ZERO }
+            ConnectionManager.reconnectNow()
+            assertNull(relay.accept(500))
+            assertEquals("blocked", ConnectionManager.state)
+        }
+    }
+
+    @Test
     fun mainCardShowsTheBanAndTheRelaysReason() {
         val until = System.currentTimeMillis() + 600_000
         connectionField("blockedUntilMs").set(ConnectionManager, until)

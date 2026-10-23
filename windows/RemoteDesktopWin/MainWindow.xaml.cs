@@ -75,7 +75,9 @@ public partial class MainWindow : Window
             MaxWidth = _settings.MaxStreamWidth,
         };
         _fs = new FsService(_ws);
-        _clip = new ClipboardService(_ws.SendJson);
+        _clip = new ClipboardService(_ws.SendJson,
+            peer => AllowStreamCheck.IsChecked == true && _auth.IsTrusted(peer),
+            () => AllowFilesCheck.IsChecked == true);
         _privacy = new PrivacyOverlayManager(Dispatcher);
         _privacy.Changed += error =>
         {
@@ -469,6 +471,14 @@ public partial class MainWindow : Window
 
     private void OnJson(JsonNode msg)
     {
+        // This runs inside the socket thread's Dispatcher.Invoke, which rethrows
+        // there; one malformed message would drop the relay connection.
+        try { HandleJson(msg); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Ignored a message that failed: {ex}"); }
+    }
+
+    private void HandleJson(JsonNode msg)
+    {
         var from = msg["from"]?.GetValue<string>();
         // Host-side consent: the toggle must be on AND the sender must be an
         // approved device (see PROTOCOL.md, "Device authentication").
@@ -643,23 +653,25 @@ public partial class MainWindow : Window
                     InputInjector.TypeText(msg["text"]?.GetValue<string>() ?? "");
                 break;
 
+            // Clipboard requests need the control switch, which the service
+            // checks when each one's turn comes and answers with an error.
+            // Unapproved peers get no answer at all.
             case "clip-get":
-                // Copying presses keys in the window in front, so it needs the
-                // same consent as input. Unapproved peers get no answer at all.
-                if (!_auth.IsTrusted(from) || from == null) break;
-                if (controlAllowed) _ = _clip.HandleGetAsync(from, ClipboardService.Str(msg["reqId"]) ?? "");
-                else _clip.RefuseGet(from, ClipboardService.Str(msg["reqId"]));
+                if (_auth.IsTrusted(from) && from != null)
+                    _ = _clip.HandleGetAsync(from, ClipboardService.Str(msg["reqId"]),
+                        press: ClipboardService.Flag(msg["press"], true));
                 break;
 
             case "clip-set":
-                // Writing the clipboard needs an approved device; pasting also
-                // presses keys, which HandleSet checks against the control switch.
                 if (_auth.IsTrusted(from) && from != null)
-                    _clip.HandleSet(msg, from, PeerName(from), controlAllowed);
+                    _ = _clip.HandleSetAsync(msg, from, PeerName(from));
                 break;
 
             case "clip-get-result":
                 if (_pcView != null && _pcView.PeerId == from) _pcView.OnClipResult(msg);
+                break;
+            case "clip-set-result":
+                if (_pcView != null && _pcView.PeerId == from) _pcView.OnPasteResult(msg);
                 break;
 
             case "screen-info":

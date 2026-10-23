@@ -38,12 +38,20 @@ class FsHandler(private val context: Context) {
         val temp: File,
         val out: FileOutputStream,
         val name: String,
+        /** What fs-begin announced, or -1 when the sender didn't know. */
+        val size: Long,
+        val peer: String,
         val onDone: ((String) -> Unit)?,
         val onError: ((String) -> Unit)?,
-    )
+    ) {
+        var received = 0L
+    }
+
+    /** A download this phone asked for with fs-get, until its fs-begin arrives. */
+    private class PendingGet(val peer: String?, val onDone: (String) -> Unit, val onError: (String) -> Unit)
 
     private val incoming = ConcurrentHashMap<Int, Incoming>()
-    private val pendingGets = ConcurrentHashMap<Int, Pair<(String) -> Unit, (String) -> Unit>>()
+    private val pendingGets = ConcurrentHashMap<Int, PendingGet>()
 
     private val root: File get() = Environment.getExternalStorageDirectory()
 
@@ -237,8 +245,29 @@ class FsHandler(private val context: Context) {
 
     // ---------- receiving ----------
 
-    fun expectDownload(xferId: Int, onDone: (String) -> Unit, onError: (String) -> Unit) {
-        pendingGets[xferId] = Pair(onDone, onError)
+    /** @param from the peer asked for the file, so its leaving fails the download. */
+    fun expectDownload(xferId: Int, onDone: (String) -> Unit, onError: (String) -> Unit, from: String? = null) {
+        pendingGets[xferId] = PendingGet(from, onDone, onError)
+    }
+
+    /**
+     * Fails transfers that can no longer finish: every one when the connection
+     * has dropped ([peer] null), or one peer's when it leaves. Without this a
+     * download waits forever and its temp file stays behind.
+     */
+    fun abort(peer: String? = null, reason: String) {
+        for ((id, t) in incoming) {
+            if (peer != null && t.peer != peer) continue
+            if (incoming.remove(id) == null) continue
+            try { t.out.close() } catch (_: IOException) {}
+            t.temp.delete()
+            status("Receive failed: $reason")
+            t.onError?.invoke(reason)
+        }
+        for ((id, get) in pendingGets) {
+            if (peer != null && get.peer != peer) continue
+            pendingGets.remove(id)?.onError?.invoke(reason)
+        }
     }
 
     private fun handleBegin(msg: JSONObject, peerAccessAllowed: Boolean) {
@@ -249,8 +278,9 @@ class FsHandler(private val context: Context) {
         if (!peerAccessAllowed && !pendingGets.containsKey(xferId)) return
         try {
             val temp = File.createTempFile("xfer", ".part", context.cacheDir)
-            val cbs = pendingGets.remove(xferId)
-            incoming[xferId] = Incoming(temp, FileOutputStream(temp), name, cbs?.first, cbs?.second)
+            val get = pendingGets.remove(xferId)
+            incoming[xferId] = Incoming(temp, FileOutputStream(temp), name, msg.optLong("size", -1L),
+                msg.optString("from"), get?.onDone, get?.onError)
             status("Receiving $name...")
         } catch (e: Exception) {
             status("Receive failed: ${e.message}")
@@ -264,7 +294,12 @@ class FsHandler(private val context: Context) {
                 ((frame[3].toInt() and 0xFF) shl 8) or
                 (frame[4].toInt() and 0xFF)
         val t = incoming[id] ?: return
-        t.out.write(frame, 5, frame.size - 5)
+        try {
+            t.out.write(frame, 5, frame.size - 5)
+            t.received += frame.size - 5
+        } catch (_: IOException) {
+            // Aborted by a disconnect on another thread; the transfer has already failed.
+        }
     }
 
     private fun handleEnd(msg: JSONObject) {
@@ -273,10 +308,10 @@ class FsHandler(private val context: Context) {
         val t = incoming.remove(xferId) ?: run {
             // A refused or missing file ends without fs-begin. Tell whoever asked
             // for it, or its download waits forever.
-            if (!ok) pendingGets.remove(xferId)?.let { (_, onError) ->
+            if (!ok) pendingGets.remove(xferId)?.let { get ->
                 val err = msg.optString("error", "unknown error")
                 status("Receive failed: $err")
-                onError(err)
+                get.onError(err)
             }
             return
         }
@@ -284,6 +319,19 @@ class FsHandler(private val context: Context) {
         if (!ok) {
             t.temp.delete()
             val err = msg.optString("error", "unknown error")
+            status("Receive failed: $err")
+            t.onError?.invoke(err)
+            return
+        }
+        // The relay drops file chunks for a receiver that falls too far behind,
+        // so a transfer can end "ok" with pieces missing. Never save that.
+        if (t.size >= 0 && t.received != t.size) {
+            t.temp.delete()
+            val err = "Only ${t.received} of ${t.size} bytes arrived. Try again on a faster connection."
+            ConnectionManager.sendJson(
+                JSONObject().put("type", "fs-saved").put("to", msg.optString("from"))
+                    .put("xferId", xferId).put("error", err)
+            )
             status("Receive failed: $err")
             t.onError?.invoke(err)
             return

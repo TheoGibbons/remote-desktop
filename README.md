@@ -224,8 +224,8 @@ publish alongside the relay.
 **PC → Phone**
 - ✅ Tap / swipe / Back / Home / Recents on the phone screen
 - ✅ **Copy to PC** in the phone's text-selection menu puts the selection on the
-  PC's clipboard, whether you are holding the phone or driving it from the PC;
-  text and links shared to Remote Desktop go there too
+  PC's clipboard after you confirm, whether you are holding the phone or driving
+  it from the PC; text and links shared to Remote Desktop go there too
 - ⚠️ Unlocking a *secure* lockscreen (PIN/pattern/biometric) is **not possible** — Android forbids apps from doing it. A phone with no secure lock (swipe-only) can be unlocked, since the tap lands on the lockscreen surface.
 
 **PC ↔ PC (computer-to-computer)**
@@ -233,7 +233,8 @@ publish alongside the relay.
   mouse (move / click / scroll), and your **physical keyboard** (shortcuts,
   modifiers, arrows, typing) while the view window is focused, plus a
   **Ctrl+Alt+Del** button. Uses the existing protocol unchanged.
-- ✅ **Copy to this PC** brings the other PC's selection onto this PC's clipboard
+- ✅ **Copy to this PC** brings the other PC's selection onto this PC's clipboard,
+  and **Paste from this PC** pastes this PC's clipboard over there
 
 **Both directions**
 - ✅ File explorer (separate screen from the remote view) to browse the other device's filesystem and **send files back and forth** (phone *or* PC)

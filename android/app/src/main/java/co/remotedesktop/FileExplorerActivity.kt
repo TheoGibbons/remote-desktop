@@ -419,7 +419,8 @@ class FileExplorerActivity : AppCompatActivity() {
         val xferId = ConnectionManager.fs.nextXferId()
         ConnectionManager.fs.expectDownload(xferId,
             { saved -> runOnUiThread { setStatus("Saved to $saved", saved) } },
-            { errMsg -> runOnUiThread { setStatus("Failed: $errMsg") } })
+            { errMsg -> runOnUiThread { setStatus("Failed: $errMsg") } },
+            from = winId)
         ConnectionManager.sendJson(
             JSONObject().put("type", "fs-get").put("to", winId).put("path", fullPath).put("xferId", xferId)
         )

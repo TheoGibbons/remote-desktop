@@ -162,14 +162,26 @@ public static class InputInjector
         return true;
     }
 
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vk);
+
+    // Shift, Ctrl, Alt and both Win keys.
+    private static readonly ushort[] Modifiers = { 0x10, 0x11, 0x12, 0x5B, 0x5C };
+
     /// <summary>
-    /// Presses a shortcut such as CTRL+C in one SendInput call, so no other
-    /// input lands between its four events. Names are the ones <see cref="KeyEvent"/> takes.
+    /// Presses a shortcut such as CTRL+INSERT in one SendInput call, so no other
+    /// input lands between its events. Names are the ones <see cref="KeyEvent"/>
+    /// takes. Any other modifier already down is let go first: another viewer's
+    /// latched Alt, or a key held at the PC, would make it a different shortcut
+    /// (Ctrl+Alt+C is AltGr+C on many layouts).
     /// </summary>
     public static void Shortcut(string modifier, string key)
     {
         ushort mod = VkMap[modifier], vk = VkMap[key];
-        Send(Key(mod, false), Key(vk, false), Key(vk, true), Key(mod, true));
+        var inputs = Modifiers.Where(m => m != mod && (GetAsyncKeyState(m) & 0x8000) != 0)
+            .Select(m => Key(m, true)).ToList();
+        inputs.AddRange(new[] { Key(mod, false), Key(vk, false), Key(vk, true), Key(mod, true) });
+        Send(inputs.ToArray());
     }
 
     /// <summary>

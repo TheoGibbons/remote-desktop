@@ -31,8 +31,8 @@ public partial class PcViewWindow : Window
     private readonly string _peerId;
     private readonly string _name;
 
-    // The Copy button's request: only the latest answer counts, and a host too
-    // old to know clip-get never answers at all.
+    // The Copy or Paste request in flight: one at a time, only its own answer
+    // counts, and a host too old to know them never answers at all.
     private string? _clipReq;
     private int _clipCounter;
     private readonly DispatcherTimer _clipTimeout = new() { Interval = TimeSpan.FromSeconds(10) };
@@ -62,8 +62,8 @@ public partial class PcViewWindow : Window
         Title = "Remote: " + name;
         _clipTimeout.Tick += (_, _) =>
         {
-            EndCopy();
-            Toast.Show($"{_name} didn't answer. Update Remote Desktop on that PC to copy from it.");
+            EndClipRequest();
+            Toast.Show($"{_name} didn't answer. It may not have approved this PC yet, or it needs a newer Remote Desktop.");
         };
 
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _peerId });
@@ -347,53 +347,117 @@ public partial class PcViewWindow : Window
         Focus(); Keyboard.Focus(this);
     }
 
-    // Ctrl+C in this window goes to the remote PC like any other key, which
-    // copies onto *its* clipboard. This button brings the selection here.
+    // Ctrl+C and Ctrl+V in this window go to the remote PC like any other key,
+    // so they copy and paste on *its* clipboard. These buttons cross over.
     private void Copy_Click(object sender, RoutedEventArgs e)
     {
-        _clipReq = (++_clipCounter).ToString();
-        _ws.SendJson(new JsonObject { ["type"] = "clip-get", ["to"] = _peerId, ["reqId"] = _clipReq });
-        CopyButton.IsEnabled = false;
-        _clipTimeout.Start();
+        StartClipRequest(new JsonObject { ["type"] = "clip-get" });
         Focus(); Keyboard.Focus(this);
     }
 
-    private void EndCopy()
+    private async void Paste_Click(object sender, RoutedEventArgs e)
+    {
+        Focus(); Keyboard.Focus(this);
+        if (_clipReq != null) return;
+        ClipboardSnapshot clip;
+        try { clip = await ClipboardService.ReadAsync(); }
+        catch (Exception ex)
+        {
+            Toast.Show("Couldn't read this PC's clipboard: " + ex.Message);
+            return;
+        }
+        if (clip.TextLength > ClipboardFormat.MaxChars)
+        {
+            Toast.Show(ClipboardFormat.TooLong(clip.TextLength));
+            return;
+        }
+        var text = string.IsNullOrEmpty(clip.Text) && !string.IsNullOrEmpty(clip.Html)
+            ? ClipboardFormat.PlainText(clip.Html) : clip.Text;
+        var (fitText, fitHtml, error) = ClipboardFormat.Fit(text, clip.Html);
+        if (error != null || string.IsNullOrEmpty(fitText))
+        {
+            Toast.Show(error ?? "This PC's clipboard has no text to paste.");
+            return;
+        }
+        var request = new JsonObject { ["type"] = "clip-set", ["text"] = fitText, ["paste"] = true };
+        if (fitHtml != null) request["html"] = fitHtml;
+        if (clip.Sensitive) request["sensitive"] = true;
+        StartClipRequest(request);
+    }
+
+    private void StartClipRequest(JsonObject request)
+    {
+        _clipReq = (++_clipCounter).ToString();
+        request["to"] = _peerId;
+        request["reqId"] = _clipReq;
+        _ws.SendJson(request);
+        CopyButton.IsEnabled = PasteButton.IsEnabled = false;
+        _clipTimeout.Start();
+    }
+
+    /// <summary>Whether this is the answer to the request in flight, which it then ends.</summary>
+    private bool EndClipRequest(JsonNode msg)
+    {
+        if (_clipReq == null || ClipboardService.Str(msg["reqId"]) != _clipReq) return false;
+        EndClipRequest();
+        return true;
+    }
+
+    private void EndClipRequest()
     {
         _clipReq = null;
         _clipTimeout.Stop();
-        CopyButton.IsEnabled = true;
+        CopyButton.IsEnabled = PasteButton.IsEnabled = true;
     }
 
     /// <summary>The remote PC's answer to Copy: put it on this PC's clipboard.</summary>
     public void OnClipResult(JsonNode msg)
     {
-        if (_clipReq == null || ClipboardService.Str(msg["reqId"]) != _clipReq) return;
-        EndCopy();
-        if (ClipboardService.Str(msg["error"]) is { } error)
+        if (EndClipRequest(msg)) _ = ApplyCopyAsync(msg);
+    }
+
+    private async Task ApplyCopyAsync(JsonNode msg)
+    {
+        // This arrives inside the socket thread's blocking Dispatcher.Invoke;
+        // the question below must not hold up the relay while it waits.
+        await Task.Yield();
+        try
         {
-            Toast.Show(error);
-            return;
+            if (ClipboardService.Str(msg["error"]) is { } error)
+            {
+                Toast.Show(error);
+                return;
+            }
+            if (msg["files"] is JsonArray { Count: > 0 } files)
+            {
+                Toast.Show($"{_name} copied {files.Count} file{(files.Count == 1 ? "" : "s")}. Use Files to transfer them.");
+                return;
+            }
+            var (text, html, fitError) = ClipboardFormat.Fit(ClipboardService.Str(msg["text"]), ClipboardService.Str(msg["html"]));
+            if (fitError != null || string.IsNullOrEmpty(text))
+            {
+                Toast.Show(fitError ?? $"{_name} sent nothing to copy.");
+                return;
+            }
+            bool sensitive = ClipboardService.Flag(msg["sensitive"], false);
+            // Nothing new was copied there, so ask before replacing what's here.
+            if (!ClipboardService.Flag(msg["fresh"], true) && MessageBox.Show(this,
+                    $"Nothing new was copied on {_name}. Use what's already on its clipboard?\n\n" +
+                    (sensitive ? "(Hidden: it's marked private.)" : text.Length <= 300 ? text : text[..300] + "…"),
+                    "Copy to this PC", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                return;
+            await ClipboardService.WriteAsync(text, html, sensitive);
+            Toast.Show($"Copied from {_name}");
         }
-        if (msg["files"] is JsonArray { Count: > 0 } files)
+        catch (Exception ex)
         {
-            Toast.Show($"{_name} copied {files.Count} file{(files.Count == 1 ? "" : "s")}. Use Files to transfer them.");
-            return;
+            Toast.Show("Couldn't copy to this PC's clipboard: " + ex.Message);
         }
-        var (text, html, fitError) = ClipboardFormat.Fit(ClipboardService.Str(msg["text"]), ClipboardService.Str(msg["html"]));
-        if (fitError != null || string.IsNullOrEmpty(text))
-        {
-            Toast.Show(fitError ?? $"{_name} sent nothing to copy.");
-            return;
-        }
-        if (!ClipboardService.Write(text, html, out var writeError))
-        {
-            Toast.Show(writeError!);
-            return;
-        }
-        bool fresh = msg["fresh"] is not JsonValue flag || !flag.TryGetValue<bool>(out var value) || value;
-        Toast.Show(fresh
-            ? $"Copied from {_name}"
-            : $"Nothing was selected on {_name}, so this is what was already on its clipboard");
+    }
+
+    /// <summary>The remote PC's answer to Paste.</summary>
+    public void OnPasteResult(JsonNode msg)
+    {
+        if (EndClipRequest(msg) && ClipboardService.Str(msg["error"]) is { } error) Toast.Show(error);
     }
 }
