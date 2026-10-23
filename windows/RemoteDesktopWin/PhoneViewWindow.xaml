@@ -1,7 +1,8 @@
 <Window x:Class="RemoteDesktopWin.PhoneViewWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Phone" Height="760" Width="400" Background="#111">
+        Title="Phone" Height="760" Width="400" Background="#111" Focusable="True"
+        PreviewKeyDown="Window_PreviewKeyDown" PreviewTextInput="Window_PreviewTextInput">
     <Grid>
         <Image x:Name="ScreenImage" Stretch="Uniform"
                MouseLeftButtonDown="Screen_MouseDown" MouseLeftButtonUp="Screen_MouseUp"

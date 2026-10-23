@@ -116,7 +116,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `privacy-mode` | `to`, `enabled` (boolean) | Windows only: hide physical monitors and block local keyboard/mouse while preserving app-injected remote input. Enabling requires remote-control consent, an approved active viewer, and all peers trusted. Disabling requires remote-control consent and an approved peer. Privacy stays active after viewing stops or peers/relay disconnect unless a departing viewer opted into autoUnprivacy; reconnecting approved viewers receive the current state. |
 | `get-privacy-state` | `to` | Approved peer asks Windows for privacy availability and current state. |
 | `privacy-state` | `to`, `enabled`, `supported`, `allowed`, `error?` | Windows acknowledges a toggle and announces local unlock or automatic cleanup. Viewers must use this state rather than optimistically toggling. Older hosts may omit it. |
-| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. Sent when streaming starts and whenever the geometry changes. |
+| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`?, `typing`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. A phone sets `typing: true` when it can type `text` and `key` into its text fields; older apps omit it. Sent when streaming starts and whenever the geometry changes. |
 | `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH`, `h264`? | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. `h264: true` additionally advertises that the viewer can decode binary frame type `4`. See [Viewport streaming](#viewport-streaming). |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
 | `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. |
@@ -144,6 +144,14 @@ the viewer simply decodes the type-3 stream (below) and sends these.
 | `touch` | `action` (`down`\|`move`\|`up`), `x`, `y` | Streamed pointer for real-time press / long-press / drag. The phone plays it as one continued accessibility stroke: the finger stays down from `down` until `up`. Senders should throttle `move` to ~30 ms. |
 | `pinch` | `x`, `y`, `dir` (`in`\|`out`) | Two-finger pinch step centered at `x`,`y` (e.g. one mouse-wheel notch). |
 | `back` / `homebtn` / `recents` | – | Global navigation actions. |
+| `text`  | `text` | Type a unicode string into the focused text field, line breaks as `\n`. The sender composes characters with its own keyboard layout. |
+| `key`   | `code`, `ctrl`?, `shift`? | Press one key, with Ctrl and Shift held if set. `code` is `ENTER`, `BACKSPACE`, `DELETE`, `TAB`, `HOME`, `END`, `PGUP`, `PGDN`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, or a letter `A`-`Z` for a Ctrl shortcut. Plain `ENTER` performs the field's own action (Search, Send, Next...) the way the on-screen keyboard's Enter does. `ESC` is Back. With no text field focused, the arrows and `ENTER` move between and press controls. |
+
+The phone types through its accessibility service's own input method, which
+Android 13 added, so on older versions only `ESC` works. A desktop that sees
+`screen-info` without `typing` should say so rather than type into nothing.
+The desktop keeps Ctrl+V for itself and sends its clipboard as `text`, since
+a paste there is expected to come from the PC.
 
 **File system** (`path` uses the native separators of the target device)
 

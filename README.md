@@ -223,6 +223,9 @@ publish alongside the relay.
 
 **PC → Phone**
 - ✅ Tap / swipe on the phone screen; right-click for Back, middle-click for Home
+- ✅ Type into the phone with the PC's keyboard (Android 13 and later): Enter,
+  Backspace, arrows and Ctrl shortcuts included, Esc for Back, and Ctrl+V pastes
+  the PC's clipboard
 - ✅ **Copy to PC** in the phone's text-selection menu puts the selection on the
   PC's clipboard after you confirm, whether you are holding the phone or driving
   it from the PC; text and links shared to Remote Desktop go there too

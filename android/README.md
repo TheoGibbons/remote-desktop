@@ -179,6 +179,10 @@ repeat quickly while held, after a short initial delay. The
 - The Accessibility service declares screenshot capability and describes screen
   viewing in its system permission description. Default viewing uses this only
   on Android 11+ and preserves the same device-approval and remote-control gates.
+- The Accessibility service also acts as an input method (`flagInputMethodEditor`,
+  Android 13+), so the PC's keyboard can type into the focused text field
+  alongside the user's own keyboard. It types only what an approved device
+  sends while remote control is allowed, and reads no text.
 
 ## Why the PC can't unlock the phone
 

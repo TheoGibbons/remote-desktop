@@ -143,6 +143,7 @@ class ScreenCaptureService : Service() {
         val (w, h) = outSize()
         ConnectionManager.sendJson(
             JSONObject().put("type", "screen-info").put("width", w).put("height", h)
+                .put("typing", InputAccessibilityService.canType)
         )
     }
 

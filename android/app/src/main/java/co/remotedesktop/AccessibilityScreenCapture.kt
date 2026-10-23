@@ -148,7 +148,8 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
             // Rotation and source/session switches need fresh dimensions before the JPEG.
             if (infoRequested.getAndSet(false) || sentSize != size || sentGeneration != token) {
                 ConnectionManager.sendJson(JSONObject().put("type", "screen-info")
-                    .put("width", width).put("height", height))
+                    .put("width", width).put("height", height)
+                    .put("typing", InputAccessibilityService.canType))
                 sentSize = size
                 sentGeneration = token
             }

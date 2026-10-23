@@ -349,7 +349,7 @@ object ConnectionManager {
             // Desktop controlling this phone — only with the user's consent
             // (the toggles in MainActivity) AND from a device this phone has
             // approved. The session key alone must not grant control.
-            "tap", "swipe", "touch", "pinch", "back", "homebtn", "recents" ->
+            "tap", "swipe", "touch", "pinch", "back", "homebtn", "recents", "text", "key" ->
                 if (Prefs(appContext).allowControl && PeerAuth.isTrusted(from))
                     InputAccessibilityService.instance?.handle(msg)
 

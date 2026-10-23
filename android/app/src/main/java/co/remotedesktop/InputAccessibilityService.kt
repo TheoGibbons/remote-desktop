@@ -7,9 +7,11 @@ import android.graphics.Path
 import android.os.Handler
 import android.os.Build
 import android.os.Looper
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import androidx.annotation.RequiresApi
 import org.json.JSONObject
 import kotlin.math.cos
 import kotlin.math.sin
@@ -20,7 +22,8 @@ import kotlin.math.sin
  *
  * Supports one-shot taps/swipes, a streamed `touch` pointer (down/move/up,
  * dispatched as continued gesture strokes so the desktop mouse can click,
- * long-press and drag in real time) and a two-finger `pinch` for zoom.
+ * long-press and drag in real time), a two-finger `pinch` for zoom, and the
+ * desktop keyboard's `text` and `key` (see [PhoneKeyboard]).
  *
  * Note: Android does not allow apps to unlock a secure lockscreen (PIN /
  * pattern / biometric). Taps work on the lockscreen surface itself, so a
@@ -31,6 +34,13 @@ class InputAccessibilityService : AccessibilityService() {
     companion object {
         @Volatile var instance: InputAccessibilityService? = null
             private set
+
+        /** Whether text typed on the desktop reaches the phone: it needs the
+         *  service's own input method, which Android 13 added. */
+        val canType: Boolean
+            get() = Build.VERSION.SDK_INT >= 33 && instance?.serviceInfo?.let {
+                it.flags and AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR != 0
+            } == true
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -110,7 +120,55 @@ class InputAccessibilityService : AccessibilityService() {
             "back" -> performGlobalAction(GLOBAL_ACTION_BACK)
             "homebtn" -> performGlobalAction(GLOBAL_ACTION_HOME)
             "recents" -> performGlobalAction(GLOBAL_ACTION_RECENTS)
+            "text", "key" -> main.post { type(msg) }
         }
+    }
+
+    // ---------- desktop keyboard ----------
+
+    private fun type(msg: JSONObject) {
+        val code = msg.optString("code")
+        // Esc is the Back key of hardware keyboards on Android.
+        if (msg.optString("type") == "key" && code == "ESC") {
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33) typeIntoField(msg, code)
+    }
+
+    @RequiresApi(33)
+    private fun typeIntoField(msg: JSONObject, code: String) {
+        val method = inputMethod ?: return
+        // Null while no text field has focus.
+        val field = method.currentInputConnection
+        if (msg.optString("type") == "text") {
+            field?.commitText(msg.optString("text"), 1, null)
+            return
+        }
+        val ctrl = msg.optBoolean("ctrl")
+        val shift = msg.optBoolean("shift")
+        if (field == null) {
+            // With nothing to type into, arrows and Enter move between and
+            // press controls, as on a hardware keyboard.
+            if (ctrl || shift) return
+            when (code) {
+                "UP" -> GLOBAL_ACTION_DPAD_UP
+                "DOWN" -> GLOBAL_ACTION_DPAD_DOWN
+                "LEFT" -> GLOBAL_ACTION_DPAD_LEFT
+                "RIGHT" -> GLOBAL_ACTION_DPAD_RIGHT
+                "ENTER" -> GLOBAL_ACTION_DPAD_CENTER
+                else -> null
+            }?.let { performGlobalAction(it) }
+            return
+        }
+        if (code == "ENTER" && !ctrl && !shift) {
+            PhoneKeyboard.enterAction(method.currentInputEditorInfo)?.let {
+                field.performEditorAction(it)
+                return
+            }
+        }
+        val keyCode = PhoneKeyboard.keyCode(code) ?: return
+        PhoneKeyboard.press(keyCode, ctrl, shift, SystemClock.uptimeMillis()).forEach(field::sendKeyEvent)
     }
 
     private fun tap(x: Double, y: Double) {

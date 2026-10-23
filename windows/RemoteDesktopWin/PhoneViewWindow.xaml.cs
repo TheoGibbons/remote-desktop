@@ -18,6 +18,12 @@ namespace RemoteDesktopWin;
 /// The window has no navigation buttons of its own: clicking the phone's
 /// buttons in the picture works, and right- and middle-click stand in for
 /// them on a phone that uses gestures.
+///
+/// While it is focused, the keyboard types into the phone's focused text
+/// field: characters as <c>text</c>, composed here with this PC's layout, and
+/// editing keys and Ctrl shortcuts as <c>key</c>. Ctrl+V pastes this PC's
+/// clipboard rather than the phone's, and Esc is Back. Alt combinations stay
+/// with Windows.
 /// </summary>
 public partial class PhoneViewWindow : Window
 {
@@ -31,6 +37,11 @@ public partial class PhoneViewWindow : Window
     private bool _touching;             // a touch-down has been sent to the phone
     private DateTime _lastMoveSent;
     private readonly DispatcherTimer _holdTimer;
+
+    // What the phone's screen-info said about taking typed text; null until
+    // the first one. Older apps and phones before Android 13 say false.
+    private bool? _phoneTypes;
+    private bool _warnedNoTyping;
 
     private const double DragSlopPx = 6;
     private static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
@@ -51,6 +62,7 @@ public partial class PhoneViewWindow : Window
             _holdTimer.Stop();
             if (_downPos is { } p && !_touching) BeginTouch(p);
         };
+        Loaded += (_, _) => { Focus(); Keyboard.Focus(this); };
     }
 
     /// <summary>Ask for the stream again — the first start-view is dropped when
@@ -58,8 +70,9 @@ public partial class PhoneViewWindow : Window
     public void ResendStartView() =>
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
 
-    public void OnScreenInfo(int width, int height)
+    public void OnScreenInfo(int width, int height, bool typing)
     {
+        Dispatcher.BeginInvoke(() => _phoneTypes = typing);
         if (width <= 0 || height <= 0) return;
         // Size the window to the phone's aspect ratio, so the picture fills it
         // between the title bar and frame. They are measured once the window
@@ -200,5 +213,109 @@ public partial class PhoneViewWindow : Window
         if (action == null) return;
         e.Handled = true;
         _ws.SendJson(new JsonObject { ["type"] = action, ["to"] = _phoneId });
+    }
+
+    // ---------------- keyboard ----------------
+
+    /// <summary>
+    /// The <c>key</c> message for a key pressed with these modifiers, or null
+    /// when the key types a character (sent from TextInput instead) or the
+    /// phone has no use for it. Letters count only with Ctrl, as shortcuts.
+    /// </summary>
+    internal static JsonObject? KeyMessage(Key key, ModifierKeys modifiers)
+    {
+        // Alt+F4 and the like belong to Windows, and AltGr arrives as Ctrl+Alt
+        // with the character it makes in TextInput.
+        if ((modifiers & ModifierKeys.Alt) != 0) return null;
+        bool ctrl = (modifiers & ModifierKeys.Control) != 0;
+        bool shift = (modifiers & ModifierKeys.Shift) != 0;
+        var code = key switch
+        {
+            >= Key.A and <= Key.Z when ctrl => key.ToString(),
+            Key.Enter => "ENTER",
+            Key.Escape => "ESC",
+            Key.Tab => "TAB",
+            Key.Back => "BACKSPACE",
+            Key.Delete => "DELETE",
+            Key.Home => "HOME",
+            Key.End => "END",
+            Key.PageUp => "PGUP",
+            Key.PageDown => "PGDN",
+            Key.Up => "UP",
+            Key.Down => "DOWN",
+            Key.Left => "LEFT",
+            Key.Right => "RIGHT",
+            _ => null,
+        };
+        if (code == null) return null;
+        var msg = new JsonObject { ["type"] = "key", ["code"] = code };
+        if (ctrl) msg["ctrl"] = true;
+        if (shift) msg["shift"] = true;
+        return msg;
+    }
+
+    private static bool IsPaste(Key key, ModifierKeys modifiers) =>
+        modifiers == ModifierKeys.Control && key == Key.V || modifiers == ModifierKeys.Shift && key == Key.Insert;
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (IsPaste(key, Keyboard.Modifiers))
+        {
+            if (!e.IsRepeat) _ = PasteAsync();
+            e.Handled = true;
+            return;
+        }
+        // Held keys repeat, so holding Backspace keeps deleting.
+        if (KeyMessage(key, Keyboard.Modifiers) is not { } msg) return;
+        msg["to"] = _phoneId;
+        _ws.SendJson(msg);
+        e.Handled = true;
+    }
+
+    private void Window_PreviewTextInput(object sender, TextCompositionEventArgs e)
+    {
+        var text = e.Text;
+        if (string.IsNullOrEmpty(text)) return;
+        if (text.Length == 1 && char.IsControl(text[0])) return; // control chars go via key events
+        SendText(text);
+        e.Handled = true;
+    }
+
+    private void SendText(string text)
+    {
+        if (_phoneTypes == false && !_warnedNoTyping)
+        {
+            _warnedNoTyping = true;
+            Toast.Show("This phone can't take typing from the PC. It needs Android 13 or later and the latest Remote Desktop app.");
+        }
+        _ws.SendJson(new JsonObject { ["type"] = "text", ["to"] = _phoneId, ["text"] = text });
+    }
+
+    /// <summary>Types this PC's clipboard into the phone, which is where a
+    /// paste in this window is expected to come from.</summary>
+    private async Task PasteAsync()
+    {
+        ClipboardSnapshot clip;
+        try { clip = await ClipboardService.ReadAsync(); }
+        catch (Exception ex)
+        {
+            Toast.Show("Couldn't read this PC's clipboard: " + ex.Message);
+            return;
+        }
+        if (clip.TextLength > ClipboardFormat.MaxChars)
+        {
+            Toast.Show(ClipboardFormat.TooLong(clip.TextLength));
+            return;
+        }
+        var text = string.IsNullOrEmpty(clip.Text) && !string.IsNullOrEmpty(clip.Html)
+            ? ClipboardFormat.PlainText(clip.Html) : clip.Text;
+        var (fitText, _, error) = ClipboardFormat.Fit(text, null);
+        if (error != null || string.IsNullOrEmpty(fitText))
+        {
+            Toast.Show(error ?? "This PC's clipboard has no text to paste.");
+            return;
+        }
+        SendText(fitText.ReplaceLineEndings("\n"));
     }
 }

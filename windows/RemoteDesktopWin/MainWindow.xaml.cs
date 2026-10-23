@@ -677,7 +677,8 @@ public partial class MainWindow : Window
             case "screen-info":
                 var siW = msg["width"]?.GetValue<int>() ?? 0;
                 var siH = msg["height"]?.GetValue<int>() ?? 0;
-                if (_phoneView != null && _phoneView.PeerId == from) _phoneView.OnScreenInfo(siW, siH);
+                if (_phoneView != null && _phoneView.PeerId == from)
+                    _phoneView.OnScreenInfo(siW, siH, msg["typing"]?.GetValue<bool>() ?? false);
                 if (_pcView != null && _pcView.PeerId == from) _pcView.OnScreenInfo(siW, siH);
                 break;
 

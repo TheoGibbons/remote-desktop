@@ -171,7 +171,10 @@ unapproved device is present in the session, streaming and file serving pause.
   - **a phone** → click = tap, press-and-drag = real drag, hold in place =
     long-press, mouse wheel = pinch zoom in/out, right-click = Back,
     middle-click = Home. If the phone shows its own navigation buttons,
-    clicking them works too.
+    clicking them works too. While the window is focused, your keyboard types
+    into the phone's focused text box (Android 13 and later), with Enter,
+    Backspace, arrows and Ctrl shortcuts; Esc is Back, and Ctrl+V pastes this
+    PC's clipboard.
 - **Browse files** → a file explorer to download from / upload to the selected
   device (a PC or a phone). Downloads are saved to
   your Downloads folder — asked of Windows rather than assumed, so a relocated
