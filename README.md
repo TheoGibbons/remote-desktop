@@ -222,7 +222,7 @@ publish alongside the relay.
   phone instead. **Paste** sends the phone's clipboard to the PC and pastes it
 
 **PC → Phone**
-- ✅ Tap / swipe / Back / Home / Recents on the phone screen
+- ✅ Tap / swipe on the phone screen; right-click for Back, middle-click for Home
 - ✅ **Copy to PC** in the phone's text-selection menu puts the selection on the
   PC's clipboard after you confirm, whether you are holding the phone or driving
   it from the PC; text and links shared to Remote Desktop go there too

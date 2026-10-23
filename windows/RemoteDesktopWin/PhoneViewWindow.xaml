@@ -3,26 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Phone" Height="760" Width="400" Background="#111">
     <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-
-        <Image x:Name="ScreenImage" Grid.Row="0" Stretch="Uniform"
+        <Image x:Name="ScreenImage" Stretch="Uniform"
                MouseLeftButtonDown="Screen_MouseDown" MouseLeftButtonUp="Screen_MouseUp"
-               MouseMove="Screen_MouseMove" MouseWheel="Screen_MouseWheel"/>
-
-        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="6">
-            <Button Content="◀ Back" Padding="14,6" Margin="4,0" Click="Back_Click"/>
-            <Button Content="● Home" Padding="14,6" Margin="4,0" Click="Home_Click"/>
-            <Button Content="■ Recents" Padding="14,6" Margin="4,0" Click="Recents_Click"/>
-        </StackPanel>
-
-        <!-- The phone adds "Copy to PC" to its own text-selection menu; this is
-             the only way to discover it from here. -->
-        <TextBlock Grid.Row="2" Foreground="#999" FontSize="11" TextWrapping="Wrap" TextAlignment="Center"
-                   Margin="8,0,8,6"
-                   Text="To copy from the phone, select text there and choose Copy to PC (it may be under ⋮)."/>
+               MouseMove="Screen_MouseMove" MouseWheel="Screen_MouseWheel"
+               MouseUp="Screen_OtherButtonUp"/>
     </Grid>
 </Window>

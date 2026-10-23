@@ -8,11 +8,16 @@ using System.Windows.Threading;
 namespace RemoteDesktopWin;
 
 /// <summary>
-/// Displays the phone's streamed screen and forwards mouse input as touch:
+/// Displays the phone's streamed screen and forwards mouse input to it:
 ///  - quick click                -> tap
 ///  - press and hold             -> long-press (touch held down)
 ///  - press and drag             -> real drag (streamed touch moves)
 ///  - mouse wheel                -> pinch zoom in/out at the cursor
+///  - right-click                -> Back
+///  - middle-click               -> Home
+/// The window has no navigation buttons of its own: clicking the phone's
+/// buttons in the picture works, and right- and middle-click stand in for
+/// them on a phone that uses gestures.
 /// </summary>
 public partial class PhoneViewWindow : Window
 {
@@ -56,12 +61,20 @@ public partial class PhoneViewWindow : Window
     public void OnScreenInfo(int width, int height)
     {
         if (width <= 0 || height <= 0) return;
-        // Size the window to the phone's aspect ratio.
+        // Size the window to the phone's aspect ratio, so the picture fills it
+        // between the title bar and frame. They are measured once the window
+        // has been laid out, and estimated before.
         Dispatcher.BeginInvoke(() =>
         {
             var targetH = Math.Min(820, SystemParameters.WorkArea.Height - 60);
+            double frameW = 16, frameH = 39;
+            if (Content is FrameworkElement client && client.ActualWidth > 0)
+            {
+                frameW = ActualWidth - client.ActualWidth;
+                frameH = ActualHeight - client.ActualHeight;
+            }
             Height = targetH;
-            Width = Math.Max(280, (targetH - 90) * width / height);
+            Width = Math.Max(280, (targetH - frameH) * width / height + frameW);
         });
     }
 
@@ -176,12 +189,16 @@ public partial class PhoneViewWindow : Window
         });
     }
 
-    private void Back_Click(object sender, RoutedEventArgs e) =>
-        _ws.SendJson(new JsonObject { ["type"] = "back", ["to"] = _phoneId });
-
-    private void Home_Click(object sender, RoutedEventArgs e) =>
-        _ws.SendJson(new JsonObject { ["type"] = "homebtn", ["to"] = _phoneId });
-
-    private void Recents_Click(object sender, RoutedEventArgs e) =>
-        _ws.SendJson(new JsonObject { ["type"] = "recents", ["to"] = _phoneId });
+    private void Screen_OtherButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        var action = e.ChangedButton switch
+        {
+            MouseButton.Right => "back",
+            MouseButton.Middle => "homebtn",
+            _ => null,
+        };
+        if (action == null) return;
+        e.Handled = true;
+        _ws.SendJson(new JsonObject { ["type"] = action, ["to"] = _phoneId });
+    }
 }

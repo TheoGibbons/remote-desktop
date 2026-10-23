@@ -169,7 +169,9 @@ unapproved device is present in the session, streaming and file serving pause.
     won't let apps send directly. The remote PC must have *Allow paired devices…*
     checked.
   - **a phone** → click = tap, press-and-drag = real drag, hold in place =
-    long-press, mouse wheel = pinch zoom in/out; Back/Home/Recents buttons included.
+    long-press, mouse wheel = pinch zoom in/out, right-click = Back,
+    middle-click = Home. If the phone shows its own navigation buttons,
+    clicking them works too.
 - **Browse files** → a file explorer to download from / upload to the selected
   device (a PC or a phone). Downloads are saved to
   your Downloads folder — asked of Windows rather than assumed, so a relocated
