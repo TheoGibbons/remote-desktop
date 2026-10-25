@@ -21,7 +21,9 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.graphics.Typeface
+import android.view.ContextThemeWrapper
 import android.view.Gravity
+import android.view.LayoutInflater
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
@@ -31,6 +33,7 @@ import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -712,79 +715,63 @@ class ViewerActivity : AppCompatActivity() {
         installVisibleAreaTracking()
     }
 
-    private fun buildToolbar(): LinearLayout {
-        val density = resources.displayMetrics.density
-        val horizontalPadding = (4 * density).toInt()
-        val verticalPadding = (2 * density).toInt()
-        fun tb(label: String, onClick: () -> Unit) = Button(this).apply {
-            text = label
-            isAllCaps = false
-            isSingleLine = true
-            minimumWidth = 0
-            minHeight = 0
-            minimumHeight = 0
-            setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding)
-            alpha = 0.85f
+    private fun buildToolbar(): View {
+        // The viewer keeps AppCompat's theme; the bar's Material buttons need Material's.
+        val bar = LayoutInflater.from(ContextThemeWrapper(this, R.style.ThemeOverlay_RemoteDesktop_ViewerBar))
+            .inflate(R.layout.viewer_toolbar, root, false)
+        fun button(id: Int, onClick: () -> Unit) = bar.findViewById<Button>(id).apply {
+            tooltipText = contentDescription
             setOnClickListener { onClick() }
         }
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#88000000"))
-            fun addToolbarButton(label: String, onClick: () -> Unit): Button {
-                val button = tb(label, onClick)
-                // Each label gets its own width and the spare room is shared,
-                // so a portrait phone doesn't cut off "Privacy" or "Show PC".
-                addView(button, LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    (36 * density).toInt(),
-                    1f,
-                ))
-                return button
+        button(R.id.viewerClose) { finish() }
+        bar.findViewById<TextView>(R.id.viewerTitle).apply {
+            text = ConnectionManager.peers.firstOrNull { it.id == winId }?.name
+            // A narrow phone leaves the name room for little more than "…": show nothing then.
+            val minWidth = (48 * resources.displayMetrics.density).toInt()
+            addOnLayoutChangeListener { view, left, _, right, _, _, _, _, _ ->
+                view.visibility = if (right - left < minWidth) View.INVISIBLE else View.VISIBLE
             }
-            addToolbarButton("⌨") {
-                keyboard.visibility = if (keyboard.visibility == View.VISIBLE) {
-                    keyboard.releaseAll(); View.GONE
-                } else View.VISIBLE
-                keyboard.post { updateBottomOcclusion() }
-            }
-            copyButton = addToolbarButton(getString(R.string.copy_from_pc)) { copyFromPc() }.apply {
-                contentDescription = getString(R.string.copy_from_pc_description)
-                tooltipText = contentDescription
-                // Held down: the PC's clipboard as it is, for something already
-                // copied there, such as with Copy link address.
-                setOnLongClickListener { copyFromPc(press = false); true }
-                textSize = 12f
-            }
-            pasteButton = addToolbarButton(getString(R.string.paste_to_pc)) { pasteToPc() }.apply {
-                contentDescription = getString(R.string.paste_to_pc_description)
-                tooltipText = contentDescription
-                textSize = 12f
-            }
-            addToolbarButton("↻") { rotateScreen() }.apply {
-                contentDescription = getString(R.string.rotate_screen)
-                tooltipText = contentDescription
-            }
-            addToolbarButton("Stats") { showDiagnostics() }
-            privacyButton = addToolbarButton(getString(R.string.privacy)) {
-                val enabled = !privacyEnabled
-                val prefs = Prefs(this@ViewerActivity)
-                if (prefs.rememberPrivacy) pcFingerprint()?.let { prefs.setLastPrivacy(it, enabled) }
-                requestPrivacy(enabled)
-            }.apply {
-                privacyButtonDefaultTint = backgroundTintList
-                privacyButtonDefaultBackground = background
-                privacyButtonActiveBackground = background.constantState
-                    ?.newDrawable(resources, theme)?.mutate()?.apply {
-                        setTint(Color.rgb(179, 38, 30))
-                    } ?: ColorDrawable(Color.rgb(179, 38, 30))
-                privacyButtonDefaultTextColors = textColors
-                isEnabled = false // wait for the host's supported/allowed state
-                contentDescription = getString(R.string.privacy_enable)
-                tooltipText = contentDescription
-                textSize = 12f
-            }
-            addToolbarButton("?") { showGestureHelp() }
-            addToolbarButton("✕") { finish() }
+        }
+        button(R.id.viewerKeyboard) {
+            keyboard.visibility = if (keyboard.visibility == View.VISIBLE) {
+                keyboard.releaseAll(); View.GONE
+            } else View.VISIBLE
+            keyboard.post { updateBottomOcclusion() }
+        }
+        copyButton = button(R.id.viewerCopy) { copyFromPc() }.apply {
+            // Held down: the PC's clipboard as it is, for something already
+            // copied there, such as with Copy link address.
+            setOnLongClickListener { copyFromPc(press = false); true }
+        }
+        pasteButton = button(R.id.viewerPaste) { pasteToPc() }
+        button(R.id.viewerRotate) { rotateScreen() }
+        privacyButton = button(R.id.viewerPrivacy) {
+            val enabled = !privacyEnabled
+            val prefs = Prefs(this@ViewerActivity)
+            if (prefs.rememberPrivacy) pcFingerprint()?.let { prefs.setLastPrivacy(it, enabled) }
+            requestPrivacy(enabled)
+        }.apply {
+            privacyButtonDefaultTint = backgroundTintList
+            privacyButtonDefaultBackground = background
+            privacyButtonActiveBackground = background.constantState
+                ?.newDrawable(resources, theme)?.mutate()?.apply {
+                    setTint(Color.rgb(179, 38, 30))
+                } ?: ColorDrawable(Color.rgb(179, 38, 30))
+            privacyButtonDefaultTextColors = textColors
+            isEnabled = false // wait for the host's supported/allowed state
+            contentDescription = getString(R.string.privacy_enable)
+            tooltipText = contentDescription
+        }
+        button(R.id.viewerMore) { showMoreMenu(bar.findViewById(R.id.viewerMore)) }
+        return bar
+    }
+
+    /** Stats and help, which don't need a button each on the bar. */
+    private fun showMoreMenu(anchor: View) {
+        PopupMenu(anchor.context, anchor).apply {
+            menu.add(R.string.viewer_stats).setOnMenuItemClickListener { showDiagnostics(); true }
+            menu.add(R.string.viewer_help).setOnMenuItemClickListener { showGestureHelp(); true }
+            show()
         }
     }
 
@@ -837,6 +824,8 @@ class ViewerActivity : AppCompatActivity() {
                 Pan — drag with two fingers
                 Zoom — pinch with two fingers
                 Mouse wheel — drag up or down with three fingers
+
+                Along the top: Close, Keyboard, Copy, Paste, Rotate, Privacy, and More for stats and this help.
 
                 Copy — copies what's selected on the PC to this phone
                 Copy, held down — takes the PC's clipboard as it is

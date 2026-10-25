@@ -31,10 +31,13 @@
     <string name="privacy_no_reply">No privacy response from the desktop. Checking status…</string>
     <string name="rotate_screen">Rotate screen between portrait and landscape</string>
     <string name="highlight_dirty_rectangles">Highlight updated rectangles in red</string>
-    <string name="copy_from_pc">Copy</string>
     <string name="copy_from_pc_description">Copy the PC\'s selection to this phone</string>
-    <string name="paste_to_pc">Paste</string>
     <string name="paste_to_pc_description">Paste this phone\'s clipboard into the PC</string>
+    <string name="viewer_close">Close</string>
+    <string name="viewer_keyboard">Keyboard</string>
+    <string name="viewer_more">More</string>
+    <string name="viewer_stats">Stats</string>
+    <string name="viewer_help">Gestures and buttons</string>
     <string name="clip_no_reply">The PC didn\'t answer. Check that it\'s still connected and running the latest Remote Desktop.</string>
     <string name="clip_not_connected">Not connected to the PC</string>
     <string name="clip_pc_not_approved">Approve this PC on the phone first, in Devices</string>

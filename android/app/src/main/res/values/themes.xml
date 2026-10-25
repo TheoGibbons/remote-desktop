@@ -59,6 +59,27 @@
         <item name="android:textColor">?attr/colorOnSurfaceVariant</item>
     </style>
 
+    <!-- The viewer's toolbar (viewer_toolbar.xml). The viewer itself keeps
+         AppCompat's theme; its bar is always dark, whatever the phone's theme. -->
+    <style name="ThemeOverlay.RemoteDesktop.ViewerBar" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/rd_primary</item>
+    </style>
+
+    <!-- A white icon button on the viewer's dark bar. 40dp wide so the whole
+         bar fits a 360dp portrait phone. -->
+    <style name="RdViewerBarIcon" parent="Widget.Material3.Button.IconButton">
+        <item name="android:layout_width">40dp</item>
+        <item name="android:layout_height">40dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:padding">8dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="iconTint">@color/viewer_bar_content</item>
+        <item name="iconSize">24dp</item>
+        <item name="rippleColor">#33FFFFFF</item>
+    </style>
+
     <!-- Icon at the start of a list row (tint is set per-layout with app:tint). -->
     <style name="RdRowIcon">
         <item name="android:layout_width">24dp</item>

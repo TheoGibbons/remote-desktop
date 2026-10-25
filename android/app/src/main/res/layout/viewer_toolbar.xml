@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The bar along the top of the viewer, over the PC's screen. Inflated with
+     ThemeOverlay.RemoteDesktop.ViewerBar; wired up in ViewerActivity.buildToolbar.
+     Not a screen's root, so its background doesn't overdraw the window's. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:ignore="Overdraw"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="#E6141518"
+    android:gravity="center_vertical"
+    android:minHeight="40dp"
+    android:orientation="horizontal"
+    android:paddingStart="2dp"
+    android:paddingEnd="4dp">
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/viewerClose"
+        style="@style/RdViewerBarIcon"
+        android:contentDescription="@string/viewer_close"
+        app:icon="@drawable/ic_close" />
+
+    <!-- Which PC this is; gives way to the buttons on a narrow screen. -->
+    <TextView
+        android:id="@+id/viewerTitle"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textAppearance="?attr/textAppearanceTitleMedium"
+        android:textColor="#E6FFFFFF" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/viewerKeyboard"
+        style="@style/RdViewerBarIcon"
+        android:contentDescription="@string/viewer_keyboard"
+        app:icon="@drawable/ic_keyboard" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/viewerCopy"
+        style="@style/RdViewerBarIcon"
+        android:contentDescription="@string/copy_from_pc_description"
+        app:icon="@drawable/ic_content_copy" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/viewerPaste"
+        style="@style/RdViewerBarIcon"
+        android:contentDescription="@string/paste_to_pc_description"
+        app:icon="@drawable/ic_content_paste" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/viewerRotate"
+        style="@style/RdViewerBarIcon"
+        android:contentDescription="@string/rotate_screen"
+        app:icon="@drawable/ic_screen_rotation" />
+
+    <!-- Turns red, reading "Show PC", while the PC's screens are hidden. -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/viewerPrivacy"
+        style="@style/Widget.Material3.Button.OutlinedButton"
+        android:layout_width="wrap_content"
+        android:layout_height="32dp"
+        android:layout_marginStart="4dp"
+        android:layout_marginEnd="2dp"
+        android:insetTop="0dp"
+        android:insetBottom="0dp"
+        android:maxLines="1"
+        android:minWidth="0dp"
+        android:minHeight="0dp"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="0dp"
+        android:paddingBottom="0dp"
+        android:text="@string/privacy"
+        android:textColor="@color/viewer_bar_content"
+        app:rippleColor="#33FFFFFF"
+        app:strokeColor="#66FFFFFF" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/viewerMore"
+        style="@style/RdViewerBarIcon"
+        android:contentDescription="@string/viewer_more"
+        app:icon="@drawable/ic_more_vert" />
+</LinearLayout>

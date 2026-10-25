@@ -154,11 +154,15 @@ and the next viewing connection to that PC turns it back on or off to match,
 even if it was changed at the PC in between. PCs are told apart by their device
 identity. It replaces both auto options, so turning one on turns the other off;
 an install that already used an auto option keeps it.
-In the desktop viewer, tap **Rotate (↻)** to switch the phone between portrait
+The desktop viewer's top bar has, from the left: **Close**, the PC's name,
+**Keyboard**, **Copy**, **Paste**, **Rotate**, **Privacy** and **More (⋮)**,
+which holds **Stats** and the gesture help. Hold an icon to see its name
+(holding Copy instead takes the PC's clipboard as it is).
+Tap **Rotate** to switch the phone between portrait
 and landscape, including when Android's auto-rotate is off. The selected
 orientation stays in effect for the current viewer session.
 
-Tap **Stats** for live end-to-end round-trip time,
+Choose **More → Stats** for live end-to-end round-trip time,
 wire/screen throughput, changed-frame FPS, JPEG decode time, dirty-area rate,
 sender queue depth, sequence gaps, and decode errors. The same panel has a
 persistent **Highlight updated rectangles in red** debugging option.
@@ -167,7 +171,7 @@ While holding a left-click drag, hold your finger near any edge of the visible
 desktop to keep moving the cursor in that direction. The zoomed view follows
 the cursor so you can extend a selection beyond the phone screen without zooming
 out. Movement speeds up closer to the edge and stops when you move away or lift
-your finger. The top toolbar and keyboard control rows use 75% of their previous
+your finger. The keyboard control rows use 75% of their previous
 height. The keyboard uses Gboard-style typing rows; **?123** opens numbers and
 symbols, **ABC** returns to letters, and **Fn** exposes F1–F12. Desktop modifiers
 and navigation keys sit above the typing rows. **Shift** beside Z capitalizes

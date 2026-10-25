@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Icons and text on the viewer's dark bar; dimmed while a button can't be used. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="#61FFFFFF" android:state_enabled="false" />
+    <item android:color="#E6FFFFFF" />
+</selector>
