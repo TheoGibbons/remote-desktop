@@ -88,6 +88,23 @@ internal static class Program
         };
         var expected = new Dictionary<FileSort, string[]>
         {
+            [FileSort.NameAsc] = new[] { "archive.zip", "Backups", "empty.txt", "Projects", "report.pdf" },
+            [FileSort.NameDesc] = new[] { "report.pdf", "Projects", "empty.txt", "Backups", "archive.zip" },
+            [FileSort.SizeDesc] = new[] { "archive.zip", "report.pdf", "empty.txt", "Backups", "Projects" },
+            [FileSort.SizeAsc] = new[] { "Backups", "Projects", "empty.txt", "report.pdf", "archive.zip" },
+            [FileSort.ModifiedDesc] = new[] { "report.pdf", "Projects", "archive.zip", "Backups", "empty.txt" },
+            [FileSort.ModifiedAsc] = new[] { "empty.txt", "Backups", "archive.zip", "Projects", "report.pdf" },
+        };
+        Check(expected.Count == Enum.GetValues<FileSort>().Length, "Every sort order is covered");
+        foreach (var (sort, names) in expected)
+        {
+            Check(sample.Sorted(sort).Select(e => e.Name).SequenceEqual(names), $"{sort} mixes folders with files in the right order");
+            Check(sample.Reverse().Sorted(sort).Select(e => e.Name).SequenceEqual(names), $"{sort} ignores the listing's order");
+        }
+        Console.WriteLine("PASS: all six sort orders mix folders with files");
+
+        var foldersFirst = new Dictionary<FileSort, string[]>
+        {
             [FileSort.NameAsc] = new[] { "Backups", "Projects", "archive.zip", "empty.txt", "report.pdf" },
             [FileSort.NameDesc] = new[] { "Projects", "Backups", "report.pdf", "empty.txt", "archive.zip" },
             [FileSort.SizeDesc] = new[] { "Backups", "Projects", "archive.zip", "report.pdf", "empty.txt" },
@@ -95,13 +112,13 @@ internal static class Program
             [FileSort.ModifiedDesc] = new[] { "Projects", "Backups", "report.pdf", "archive.zip", "empty.txt" },
             [FileSort.ModifiedAsc] = new[] { "Backups", "Projects", "empty.txt", "archive.zip", "report.pdf" },
         };
-        Check(expected.Count == Enum.GetValues<FileSort>().Length, "Every sort order is covered");
-        foreach (var (sort, names) in expected)
+        Check(foldersFirst.Count == Enum.GetValues<FileSort>().Length, "Every folders-first order is covered");
+        foreach (var (sort, names) in foldersFirst)
         {
-            Check(sample.Sorted(sort).Select(e => e.Name).SequenceEqual(names), $"{sort} keeps folders first in the right order");
-            Check(sample.Reverse().Sorted(sort).Select(e => e.Name).SequenceEqual(names), $"{sort} ignores the listing's order");
+            Check(sample.Sorted(sort, foldersFirst: true).Select(e => e.Name).SequenceEqual(names), $"{sort} keeps folders first when asked");
+            Check(sample.Reverse().Sorted(sort, foldersFirst: true).Select(e => e.Name).SequenceEqual(names), $"{sort} folders first ignores the listing's order");
         }
-        Console.WriteLine("PASS: all six sort orders keep folders first");
+        Console.WriteLine("PASS: all six sort orders keep folders first when ticked");
     }
 
     private static void Check(bool condition, string message)

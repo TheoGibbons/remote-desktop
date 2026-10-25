@@ -114,7 +114,8 @@ pause.
 The file browser shows file sizes and modification dates beneath each name.
 Tap the info button for the full name, type, exact size, modification time, and
 location. The sort menu offers name, size, and modification date in either
-direction, always keeping folders first, and remembers your choice. Tap the
+direction, plus a Folders first tickbox (off by default, so folders mix in with
+files), and remembers your choices. Tap the
 current path to see its full location; Upload always sends to desktop Downloads.
 Rotating the phone keeps the same visible file and scroll offset while the
 folder reloads.

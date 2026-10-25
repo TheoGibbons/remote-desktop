@@ -24,6 +24,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
+import androidx.core.view.MenuCompat
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -51,6 +52,7 @@ class FileExplorerActivity : AppCompatActivity() {
     private lateinit var loading: ProgressBar
     private lateinit var emptyText: TextView
     private var sort = DesktopFileSort.NAME_ASC
+    private var foldersFirst = false
     private var listing = false
     @Volatile private var fileAccessAllowed = false
     private var pendingUploadUris: List<Uri> = emptyList()
@@ -110,9 +112,9 @@ class FileExplorerActivity : AppCompatActivity() {
         path = savedInstanceState?.getString("path") ?: ""
         openDownloads = savedInstanceState?.getBoolean("openDownloads") ?: true
         pendingScroll = savedInstanceState?.getBundle("scroll")
-        sort = DesktopFileSort.entries.firstOrNull {
-            it.name == getSharedPreferences("file_browser", MODE_PRIVATE).getString("sort", null)
-        } ?: DesktopFileSort.NAME_ASC
+        val prefs = getSharedPreferences("file_browser", MODE_PRIVATE)
+        sort = DesktopFileSort.entries.firstOrNull { it.name == prefs.getString("sort", null) } ?: DesktopFileSort.NAME_ASC
+        foldersFirst = prefs.getBoolean("folders_first", false)
 
         setContentView(R.layout.activity_file_explorer)
         Ui.applySystemBarInsets(this)
@@ -290,7 +292,8 @@ class FileExplorerActivity : AppCompatActivity() {
 
     private fun updateSortButton() {
         sortButton.setText(sort.summary)
-        sortButton.contentDescription = getString(R.string.files_sort_description, getString(sort.label))
+        sortButton.contentDescription = getString(if (foldersFirst) R.string.files_sort_description_folders_first
+            else R.string.files_sort_description, getString(sort.label))
         sortButton.tooltipText = sortButton.contentDescription
     }
 
@@ -300,10 +303,20 @@ class FileExplorerActivity : AppCompatActivity() {
                 menu.add(0, index, index, option.label).isChecked = option == sort
             }
             menu.setGroupCheckable(0, true, true)
+            val foldersFirstId = DesktopFileSort.entries.size
+            menu.add(1, foldersFirstId, foldersFirstId, R.string.files_sort_folders_first).apply {
+                isCheckable = true
+                isChecked = foldersFirst
+            }
+            MenuCompat.setGroupDividerEnabled(menu, true)
             setOnMenuItemClickListener { item ->
-                sort = DesktopFileSort.entries[item.itemId]
+                if (item.itemId == foldersFirstId) foldersFirst = !foldersFirst
+                else sort = DesktopFileSort.entries[item.itemId]
                 pendingScroll = null
-                getSharedPreferences("file_browser", MODE_PRIVATE).edit { putString("sort", sort.name) }
+                getSharedPreferences("file_browser", MODE_PRIVATE).edit {
+                    putString("sort", sort.name)
+                    putBoolean("folders_first", foldersFirst)
+                }
                 updateSortButton()
                 applySort()
                 true
@@ -313,7 +326,7 @@ class FileExplorerActivity : AppCompatActivity() {
     }
 
     private fun applySort(scroll: Bundle? = null) {
-        entries.sortWith(sort.comparator())
+        entries.sortWith(sort.comparator(foldersFirst))
         adapter.notifyDataSetChanged()
         if (scroll == null) {
             listView.setSelection(0)

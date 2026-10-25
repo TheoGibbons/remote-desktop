@@ -33,6 +33,7 @@ public partial class FileExplorerWindow : Window
     private TaskCompletionSource<bool>? _downloadsNavigation;
     private readonly AppSettings _settings;
     private FileSort _sort;
+    private bool _foldersFirst;
     private List<FileEntry> _entries = new();
 
     public FileExplorerWindow(WsClient ws, FsService fs, string phoneId, AppSettings settings)
@@ -43,6 +44,7 @@ public partial class FileExplorerWindow : Window
         _phoneId = phoneId;
         _settings = settings;
         _sort = Enum.TryParse(settings.FileBrowserSort, out FileSort sort) && Enum.IsDefined(sort) ? sort : FileSort.NameAsc;
+        _foldersFirst = settings.FileBrowserFoldersFirst;
         UpdateSortButton();
         _fs.TransferStatus += OnTransferStatus;
         _fs.TransferProgress += OnTransferProgress;
@@ -141,14 +143,14 @@ public partial class FileExplorerWindow : Window
                 MTime = e["mtime"]?.GetValue<long>() ?? 0,
             });
         }
-        EntryList.ItemsSource = _entries.Sorted(_sort);
+        EntryList.ItemsSource = _entries.Sorted(_sort, _foldersFirst);
         if (!_uploading) SetStatus($"{_entries.Count} items");
     }
 
     private void UpdateSortButton()
     {
         SortText.Text = _sort.Summary();
-        SortButton.ToolTip = $"Sort: {_sort.Label()}. Folders always first.";
+        SortButton.ToolTip = $"Sort: {_sort.Label()}" + (_foldersFirst ? ", folders first" : "");
     }
 
     private void Sort_Click(object sender, RoutedEventArgs e)
@@ -156,36 +158,48 @@ public partial class FileExplorerWindow : Window
         var menu = new ContextMenu { Style = (Style)FindResource("RdMenu") };
         foreach (var sort in Enum.GetValues<FileSort>())
         {
-            var header = new StackPanel { Orientation = Orientation.Horizontal };
-            header.Children.Add(new TextBlock
-            {
-                Text = "",
-                FontFamily = new FontFamily("Segoe MDL2 Assets"),
-                Foreground = (Brush)FindResource("RdPrimaryBrush"),
-                Width = 24,
-                VerticalAlignment = VerticalAlignment.Center,
-                Visibility = sort == _sort ? Visibility.Visible : Visibility.Hidden,
-            });
-            header.Children.Add(new TextBlock { Text = sort.Label() });
-            var item = new MenuItem { Header = header, Style = (Style)FindResource("RdMenuItem") };
-            item.Click += (_, _) => ApplySort(sort);
+            // Check mark beside the current order.
+            var item = SortMenuItem(sort == _sort ? "" : "", sort.Label());
+            item.Click += (_, _) => ApplySort(sort, _foldersFirst);
             menu.Items.Add(item);
         }
+        menu.Items.Add(new Separator { Style = (Style)FindResource("RdMenuSeparator") });
+        // Ticked or empty checkbox.
+        var foldersFirst = SortMenuItem(_foldersFirst ? "" : "", "Folders first");
+        foldersFirst.Click += (_, _) => ApplySort(_sort, !_foldersFirst);
+        menu.Items.Add(foldersFirst);
         menu.PlacementTarget = (UIElement)sender;
         menu.Placement = PlacementMode.Bottom;
         menu.IsOpen = true;
     }
 
-    private void ApplySort(FileSort sort)
+    private MenuItem SortMenuItem(string glyph, string label)
+    {
+        var header = new StackPanel { Orientation = Orientation.Horizontal };
+        header.Children.Add(new TextBlock
+        {
+            Text = glyph,
+            FontFamily = new FontFamily("Segoe MDL2 Assets"),
+            Foreground = (Brush)FindResource("RdPrimaryBrush"),
+            Width = 24,
+            VerticalAlignment = VerticalAlignment.Center,
+        });
+        header.Children.Add(new TextBlock { Text = label });
+        return new MenuItem { Header = header, Style = (Style)FindResource("RdMenuItem") };
+    }
+
+    private void ApplySort(FileSort sort, bool foldersFirst)
     {
         _sort = sort;
+        _foldersFirst = foldersFirst;
         _settings.FileBrowserSort = sort.ToString();
+        _settings.FileBrowserFoldersFirst = foldersFirst;
         _settings.Save();
         UpdateSortButton();
         // ItemsSource is null while a folder loads; that listing sorts itself.
         if (EntryList.ItemsSource == null) return;
         var selected = EntryList.SelectedItem;
-        EntryList.ItemsSource = _entries.Sorted(_sort);
+        EntryList.ItemsSource = _entries.Sorted(_sort, _foldersFirst);
         if (selected == null) return;
         EntryList.SelectedItem = selected;
         EntryList.ScrollIntoView(selected);

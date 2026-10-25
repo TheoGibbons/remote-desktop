@@ -89,8 +89,19 @@ class FileExplorerActivityTest {
     private fun selectSort(sort: DesktopFileSort) {
         activity.findViewById<MaterialButton>(R.id.filesSort).performClick()
         val popup = ShadowPopupMenu.getLatestPopupMenu()
-        assertEquals(1, (0 until popup.menu.size()).count { popup.menu.getItem(it).isChecked })
+        assertEquals(1, (0 until popup.menu.size()).count { popup.menu.getItem(it).run { groupId == 0 && isChecked } })
         assertTrue(popup.menu.performIdentifierAction(sort.ordinal, 0))
+        popup.dismiss()
+    }
+
+    private fun toggleFoldersFirst(wasTicked: Boolean) {
+        activity.findViewById<MaterialButton>(R.id.filesSort).performClick()
+        val popup = ShadowPopupMenu.getLatestPopupMenu()
+        val item = popup.menu.findItem(DesktopFileSort.entries.size)
+        assertEquals("Folders first", item.title.toString())
+        assertTrue(item.isCheckable)
+        assertEquals(wasTicked, item.isChecked)
+        assertTrue(popup.menu.performIdentifierAction(item.itemId, 0))
         popup.dismiss()
     }
 
@@ -100,15 +111,15 @@ class FileExplorerActivityTest {
     }
 
     @Test
-    fun allSortOrdersKeepFoldersFirstAndSelectionSurvivesNewListingsAndRecreation() {
+    fun allSortOrdersMixFoldersWithFilesAndSelectionSurvivesNewListingsAndRecreation() {
         result(sample)
         val expected = mapOf(
-            DesktopFileSort.NAME_ASC to listOf("Backups", "Projects", "archive.zip", "empty.txt", "report.pdf"),
-            DesktopFileSort.NAME_DESC to listOf("Projects", "Backups", "report.pdf", "empty.txt", "archive.zip"),
-            DesktopFileSort.SIZE_DESC to listOf("Backups", "Projects", "archive.zip", "report.pdf", "empty.txt"),
+            DesktopFileSort.NAME_ASC to listOf("archive.zip", "Backups", "empty.txt", "Projects", "report.pdf"),
+            DesktopFileSort.NAME_DESC to listOf("report.pdf", "Projects", "empty.txt", "Backups", "archive.zip"),
+            DesktopFileSort.SIZE_DESC to listOf("archive.zip", "report.pdf", "empty.txt", "Backups", "Projects"),
             DesktopFileSort.SIZE_ASC to listOf("Backups", "Projects", "empty.txt", "report.pdf", "archive.zip"),
-            DesktopFileSort.MODIFIED_DESC to listOf("Projects", "Backups", "report.pdf", "archive.zip", "empty.txt"),
-            DesktopFileSort.MODIFIED_ASC to listOf("Backups", "Projects", "empty.txt", "archive.zip", "report.pdf"),
+            DesktopFileSort.MODIFIED_DESC to listOf("report.pdf", "Projects", "archive.zip", "Backups", "empty.txt"),
+            DesktopFileSort.MODIFIED_ASC to listOf("empty.txt", "Backups", "archive.zip", "Projects", "report.pdf"),
         )
         expected.forEach { (sort, ordered) ->
             selectSort(sort)
@@ -124,6 +135,34 @@ class FileExplorerActivityTest {
         assertEquals(DesktopFileSort.SIZE_DESC, field("sort"))
         result(sample)
         assertEquals(expected[DesktopFileSort.SIZE_DESC], names())
+    }
+
+    @Test
+    fun foldersFirstTickboxGroupsFoldersInEveryOrderAndIsRemembered() {
+        result(sample)
+        toggleFoldersFirst(wasTicked = false)
+        val expected = mapOf(
+            DesktopFileSort.NAME_ASC to listOf("Backups", "Projects", "archive.zip", "empty.txt", "report.pdf"),
+            DesktopFileSort.NAME_DESC to listOf("Projects", "Backups", "report.pdf", "empty.txt", "archive.zip"),
+            DesktopFileSort.SIZE_DESC to listOf("Backups", "Projects", "archive.zip", "report.pdf", "empty.txt"),
+            DesktopFileSort.SIZE_ASC to listOf("Backups", "Projects", "empty.txt", "report.pdf", "archive.zip"),
+            DesktopFileSort.MODIFIED_DESC to listOf("Projects", "Backups", "report.pdf", "archive.zip", "empty.txt"),
+            DesktopFileSort.MODIFIED_ASC to listOf("Backups", "Projects", "empty.txt", "archive.zip", "report.pdf"),
+        )
+        expected.forEach { (sort, ordered) ->
+            selectSort(sort)
+            assertEquals(sort.name, ordered, names())
+        }
+        val sortButton = { activity.findViewById<MaterialButton>(R.id.filesSort) }
+        assertEquals("Sort: Modified (oldest first), folders first", sortButton().contentDescription)
+
+        controller.recreate()
+        activity = controller.get()
+        result(sample)
+        assertEquals(expected[DesktopFileSort.MODIFIED_ASC], names())
+        toggleFoldersFirst(wasTicked = true)
+        assertEquals(listOf("empty.txt", "Backups", "archive.zip", "Projects", "report.pdf"), names())
+        assertEquals("Sort: Modified (oldest first)", sortButton().contentDescription)
     }
 
     @Test

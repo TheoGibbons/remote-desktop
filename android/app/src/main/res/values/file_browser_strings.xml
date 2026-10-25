@@ -9,7 +9,9 @@
     <string name="files_empty">This folder is empty</string>
     <string name="files_loading">Loading…</string>
     <string name="files_error">Could not load this folder. Try refreshing.</string>
-    <string name="files_sort_description">Sort: %1$s. Folders always first.</string>
+    <string name="files_sort_description">Sort: %1$s</string>
+    <string name="files_sort_description_folders_first">Sort: %1$s, folders first</string>
+    <string name="files_sort_folders_first">Folders first</string>
     <string name="files_sort_name_asc">Name (A–Z)</string>
     <string name="files_sort_name_desc">Name (Z–A)</string>
     <string name="files_sort_size_desc">Size (largest first)</string>

@@ -21,6 +21,7 @@ public class AppSettings
     public bool AllowFileAccess { get; set; } = true;
     // A FileSort name, kept as text so a bad value can't fail the whole load.
     public string FileBrowserSort { get; set; } = nameof(FileSort.NameAsc);
+    public bool FileBrowserFoldersFirst { get; set; }
     // Stable per-install id so the relay can replace this device's stale
     // connection on reconnect instead of listing it twice.
     public string DeviceUid { get; set; } = Guid.NewGuid().ToString("N");

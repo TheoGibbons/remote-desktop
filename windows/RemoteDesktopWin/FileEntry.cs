@@ -44,18 +44,20 @@ public static class FileSorting
         _ => "Modified ↑",
     };
 
-    /// <summary>Folders always come first; ties fall back to name order.</summary>
-    public static List<FileEntry> Sorted(this IEnumerable<FileEntry> entries, FileSort sort)
+    /// <summary>Folders sort among files unless <paramref name="foldersFirst"/>; ties fall back to name order.</summary>
+    public static List<FileEntry> Sorted(this IEnumerable<FileEntry> entries, FileSort sort, bool foldersFirst = false)
     {
-        var folders = entries.OrderByDescending(e => e.Dir);
+        // Folder sizes aren't calculated, so they rank below empty files.
+        static long SizeKey(FileEntry e) => e.Dir ? -1 : e.Size;
+        var grouped = entries.OrderByDescending(e => foldersFirst && e.Dir);
         var ordered = sort switch
         {
-            FileSort.NameAsc => folders.ThenBy(e => e.Name.ToLowerInvariant(), StringComparer.Ordinal),
-            FileSort.NameDesc => folders.ThenByDescending(e => e.Name.ToLowerInvariant(), StringComparer.Ordinal),
-            FileSort.SizeDesc => folders.ThenByDescending(e => e.Size),
-            FileSort.SizeAsc => folders.ThenBy(e => e.Size),
-            FileSort.ModifiedDesc => folders.ThenByDescending(e => e.MTime),
-            _ => folders.ThenBy(e => e.MTime),
+            FileSort.NameAsc => grouped.ThenBy(e => e.Name.ToLowerInvariant(), StringComparer.Ordinal),
+            FileSort.NameDesc => grouped.ThenByDescending(e => e.Name.ToLowerInvariant(), StringComparer.Ordinal),
+            FileSort.SizeDesc => grouped.ThenByDescending(SizeKey),
+            FileSort.SizeAsc => grouped.ThenBy(SizeKey),
+            FileSort.ModifiedDesc => grouped.ThenByDescending(e => e.MTime),
+            _ => grouped.ThenBy(e => e.MTime),
         };
         return ordered
             .ThenBy(e => e.Name.ToLowerInvariant(), StringComparer.Ordinal)

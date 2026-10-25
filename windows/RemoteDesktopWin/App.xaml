@@ -273,6 +273,17 @@
             </Setter>
         </Style>
 
+        <Style x:Key="RdMenuSeparator" TargetType="Separator">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Separator">
+                        <Border Height="1" Margin="10,4" Background="{StaticResource RdOutlineBrush}"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- CheckBox rendered as a toggle switch (label it separately). -->
         <Style x:Key="RdSwitch" TargetType="CheckBox">
             <Setter Property="Cursor" Value="Hand"/>
