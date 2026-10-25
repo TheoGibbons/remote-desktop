@@ -119,11 +119,12 @@ its own buttons, which work once the PC and this phone have approved each other:
 Reinstalling the app gives the phone a new device code, so each PC must approve
 it again. Updating in place keeps the code.
 
-The file browser shows file sizes and modification dates beneath each name.
+The file browser opens in the desktop's Downloads folder and shows file sizes
+and modification dates beneath each name.
 Tap the info button for the full name, type, exact size, modification time, and
 location. The sort menu offers name, size, and modification date in either
-direction, plus a Folders first tickbox (off by default, so folders mix in with
-files), and remembers your choices. Tap the
+direction (newest first by default), plus a Folders first tickbox (off by
+default, so folders mix in with files), and remembers your choices. Tap the
 current path to see its full location; Upload always sends to desktop Downloads.
 Rotating the phone keeps the same visible file and scroll offset while the
 folder reloads.

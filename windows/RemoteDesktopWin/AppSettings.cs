@@ -20,7 +20,7 @@ public class AppSettings
     public bool AllowRemoteControl { get; set; } = true;
     public bool AllowFileAccess { get; set; } = true;
     // A FileSort name, kept as text so a bad value can't fail the whole load.
-    public string FileBrowserSort { get; set; } = nameof(FileSort.NameAsc);
+    public string FileBrowserSort { get; set; } = nameof(FileSort.ModifiedDesc);
     public bool FileBrowserFoldersFirst { get; set; }
     // Stable per-install id so the relay can replace this device's stale
     // connection on reconnect instead of listing it twice.

@@ -51,7 +51,7 @@ class FileExplorerActivity : AppCompatActivity() {
     private lateinit var sortButton: MaterialButton
     private lateinit var loading: ProgressBar
     private lateinit var emptyText: TextView
-    private var sort = DesktopFileSort.NAME_ASC
+    private var sort = DesktopFileSort.MODIFIED_DESC
     private var foldersFirst = false
     private var listing = false
     @Volatile private var fileAccessAllowed = false
@@ -113,7 +113,7 @@ class FileExplorerActivity : AppCompatActivity() {
         openDownloads = savedInstanceState?.getBoolean("openDownloads") ?: true
         pendingScroll = savedInstanceState?.getBundle("scroll")
         val prefs = getSharedPreferences("file_browser", MODE_PRIVATE)
-        sort = DesktopFileSort.entries.firstOrNull { it.name == prefs.getString("sort", null) } ?: DesktopFileSort.NAME_ASC
+        sort = DesktopFileSort.entries.firstOrNull { it.name == prefs.getString("sort", null) } ?: DesktopFileSort.MODIFIED_DESC
         foldersFirst = prefs.getBoolean("folders_first", false)
 
         setContentView(R.layout.activity_file_explorer)

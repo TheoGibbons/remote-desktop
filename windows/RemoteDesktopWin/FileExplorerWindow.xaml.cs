@@ -43,7 +43,7 @@ public partial class FileExplorerWindow : Window
         _fs = fs;
         _phoneId = phoneId;
         _settings = settings;
-        _sort = Enum.TryParse(settings.FileBrowserSort, out FileSort sort) && Enum.IsDefined(sort) ? sort : FileSort.NameAsc;
+        _sort = Enum.TryParse(settings.FileBrowserSort, out FileSort sort) && Enum.IsDefined(sort) ? sort : FileSort.ModifiedDesc;
         _foldersFirst = settings.FileBrowserFoldersFirst;
         UpdateSortButton();
         _fs.TransferStatus += OnTransferStatus;
@@ -54,6 +54,8 @@ public partial class FileExplorerWindow : Window
             _fs.TransferProgress -= OnTransferProgress;
         };
         if (MainWindow.IsElevated()) Loaded += (_, _) => AcceptElevatedFileDrops();
+        // Open in Downloads, which the first listing says where to find.
+        _navigateToDownloads = true;
         RequestList("");
     }
 
@@ -124,12 +126,21 @@ public partial class FileExplorerWindow : Window
             return;
         }
         _path = msg["path"]?.GetValue<string>() ?? "";
-        // Older phones don't advertise Downloads; their first listing is the storage root.
-        if (_downloadsPath == null && _requestedPath == "") _downloadsPath = Join(_path, "Download");
+        // Older phones don't advertise Downloads; their first listing is the storage
+        // root. A PC's is its drive list, with no path to guess from.
+        if (_downloadsPath == null && _requestedPath == "" && _path != "") _downloadsPath = Join(_path, "Download");
         if (_navigateToDownloads && _downloadsPath != null)
         {
             _ = NavigateToDownloads();
             return;
+        }
+        if (_navigateToDownloads && _requestedPath == "")
+        {
+            // A PC older than 1.0.31 doesn't say where Downloads is. Stay at its
+            // drives; an upload still goes ahead, since it lands in Downloads anyway.
+            _navigateToDownloads = false;
+            _downloadsNavigation?.TrySetResult(true);
+            _downloadsNavigation = null;
         }
         PathBox.Text = _path;
         _entries = new List<FileEntry>();

@@ -176,7 +176,9 @@ unapproved device is present in the session, streaming and file serving pause.
     Backspace, arrows and Ctrl shortcuts; Esc is Back, and Ctrl+V pastes this
     PC's clipboard.
 - **Browse files** → a file explorer to download from / upload to the selected
-  device (a PC or a phone). Downloads are saved to
+  device (a PC or a phone). It opens in that device's Downloads folder, newest
+  first; the sort button changes the order (name, size or date, either way)
+  and can group folders first, and remembers your choice. Downloads are saved to
   your Downloads folder — asked of Windows rather than assumed, so a relocated
   Downloads is honoured; uploads land in the peer's `Downloads` folder on
   Windows or Android alike. A name that clashes with a file already there gets

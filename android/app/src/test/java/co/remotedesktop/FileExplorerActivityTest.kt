@@ -138,6 +138,15 @@ class FileExplorerActivityTest {
     }
 
     @Test
+    fun startsNewestFirstWithFoldersMixedIn() {
+        result(sample)
+        assertEquals(listOf("report.pdf", "Projects", "archive.zip", "Backups", "empty.txt"), names())
+        val sortButton = activity.findViewById<MaterialButton>(R.id.filesSort)
+        assertEquals("Modified ↓", sortButton.text.toString())
+        assertEquals("Sort: Modified (newest first)", sortButton.contentDescription)
+    }
+
+    @Test
     fun foldersFirstTickboxGroupsFoldersInEveryOrderAndIsRemembered() {
         result(sample)
         toggleFoldersFirst(wasTicked = false)

@@ -119,6 +119,11 @@ internal static class Program
             Check(sample.Reverse().Sorted(sort, foldersFirst: true).Select(e => e.Name).SequenceEqual(names), $"{sort} folders first ignores the listing's order");
         }
         Console.WriteLine("PASS: all six sort orders keep folders first when ticked");
+
+        var settings = new AppSettings();
+        Check(settings.FileBrowserSort == nameof(FileSort.ModifiedDesc) && !settings.FileBrowserFoldersFirst,
+            "The file browser starts newest first, with folders mixed in");
+        Console.WriteLine("PASS: the file browser starts newest first, with folders mixed in");
     }
 
     private static void Check(bool condition, string message)

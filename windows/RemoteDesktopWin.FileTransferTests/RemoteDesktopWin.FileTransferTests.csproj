@@ -8,5 +8,7 @@
   <ItemGroup>
     <Compile Include="../RemoteDesktopWin/FsService.cs" Link="FsService.cs" />
     <Compile Include="../RemoteDesktopWin/FileEntry.cs" Link="FileEntry.cs" />
+    <Compile Include="../RemoteDesktopWin/AppSettings.cs" Link="AppSettings.cs" />
+    <Compile Include="../RemoteDesktopWin/AppDefaults.cs" Link="AppDefaults.cs" />
   </ItemGroup>
 </Project>
