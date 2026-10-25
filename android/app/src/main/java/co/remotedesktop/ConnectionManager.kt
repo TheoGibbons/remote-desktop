@@ -68,6 +68,13 @@ object ConnectionManager {
         private set
     val peers = CopyOnWriteArrayList<Peer>()
 
+    /** Intent extra: the peer id of the desktop a viewer or file browser opens. */
+    const val EXTRA_PEER_ID = "co.remotedesktop.PEER_ID"
+
+    /** The desktop with this peer id, or the first one online when none is named. */
+    fun desktop(peerId: String?): Peer? =
+        peers.firstOrNull { it.device == "windows" && (peerId == null || it.id == peerId) }
+
     // UI listeners, invoked on the main thread.
     val stateListeners = CopyOnWriteArrayList<(String) -> Unit>()
     val jsonListeners = CopyOnWriteArrayList<(JSONObject) -> Unit>()

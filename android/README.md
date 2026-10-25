@@ -108,8 +108,16 @@ trust is kept). Changing the session ID resets all approvals. While an
 unapproved device is present in the session, screen sharing and file serving
 pause.
 
-- **View desktop** → live PC view with the mouse/keyboard controls.
-- **Browse files** → download to `Downloads`, or select one or multiple files to upload to the desktop's `Downloads` folder.
+The connection card lists each device online in the session with where it
+stands: *Paired*, *Checking…*, *Waiting for approval* (approve this phone on
+that PC, using the code shown), *Needs your approval*, or *Denied*. Each PC has
+its own buttons, which work once the PC and this phone have approved each other:
+
+- **View** → live PC view with the mouse/keyboard controls.
+- **Browse** → download to `Downloads`, or select one or multiple files to upload to the desktop's `Downloads` folder.
+
+Reinstalling the app gives the phone a new device code, so each PC must approve
+it again. Updating in place keeps the code.
 
 The file browser shows file sizes and modification dates beneath each name.
 Tap the info button for the full name, type, exact size, modification time, and

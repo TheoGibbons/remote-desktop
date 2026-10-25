@@ -5,6 +5,8 @@ import android.os.Build
 
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    // Never backed up (see res/xml/backup_rules.xml), unlike the settings.
+    private val install = context.getSharedPreferences("install", Context.MODE_PRIVATE)
 
     var serverUrl: String
         get() = sp.getString("serverUrl", BuildConfig.DEFAULT_RELAY_SERVER_URL) ?: BuildConfig.DEFAULT_RELAY_SERVER_URL
@@ -73,13 +75,17 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean("allowFileAccess", v).apply()
 
     /** Stable per-install id so the relay replaces this device's stale
-     *  connection on reconnect instead of listing it twice. */
+     *  connection on reconnect instead of listing it twice. A phone restored
+     *  from this one's backup must not share it, or the relay would take the
+     *  two for one device and each would knock the other off. */
     val deviceUid: String
         get() {
-            var uid = sp.getString("deviceUid", null)
+            var uid = install.getString("deviceUid", null)
             if (uid == null) {
                 uid = java.util.UUID.randomUUID().toString().replace("-", "")
-                sp.edit().putString("deviceUid", uid).apply()
+                install.edit().putString("deviceUid", uid).apply()
+                // Older versions kept it in the settings, which are backed up.
+                sp.edit().remove("deviceUid").apply()
             }
             return uid
         }

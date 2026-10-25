@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older. Everything is backed up except the per-install
+     relay id (Prefs.deviceUid), which a restored phone must not share. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="install.xml" />
+</full-backup-content>

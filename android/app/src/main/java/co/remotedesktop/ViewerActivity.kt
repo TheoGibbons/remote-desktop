@@ -51,6 +51,8 @@ import java.util.UUID
 class ViewerActivity : AppCompatActivity() {
 
     private lateinit var screen: RemoteScreenView
+    // Over the empty screen while the PC hasn't approved this phone.
+    private lateinit var approvalNotice: TextView
     private lateinit var keyboard: KeyboardPanel
     private lateinit var imeCatcher: EditText
     private lateinit var root: FrameLayout
@@ -507,6 +509,7 @@ class ViewerActivity : AppCompatActivity() {
             finish()
         }
         if (msg.optString("type") == "auth-result" && msg.optString("from") == winId) {
+            updateApprovalNotice()
             when (msg.optString("status")) {
                 // Approved: re-request the stream — the start-view sent while we
                 // were still unapproved was dropped by the desktop.
@@ -577,7 +580,7 @@ class ViewerActivity : AppCompatActivity() {
         requestedOrientation = savedInstanceState?.getInt(STATE_ORIENTATION, ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE)
             ?: ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         ConnectionManager.init(this)
-        winId = ConnectionManager.peers.firstOrNull { it.device == "windows" }?.id
+        winId = ConnectionManager.desktop(intent.getStringExtra(ConnectionManager.EXTRA_PEER_ID))?.id
         if (winId == null) {
             Toast.makeText(this, "No desktop is online in this session", Toast.LENGTH_LONG).show()
             finish()
@@ -654,6 +657,18 @@ class ViewerActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         wireGestures()
+
+        // Not clickable, so gestures still reach the screen beneath.
+        approvalNotice = TextView(this).apply {
+            visibility = View.GONE
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
+        root.addView(approvalNotice, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
 
         // Keyboard panel (hidden until toggled).
         keyboard = KeyboardPanel(this).apply {
@@ -1377,8 +1392,22 @@ class ViewerActivity : AppCompatActivity() {
         ConnectionManager.binaryListeners.add(binaryListener)
         ConnectionManager.jsonListeners.add(jsonListener)
         ConnectionManager.stateListeners.add(stateListener)
+        updateApprovalNotice()
         startViewer()
         send(JSONObject().put("type", "get-privacy-state"))
+    }
+
+    /** The PC ignores start-view until it approves this phone, which then
+     *  restarts the viewer (see jsonListener). Say why the screen is empty. */
+    private fun updateApprovalNotice() {
+        if (!::approvalNotice.isInitialized) return
+        val waiting = PeerAuth.resultFrom(winId) == "pending"
+        if (waiting) {
+            val pc = ConnectionManager.peers.firstOrNull { it.id == winId }?.name ?: "the PC"
+            approvalNotice.text = getString(R.string.viewer_awaiting_approval, pc,
+                PeerAuth.shortCode(PeerAuth.ownFingerprint))
+        }
+        approvalNotice.visibility = if (waiting) View.VISIBLE else View.GONE
     }
 
     override fun onPause() {

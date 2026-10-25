@@ -151,47 +151,13 @@
                             app:tint="?attr/colorOnSurfaceVariant" />
                     </LinearLayout>
 
-                    <!-- Actions for the connected computer; shown only while a
-                         windows device is online in the session. -->
+                    <!-- One row per device online in the session
+                         (item_session_peer), filled in by MainActivity. -->
                     <LinearLayout
-                        android:id="@+id/deviceActionsRow"
+                        android:id="@+id/peerRows"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="12dp"
-                        android:orientation="horizontal"
-                        android:visibility="gone">
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/viewDesktopBtn"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:layout_marginEnd="6dp"
-                            android:maxLines="1"
-                            android:paddingStart="8dp"
-                            android:paddingEnd="8dp"
-                            android:text="View desktop"
-                            app:icon="@drawable/ic_monitor"
-                            app:iconGravity="textStart"
-                            app:iconSize="18dp"
-                            app:iconPadding="6dp" />
-
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/filesBtn"
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:layout_marginStart="6dp"
-                            android:maxLines="1"
-                            android:paddingStart="8dp"
-                            android:paddingEnd="8dp"
-                            android:text="Browse files"
-                            app:icon="@drawable/ic_folder"
-                            app:iconGravity="textStart"
-                            app:iconSize="18dp"
-                            app:iconPadding="6dp"
-                            style="@style/Widget.Material3.Button.OutlinedButton.Icon" />
-                    </LinearLayout>
+                        android:orientation="vertical" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

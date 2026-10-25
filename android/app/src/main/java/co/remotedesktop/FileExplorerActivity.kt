@@ -103,7 +103,7 @@ class FileExplorerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ConnectionManager.init(this)
-        winId = ConnectionManager.peers.firstOrNull { it.device == "windows" }?.id
+        winId = ConnectionManager.desktop(intent.getStringExtra(ConnectionManager.EXTRA_PEER_ID))?.id
         if (winId == null) {
             Toast.makeText(this, "No desktop is online in this session", Toast.LENGTH_LONG).show()
             finish(); return

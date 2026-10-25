@@ -81,4 +81,23 @@
     <string name="copy_to_pc_connecting">Connecting to your PC…</string>
     <string name="copy_to_pc_unreachable">Couldn\'t reach your PC. Check that it\'s on and Remote Desktop is running.</string>
     <string name="copy_to_pc_not_set_up">Set up Remote Desktop on this phone first</string>
+    <string name="peer_name">%1$s · %2$s</string>
+    <string name="peer_kind_pc">PC</string>
+    <string name="peer_kind_phone">phone</string>
+    <string name="peer_paired">Paired</string>
+    <string name="peer_checking">Checking…</string>
+    <string name="peer_awaiting">Waiting for approval</string>
+    <string name="peer_awaiting_detail">Approve this phone on %1$s. Code: %2$s</string>
+    <string name="peer_needs_you">Needs your approval</string>
+    <string name="peer_needs_you_detail">Tap here to approve or deny it</string>
+    <string name="peer_denied">Denied</string>
+    <string name="peer_denied_detail">%1$s denied this phone. Restart the app there to ask again.</string>
+    <string name="peer_revoked">Revoked</string>
+    <string name="peer_revoked_detail">%1$s removed this phone. It asks again when this phone next connects.</string>
+    <string name="peer_denied_here">Denied on this phone</string>
+    <string name="peer_view">View</string>
+    <string name="peer_view_description">View %1$s</string>
+    <string name="peer_browse">Browse</string>
+    <string name="peer_browse_description">Browse files on %1$s</string>
+    <string name="viewer_awaiting_approval">Approve this phone on %1$s.\nCode: %2$s</string>
 </resources>

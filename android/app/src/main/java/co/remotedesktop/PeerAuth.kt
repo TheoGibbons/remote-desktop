@@ -244,8 +244,9 @@ object PeerAuth {
     fun resultFrom(peerId: String?): String? =
         peerId?.let { synchronized(lock) { resultFrom[it] } }
 
-    /** Whether this peer has approved this phone, so it will act on what the phone sends. */
-    fun trustedBy(peerId: String?): Boolean = resultFrom(peerId) == "trusted"
+    /** Whether this peer has approved this phone, so it will act on what the phone sends.
+     *  A peer that hung up on this phone ("disconnected") keeps its approval. */
+    fun trustedBy(peerId: String?): Boolean = resultFrom(peerId).let { it == "trusted" || it == "disconnected" }
 
     fun fingerprintOfPeer(peerId: String): String? =
         synchronized(lock) { peerFingerprint[peerId] }

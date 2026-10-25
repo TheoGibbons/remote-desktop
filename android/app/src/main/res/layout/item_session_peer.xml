@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One device online in the session, on the home screen's connection card. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical">
+
+    <com.google.android.material.divider.MaterialDivider
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/peerName"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+        <TextView
+            android:id="@+id/peerStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:textAppearance="?attr/textAppearanceLabelLarge" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/peerDetail"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:visibility="gone" />
+
+    <!-- Only PCs can be viewed and browsed from this phone. -->
+    <LinearLayout
+        android:id="@+id/peerActions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/peerView"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:maxLines="1"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="@string/peer_view"
+            app:icon="@drawable/ic_monitor"
+            app:iconGravity="textStart"
+            app:iconSize="18dp"
+            app:iconPadding="6dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/peerBrowse"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="6dp"
+            android:maxLines="1"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:text="@string/peer_browse"
+            app:icon="@drawable/ic_folder"
+            app:iconGravity="textStart"
+            app:iconSize="18dp"
+            app:iconPadding="6dp"
+            style="@style/Widget.Material3.Button.OutlinedButton.Icon" />
+    </LinearLayout>
+</LinearLayout>
