@@ -126,6 +126,8 @@ location. The sort menu offers name, size, and modification date in either
 direction (newest first by default), plus a Folders first tickbox (off by
 default, so folders mix in with files), and remembers your choices. Tap the
 current path to see its full location; Upload always sends to desktop Downloads.
+While a download or upload runs, **Cancel** beside the status line stops it,
+including any uploads still queued; a part-downloaded file is deleted.
 Rotating the phone keeps the same visible file and scroll offset while the
 folder reloads.
 

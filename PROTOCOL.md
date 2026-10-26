@@ -161,7 +161,8 @@ a paste there is expected to come from the PC.
 | `fs-list-result` | `reqId`, `path`, `entries` `[{name, dir, size, mtime}]`, `error?`, `downloadsPath?` | Both apps advertise their absolute upload destination in `downloadsPath`, so the browsing device can open there and return there as an upload starts. Older peers omit it. |
 | `fs-get`         | `to`, `path`, `xferId` | Ask peer to send me a file. |
 | `fs-begin`       | `to`, `xferId`, `name`, `size` | Sender announces an incoming file (used for both push-upload and get-response). |
-| `fs-end`         | `to`, `xferId`, `ok`, `error?` | |
+| `fs-end`         | `to`, `xferId`, `ok`, `error?` | A sender cancels its own transfer by ending it early with `ok: false`. |
+| `fs-cancel`      | `to`, `xferId` | Receiver gives up on a file it asked for with `fs-get`, before or after its `fs-begin`. The sender stops and ends it with `fs-end` `ok: false`; only the device the file is going to can cancel it. The receiver drops what has arrived at once and ignores the rest. Older senders ignore this and send the whole file, so a receiver also refuses an `fs-begin` for a download it cancelled before it began, even while it accepts pushes. |
 | `fs-saved`       | `to`, `xferId`, `path?`, `error?` | Receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Windows replies with `error` if saving fails or a known-size file is incomplete. Older peers may omit this reply; Android share-sheet sends wait for confirmation and show an unconfirmed result on timeout. |
 
 **Clipboard** (only a Windows host serves these; a phone or another PC sends them)

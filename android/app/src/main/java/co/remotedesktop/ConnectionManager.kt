@@ -368,7 +368,7 @@ object ConnectionManager {
 
             // File system requests/responses. Chunks are broadcast like video,
             // so serving also requires that no unapproved peer is present.
-            "fs-list", "fs-get", "fs-begin", "fs-end" ->
+            "fs-list", "fs-get", "fs-begin", "fs-end", "fs-cancel" ->
                 fs.handleJson(msg, peerAccessAllowed = Prefs(appContext).allowFileAccess &&
                     PeerAuth.isTrusted(from) && PeerAuth.allPeersTrusted)
         }

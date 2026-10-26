@@ -49,7 +49,8 @@ handoff, and recovery after a crash. These checks use an isolated lock and do
 not launch the UI or connect to a relay.
 
 Run `dotnet run --project windows/RemoteDesktopWin.FileTransferTests` for file
-save confirmations, duplicate names, incomplete and cancelled transfers,
+save confirmations, duplicate names, incomplete and cancelled transfers (from
+either end, before and after they begin),
 unknown sizes, empty files and save failures. These checks use temporary files
 and a transport double, without connecting to a relay.
 
@@ -187,7 +188,9 @@ unapproved device is present in the session, streaming and file serving pause.
   window to send them — several at once, also when the app runs as
   administrator. Files added while an upload runs join its queue. The browser
   moves to the phone's Downloads folder as the upload starts and refreshes
-  after the phone confirms the saved files.
+  after the phone confirms the saved files. **Cancel**, beside the status line
+  while a download or upload runs, stops it: a part-downloaded file is
+  deleted, and cancelling an upload drops the rest of its queue.
 - **QR code** (next to *Generate*) → shows the server URL + session key as a QR
   code the phone scans to pair in one step.
 - Closing the window hides the app to the **tray** — paired devices can still

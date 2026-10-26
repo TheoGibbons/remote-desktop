@@ -47,6 +47,7 @@ class FileExplorerActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var listView: ListView
     private lateinit var uploadButton: Button
+    private lateinit var cancelButton: Button
     private lateinit var upButton: ImageButton
     private lateinit var sortButton: MaterialButton
     private lateinit var loading: ProgressBar
@@ -67,6 +68,9 @@ class FileExplorerActivity : AppCompatActivity() {
     private var pendingScroll: Bundle? = null
     private val entries = ArrayList<DesktopFileEntry>()
     private lateinit var adapter: FileAdapter
+    // Downloads and uploads started here, which Cancel stops. Kept across
+    // rotation; FsHandler says which are still running.
+    private val transfers = mutableSetOf<Int>()
 
     private val jsonListener: (JSONObject) -> Unit = { msg ->
         when (msg.optString("type")) {
@@ -112,6 +116,7 @@ class FileExplorerActivity : AppCompatActivity() {
         path = savedInstanceState?.getString("path") ?: ""
         openDownloads = savedInstanceState?.getBoolean("openDownloads") ?: true
         pendingScroll = savedInstanceState?.getBundle("scroll")
+        savedInstanceState?.getIntArray("transfers")?.let { transfers.addAll(it.toList()) }
         val prefs = getSharedPreferences("file_browser", MODE_PRIVATE)
         sort = DesktopFileSort.entries.firstOrNull { it.name == prefs.getString("sort", null) } ?: DesktopFileSort.MODIFIED_DESC
         foldersFirst = prefs.getBoolean("folders_first", false)
@@ -162,6 +167,10 @@ class FileExplorerActivity : AppCompatActivity() {
                 layoutParams = layoutParams.apply { width = pad * 4 }
             }
         }
+        cancelButton = findViewById<Button>(R.id.filesCancel).apply {
+            tooltipText = getString(R.string.files_cancel_description)
+            setOnClickListener { cancelTransfers() }
+        }
         statusText = findViewById(R.id.filesStatus)
         updatePath()
         updateSortButton()
@@ -171,6 +180,7 @@ class FileExplorerActivity : AppCompatActivity() {
         outState.putString("path", if (listing) requestedPath else path)
         outState.putBoolean("openDownloads", openDownloads)
         outState.putBundle("scroll", captureScroll())
+        outState.putIntArray("transfers", transfers.filter { ConnectionManager.fs.isActive(it) }.toIntArray())
         super.onSaveInstanceState(outState)
     }
 
@@ -197,6 +207,7 @@ class FileExplorerActivity : AppCompatActivity() {
         uploadButton.isEnabled = false
         ConnectionManager.sendJson(JSONObject().put("type", "get-file-access").put("to", winId))
         ConnectionManager.fs.transferStatus.add(transferListener)
+        updateCancelButton()
         if (lastReqId.isEmpty() || listing) requestList(if (listing) requestedPath else path)
     }
 
@@ -430,10 +441,12 @@ class FileExplorerActivity : AppCompatActivity() {
 
     private fun download(fullPath: String, name: String) {
         val xferId = ConnectionManager.fs.nextXferId()
+        // Cancelled transfers are no longer in the set and have already said so.
         ConnectionManager.fs.expectDownload(xferId,
-            { saved -> runOnUiThread { setStatus("Saved to $saved", saved) } },
-            { errMsg -> runOnUiThread { setStatus("Failed: $errMsg") } },
+            { saved -> runOnUiThread { if (transfers.remove(xferId)) setStatus("Saved to $saved", saved) } },
+            { errMsg -> runOnUiThread { if (transfers.remove(xferId)) setStatus("Failed: $errMsg") } },
             from = winId)
+        transfers.add(xferId)
         ConnectionManager.sendJson(
             JSONObject().put("type", "fs-get").put("to", winId).put("path", fullPath).put("xferId", xferId)
         )
@@ -448,6 +461,19 @@ class FileExplorerActivity : AppCompatActivity() {
         statusText.isClickable = savedPath != null
         statusText.isFocusable = savedPath != null
         statusText.tooltipText = if (savedPath != null) "Open containing folder" else null
+        // Transfers report through here as they start and end.
+        updateCancelButton()
+    }
+
+    private fun updateCancelButton() {
+        cancelButton.visibility = if (transfers.any { ConnectionManager.fs.isActive(it) }) View.VISIBLE else View.GONE
+    }
+
+    private fun cancelTransfers() {
+        transfers.forEach { ConnectionManager.fs.cancel(it) }
+        transfers.clear()
+        pendingUploadUris = emptyList()
+        setStatus(getString(R.string.files_cancelled))
     }
 
     @Suppress("DEPRECATION")
@@ -474,16 +500,20 @@ class FileExplorerActivity : AppCompatActivity() {
             return
         }
         val peerId = winId ?: return
-        ConnectionManager.fs.sendUriAsync(peerId, uri, ConnectionManager.fs.nextXferId(),
+        val xferId = ConnectionManager.fs.nextXferId()
+        transfers.add(xferId)
+        ConnectionManager.fs.sendUriAsync(peerId, uri, xferId,
             { fileAccessAllowed && PeerAuth.isTrusted(peerId) && PeerAuth.allPeersTrusted &&
                 ConnectionManager.peers.any { it.id == peerId } },
-            { progress -> runOnUiThread { setStatus(progress) } },
+            { progress -> runOnUiThread { if (xferId in transfers) setStatus(progress) } },
             { ok, result -> runOnUiThread {
+                if (!transfers.remove(xferId)) return@runOnUiThread
                 if (ok) Toast.makeText(
                     this, "“$result” sent to the desktop's Downloads folder" +
                         if (isDownloads(shownPath)) "" else " (not the folder you are browsing)", Toast.LENGTH_LONG
                 ).show()
                 else setStatus(result ?: "Could not send the selected file")
+                updateCancelButton()
             } })
         setStatus("Queued selected file for upload...")
     }

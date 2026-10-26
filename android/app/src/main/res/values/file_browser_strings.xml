@@ -3,6 +3,9 @@
     <string name="files_back">Back</string>
     <string name="files_upload">Upload</string>
     <string name="files_upload_description">Upload files to desktop Downloads</string>
+    <string name="files_cancel">Cancel</string>
+    <string name="files_cancel_description">Cancel transfer</string>
+    <string name="files_cancelled">Transfer cancelled</string>
     <string name="files_refresh">Refresh folder</string>
     <string name="files_up">Parent folder</string>
     <string name="files_this_pc">This PC</string>

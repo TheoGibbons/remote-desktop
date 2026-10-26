@@ -50,8 +50,18 @@ class FsHandler(private val context: Context) {
     /** A download this phone asked for with fs-get, until its fs-begin arrives. */
     private class PendingGet(val peer: String?, val onDone: (String) -> Unit, val onError: (String) -> Unit)
 
+    /** A file this phone is sending, until its fs-end. */
+    private class Outgoing(val peer: String) {
+        /** What fs-end tells the receiver, once the transfer has been cancelled. */
+        @Volatile var cancelled: String? = null
+    }
+
     private val incoming = ConcurrentHashMap<Int, Incoming>()
     private val pendingGets = ConcurrentHashMap<Int, PendingGet>()
+    private val outgoing = ConcurrentHashMap<Int, Outgoing>()
+    // Downloads given up before their fs-begin. An older sender ignores
+    // fs-cancel and sends the file anyway, which must not be kept as a push.
+    private val cancelledGets = ConcurrentHashMap.newKeySet<Int>()
 
     private val root: File get() = Environment.getExternalStorageDirectory()
 
@@ -66,7 +76,36 @@ class FsHandler(private val context: Context) {
             "fs-get" -> if (peerAccessAllowed) handleGet(msg) else denyGet(msg)
             "fs-begin" -> handleBegin(msg, peerAccessAllowed)
             "fs-end" -> handleEnd(msg)
+            // Only the device receiving the file can call it off.
+            "fs-cancel" -> outgoing[msg.optInt("xferId")]?.takeIf { it.peer == msg.optString("from") }
+                ?.cancelled = "Cancelled by the receiver"
         }
+    }
+
+    /** Whether a transfer is still waiting to begin, sending or receiving. */
+    fun isActive(xferId: Int) =
+        pendingGets.containsKey(xferId) || incoming.containsKey(xferId) || outgoing.containsKey(xferId)
+
+    /**
+     * Stops a transfer this phone started. A download is dropped and its sender
+     * asked to stop with fs-cancel; an upload ends with a failed fs-end.
+     */
+    fun cancel(xferId: Int) {
+        outgoing[xferId]?.let { it.cancelled = "Cancelled by the sender"; return }
+        val get: PendingGet?
+        val t: Incoming?
+        synchronized(cancelledGets) {
+            get = pendingGets.remove(xferId)
+            if (get != null) cancelledGets.add(xferId)
+            t = incoming.remove(xferId)
+        }
+        if (t != null) {
+            try { t.out.close() } catch (_: IOException) {}
+            t.temp.delete()
+            status("Cancelled ${t.name}")
+        }
+        val peer = t?.peer ?: get?.peer ?: return
+        ConnectionManager.sendJson(JSONObject().put("type", "fs-cancel").put("to", peer).put("xferId", xferId))
     }
 
     private val deniedError = "File access is disabled on the remote device"
@@ -131,11 +170,14 @@ class FsHandler(private val context: Context) {
         val from = msg.optString("from")
         val path = msg.optString("path")
         val xferId = msg.optInt("xferId")
+        // Tracked before the worker reaches it, so an fs-cancel right behind the request still stops it.
+        outgoing[xferId] = Outgoing(from)
         exec.execute {
             try {
                 val f = File(path)
                 sendFile(from, f.inputStream(), f.name, f.length(), xferId)
             } catch (e: Exception) {
+                outgoing.remove(xferId)
                 ConnectionManager.sendJson(
                     JSONObject().put("type", "fs-end").put("to", from)
                         .put("xferId", xferId).put("ok", false).put("error", e.message ?: "open failed")
@@ -152,9 +194,14 @@ class FsHandler(private val context: Context) {
         canContinue: () -> Boolean = { true },
         onProgress: ((String) -> Unit)? = null,
     ): Boolean {
+        val transfer = outgoing.getOrPut(xferId) { Outgoing(toPeer) }
+        fun checkContinue() {
+            transfer.cancelled?.let { throw IOException(it) }
+            if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+        }
         try {
             input.use { ins ->
-                if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+                checkContinue()
                 ConnectionManager.sendJson(
                     JSONObject()
                         .put("type", "fs-begin").put("to", toPeer)
@@ -163,7 +210,7 @@ class FsHandler(private val context: Context) {
                 val buf = ByteArray(256 * 1024)
                 var sent = 0L
                 while (true) {
-                    if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+                    checkContinue()
                     val n = ins.read(buf)
                     if (n <= 0) break
                     // Payload (before encryption): [xferId(4 BE)][chunk]. The frame-type
@@ -177,7 +224,7 @@ class FsHandler(private val context: Context) {
                     // Back-pressure: wait while the socket queue is full.
                     var tries = 0
                     while (!ConnectionManager.sendBinary(Crypto.CH_FILE, payload)) {
-                        if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+                        checkContinue()
                         if (++tries >= 300) throw IOException("Connection timed out while sending")
                         Thread.sleep(100)
                     }
@@ -186,7 +233,8 @@ class FsHandler(private val context: Context) {
                     status(progress)
                     onProgress?.invoke(progress)
                 }
-                if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
+                checkContinue()
+                outgoing.remove(xferId)
                 ConnectionManager.sendJson(
                     JSONObject().put("type", "fs-end").put("to", toPeer).put("xferId", xferId).put("ok", true)
                 )
@@ -194,11 +242,12 @@ class FsHandler(private val context: Context) {
             status("Sent $name")
             return true
         } catch (e: Exception) {
+            outgoing.remove(xferId)
             ConnectionManager.sendJson(
                 JSONObject().put("type", "fs-end").put("to", toPeer)
                     .put("xferId", xferId).put("ok", false).put("error", e.message ?: "send failed")
             )
-            status("Send failed: ${e.message}")
+            status(if (transfer.cancelled != null) "Cancelled $name" else "Send failed: ${e.message}")
             return false
         }
     }
@@ -219,8 +268,11 @@ class FsHandler(private val context: Context) {
         toPeer: String, uri: Uri, xferId: Int, canContinue: () -> Boolean,
         onProgress: (String) -> Unit, onDone: (Boolean, String?) -> Unit,
     ) {
+        // Tracked now, so cancel() also stops a file still queued behind another.
+        outgoing[xferId] = Outgoing(toPeer)
         exec.execute {
             try {
+                outgoing[xferId]?.cancelled?.let { throw IOException(it) }
                 if (!canContinue()) throw IOException("Transfer cancelled or device unavailable")
                 var name = "shared-file"
                 var size = -1L
@@ -238,6 +290,7 @@ class FsHandler(private val context: Context) {
                 val ok = sendFile(toPeer, input, name, size, xferId, canContinue, onProgress)
                 onDone(ok, if (ok) name else "Could not send $name. Check the connection and desktop file access.")
             } catch (e: Exception) {
+                outgoing.remove(xferId)
                 onDone(false, "Cannot read the shared file: ${e.message ?: "access expired"}. Share it again from the source app.")
             }
         }
@@ -273,14 +326,18 @@ class FsHandler(private val context: Context) {
     private fun handleBegin(msg: JSONObject, peerAccessAllowed: Boolean) {
         val xferId = msg.optInt("xferId")
         val name = msg.optString("name").replace(Regex("[/\\\\:*?\"<>|]"), "_").ifBlank { "file.bin" }
-        // An unsolicited push (no matching fs-get from us) needs consent;
-        // without a registered transfer its chunks are dropped on arrival.
-        if (!peerAccessAllowed && !pendingGets.containsKey(xferId)) return
         try {
-            val temp = File.createTempFile("xfer", ".part", context.cacheDir)
-            val get = pendingGets.remove(xferId)
-            incoming[xferId] = Incoming(temp, FileOutputStream(temp), name, msg.optLong("size", -1L),
-                msg.optString("from"), get?.onDone, get?.onError)
+            // Together with cancel(), so a download is either cancelled or begun.
+            synchronized(cancelledGets) {
+                if (cancelledGets.remove(xferId)) return
+                // An unsolicited push (no matching fs-get from us) needs consent;
+                // without a registered transfer its chunks are dropped on arrival.
+                if (!peerAccessAllowed && !pendingGets.containsKey(xferId)) return
+                val temp = File.createTempFile("xfer", ".part", context.cacheDir)
+                val get = pendingGets.remove(xferId)
+                incoming[xferId] = Incoming(temp, FileOutputStream(temp), name, msg.optLong("size", -1L),
+                    msg.optString("from"), get?.onDone, get?.onError)
+            }
             status("Receiving $name...")
         } catch (e: Exception) {
             status("Receive failed: ${e.message}")
@@ -305,6 +362,7 @@ class FsHandler(private val context: Context) {
     private fun handleEnd(msg: JSONObject) {
         val xferId = msg.optInt("xferId")
         val ok = msg.optBoolean("ok")
+        cancelledGets.remove(xferId)
         val t = incoming.remove(xferId) ?: run {
             // A refused or missing file ends without fs-begin. Tell whoever asked
             // for it, or its download waits forever.

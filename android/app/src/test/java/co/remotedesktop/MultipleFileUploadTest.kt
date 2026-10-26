@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Looper
+import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
 import android.widget.TextView
@@ -163,6 +164,28 @@ class MultipleFileUploadTest {
         fileAccess(true)
         executor.submit {}.get(5, TimeUnit.SECONDS)
         assertEquals(1, stream.closeCount)
+    }
+
+    @Test
+    fun cancellingAQueuedUploadNeverOpensItOrReportsAFailure() {
+        val gate = CountDownLatch(1)
+        executor.execute { gate.await() } // The worker is busy with an earlier file.
+        val uri = Uri.parse("content://uploads/queued")
+        val stream = SelectedStream()
+        shadowOf(activity.contentResolver).registerInputStream(uri, stream)
+        selectFiles(Intent().setData(uri))
+        fileAccess(true)
+        val cancel = activity.findViewById<Button>(R.id.filesCancel)
+        assertEquals(View.VISIBLE, cancel.visibility)
+        cancel.performClick()
+        assertEquals(View.GONE, cancel.visibility)
+
+        gate.countDown()
+        executor.submit {}.get(5, TimeUnit.SECONDS)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("The cancelled file is never opened", 0, stream.closeCount)
+        assertEquals("Transfer cancelled", activity.findViewById<TextView>(R.id.filesStatus).text.toString())
+        assertNull(ShadowToast.getTextOfLatestToast())
     }
 
     @Test

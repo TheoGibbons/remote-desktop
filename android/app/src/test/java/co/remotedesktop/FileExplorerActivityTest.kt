@@ -236,6 +236,36 @@ class FileExplorerActivityTest {
     }
 
     @Test
+    fun cancelStopsADownloadAndStaysAvailableAfterRotation() {
+        result(sample)
+        val cancel = activity.findViewById<MaterialButton>(R.id.filesCancel)
+        assertEquals(View.GONE, cancel.visibility)
+        val list = activity.findViewById<ListView>(R.id.filesList)
+        val position = names().indexOf("report.pdf")
+        list.performItemClick(list.adapter.getView(position, null, list), position, 0)
+        assertEquals(View.VISIBLE, cancel.visibility)
+        @Suppress("UNCHECKED_CAST")
+        val xferId = (field("transfers") as Set<Int>).single()
+
+        controller.recreate()
+        activity = controller.get()
+        val restored = activity.findViewById<MaterialButton>(R.id.filesCancel)
+        assertEquals("A download still running after rotation can be cancelled", View.VISIBLE, restored.visibility)
+        result(sample)
+        ConnectionManager.fs.handleJson(JSONObject().put("type", "fs-begin").put("from", "pc")
+            .put("xferId", xferId).put("name", "report.pdf").put("size", 1536), false)
+        assertEquals("Receiving report.pdf...", activity.findViewById<TextView>(R.id.filesStatus).text.toString())
+        assertEquals(View.VISIBLE, restored.visibility)
+        val root = activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
+        layout(root, 390, 750)
+        preview("transfer-cancel", root)
+        restored.performClick()
+        assertEquals(View.GONE, restored.visibility)
+        assertEquals("Transfer cancelled", activity.findViewById<TextView>(R.id.filesStatus).text.toString())
+        assertFalse(ConnectionManager.fs.isActive(xferId))
+    }
+
+    @Test
     fun foldersWithNoMetadataDoNotClaimZeroBytesAndCanBeOpenedFromDetails() {
         result(listOf(DesktopFileEntry("C:\\", true, 0, 0)), path = "")
         assertFalse(activity.findViewById<ImageButton>(R.id.filesUp).isEnabled)

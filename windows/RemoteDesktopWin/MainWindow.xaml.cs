@@ -126,8 +126,11 @@ public partial class MainWindow : Window
         _ws.JsonReceived += m => Dispatcher.Invoke(() => OnJson(m));
         _ws.BinaryReceived += OnBinary;
         _fs.TransferStatus += s => Dispatcher.Invoke(() => TransferText.Text = s);
-        _fs.TransferProgress += (sending, percent, name) =>
-            Dispatcher.Invoke(() => TransferText.ShowTransfer(sending, $"{percent}% {name}"));
+        _fs.TransferProgress += (xferId, sending, percent, name) => Dispatcher.Invoke(() =>
+        {
+            // A cancel can land between a chunk and its progress; don't bring that file back.
+            if (_fs.IsActive(xferId)) TransferText.ShowTransfer(sending, $"{percent}% {name}");
+        });
 
         SetupTray();
         // Closing the window hides to the tray so paired devices can still
@@ -686,6 +689,7 @@ public partial class MainWindow : Window
             case "fs-get":
             case "fs-begin":
             case "fs-end":
+            case "fs-cancel":
                 // File chunks are broadcast like video, so serving also requires
                 // that no unapproved device is present in the session.
                 _fs.HandleJson(msg, peerAccessAllowed:

@@ -20,6 +20,7 @@ public partial class FileExplorerWindow : Window
     private string _path = "";
     private int _reqCounter;
     private readonly HashSet<uint> _uploadIds = new();
+    private readonly HashSet<uint> _downloadIds = new(); // running downloads, which Cancel stops
     private readonly Queue<string> _uploadQueue = new();
     private int _uploadIndex;
     private int _uploadTotal;
@@ -29,6 +30,7 @@ public partial class FileExplorerWindow : Window
     private string? _downloadsPath;
     private string _requestedPath = "";
     private bool _uploading;
+    private bool _uploadCancelled;
     private bool _navigateToDownloads;
     private TaskCompletionSource<bool>? _downloadsNavigation;
     private readonly AppSettings _settings;
@@ -77,11 +79,30 @@ public partial class FileExplorerWindow : Window
         else Dispatcher.BeginInvoke(() => SetStatus(s));
     }
 
-    private void OnTransferProgress(bool sending, int percent, string name)
+    private void OnTransferProgress(uint xferId, bool sending, int percent, string name)
     {
         var text = $"{percent}% {name}";
         if (Dispatcher.CheckAccess()) SetStatus(text + UploadProgress, sending);
-        else Dispatcher.BeginInvoke(() => SetStatus(text, sending));
+        // By the time a queued update runs, its transfer may have finished or been cancelled.
+        else Dispatcher.BeginInvoke(() => { if (_fs.IsActive(xferId)) SetStatus(text, sending); });
+    }
+
+    private void UpdateCancelButton() =>
+        CancelButton.Visibility = _downloadIds.Count > 0 || _uploading ? Visibility.Visible : Visibility.Collapsed;
+
+    private void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var id in _downloadIds) _fs.Cancel(id);
+        _downloadIds.Clear();
+        if (_uploading)
+        {
+            // The batch reports how far it got once the current file stops.
+            _uploadCancelled = true;
+            _uploadQueue.Clear();
+            _fs.Cancel(_lastUploadId);
+        }
+        else SetStatus("Download cancelled");
+        UpdateCancelButton();
     }
 
     public void OnUploadResult(JsonNode msg)
@@ -248,9 +269,10 @@ public partial class FileExplorerWindow : Window
             return;
         }
         var xferId = _fs.NextXferId();
-        _fs.ExpectDownload(xferId,
-            path => Dispatcher.BeginInvoke(() => SetStatus("Saved to " + path)),
-            err => Dispatcher.BeginInvoke(() => SetStatus("Failed: " + err)));
+        _fs.ExpectDownload(xferId, _phoneId,
+            path => Dispatcher.BeginInvoke(() => DownloadEnded(xferId, "Saved to " + path)),
+            err => Dispatcher.BeginInvoke(() => DownloadEnded(xferId, "Failed: " + err)));
+        _downloadIds.Add(xferId);
         _ws.SendJson(new JsonObject
         {
             ["type"] = "fs-get",
@@ -258,6 +280,16 @@ public partial class FileExplorerWindow : Window
             ["path"] = Join(_path, entry.Name),
             ["xferId"] = xferId,
         });
+        SetStatus($"Downloading {entry.Name}...");
+        UpdateCancelButton();
+    }
+
+    private void DownloadEnded(uint xferId, string status)
+    {
+        // Cancelled meanwhile, which already said so.
+        if (!_downloadIds.Remove(xferId)) return;
+        SetStatus(status);
+        UpdateCancelButton();
     }
 
     private async void Upload_Click(object sender, RoutedEventArgs e)
@@ -421,12 +453,14 @@ public partial class FileExplorerWindow : Window
         // Files added while an upload runs join its batch.
         if (_uploading) return;
         _uploading = true;
+        _uploadCancelled = false;
+        UpdateCancelButton();
         var sent = 0;
         string? sentName = null;
         try
         {
             await NavigateToDownloads().WaitAsync(TimeSpan.FromSeconds(15));
-            while (_uploadQueue.TryDequeue(out var file))
+            while (!_uploadCancelled && _uploadQueue.TryDequeue(out var file))
             {
                 _uploadIndex++;
                 var xferId = _fs.NextXferId();
@@ -446,7 +480,11 @@ public partial class FileExplorerWindow : Window
                     _uploadIds.Remove(xferId);
                 }
             }
-            if (_uploadTotal == 1)
+            if (_uploadCancelled)
+            {
+                SetStatus(sent > 0 ? $"Upload cancelled after sending {sent} of {_uploadTotal} files" : "Upload cancelled");
+            }
+            else if (_uploadTotal == 1)
             {
                 if (sent == 1) Toast.Show($"“{sentName}” uploaded to the phone's Downloads folder.");
             }
@@ -468,6 +506,7 @@ public partial class FileExplorerWindow : Window
             _uploadQueue.Clear();
             _uploadIndex = _uploadTotal = 0;
             _uploading = false;
+            UpdateCancelButton();
         }
     }
 }

@@ -69,9 +69,91 @@ internal static class Program
             End(108);
             Check(!File.Exists(Path.Combine(dir, "denied.jpg")), "Denied file access never writes a file");
             Console.WriteLine("PASS: complete, duplicate, incomplete, cancelled, unknown-size, empty, denied and failed-save transfers");
+
+            CheckCancelling(ws, fs, dir, Begin, Chunk, End);
         }
         finally { Directory.Delete(dir, true); }
         CheckSortOrders();
+    }
+
+    private static void CheckCancelling(WsClient ws, FsService fs, string dir,
+        Action<int, string, long, bool> begin, Action<int, byte[]> chunk, Action<int, bool> end)
+    {
+        var saved = new List<string>();
+        var failed = new List<string>();
+        JsonObject Last(string type, int id) => ws.Messages.Last(m => m["type"]?.GetValue<string>() == type &&
+            m["xferId"]?.GetValue<uint>() == (uint)id);
+        bool Any(string type, int id) => ws.Messages.Any(m => m["type"]?.GetValue<string>() == type &&
+            m["xferId"]?.GetValue<uint>() == (uint)id);
+        void Cancel(string from, int id) => fs.HandleJson(new JsonObject
+        {
+            ["type"] = "fs-cancel", ["from"] = from, ["xferId"] = (long)id,
+        }, true);
+
+        fs.ExpectDownload(201, "phone", saved.Add, failed.Add);
+        begin(201, "big.bin", 10, false);
+        chunk(201, new byte[] { 1, 2, 3 });
+        Check(fs.IsActive(201), "A download is active while it arrives");
+        fs.Cancel(201);
+        Check(!fs.IsActive(201), "A cancelled download is no longer active");
+        Check(Last("fs-cancel", 201)["to"]?.GetValue<string>() == "phone", "Cancelling a download asks the phone to stop");
+        // An older phone keeps sending; the rest is ignored.
+        chunk(201, new byte[] { 4, 5, 6, 7, 8, 9, 10 });
+        end(201, true);
+        Check(!Any("fs-saved", 201) && saved.Count == 0 && failed.Count == 0, "A cancelled download is never saved or reported");
+        Check(!Directory.EnumerateFiles(dir, "big*").Any(), "A cancelled download leaves no partial file");
+
+        fs.ExpectDownload(202, "phone", saved.Add, failed.Add);
+        fs.Cancel(202);
+        Check(Any("fs-cancel", 202), "A download can be cancelled before it begins");
+        begin(202, "late.bin", 1, true);
+        chunk(202, new byte[] { 1 });
+        end(202, true);
+        Check(!Directory.EnumerateFiles(dir, "late*").Any() && !Any("fs-saved", 202),
+            "A download cancelled before it began is not kept as a push when an older phone sends it anyway");
+
+        fs.ExpectDownload(203, "phone", saved.Add, failed.Add);
+        fs.HandleJson(new JsonObject
+        {
+            ["type"] = "fs-end", ["from"] = "phone", ["xferId"] = 203L, ["ok"] = false, ["error"] = "No such file",
+        }, true);
+        Check(failed.SequenceEqual(new[] { "No such file" }) && !fs.IsActive(203), "A refused download reports why instead of waiting");
+        Console.WriteLine("PASS: cancelled downloads, before and after they begin, and refused downloads");
+
+        // Three chunks, so a cancel after the first leaves some unsent.
+        var source = Path.Combine(dir, "source.bin");
+        File.WriteAllBytes(source, new byte[3 * 256 * 1024]);
+        ws.OnChunk = n => Cancel(n == 1 ? "someone-else" : "phone", 301);
+        Check(!fs.SendFileAsync("phone", source, 301).GetAwaiter().GetResult(), "The phone's fs-cancel stops an upload");
+        Check(ws.Chunks == 2, "Only the device receiving the file can cancel it");
+        Check(Last("fs-end", 301)["ok"]?.GetValue<bool>() == false &&
+            Last("fs-end", 301)["error"]?.GetValue<string>() == "Cancelled by the receiver", "The phone is told its cancel took effect");
+        Check(!fs.IsActive(301), "A cancelled upload is no longer active");
+
+        ws.Chunks = 0;
+        ws.OnChunk = _ => fs.Cancel(302);
+        Check(!fs.SendFileAsync("phone", source, 302).GetAwaiter().GetResult() && ws.Chunks == 1, "This PC can cancel its own upload");
+        Check(Last("fs-end", 302)["error"]?.GetValue<string>() == "Cancelled by the sender", "The phone learns the PC cancelled");
+
+        // fs-cancel right behind the request: the send starts on a worker, which
+        // waits on its first chunk until the cancel has been handled.
+        ws.Chunks = 0;
+        var gate = new ManualResetEventSlim();
+        var ended = new TaskCompletionSource<JsonObject>();
+        ws.OnChunk = _ => gate.Wait();
+        ws.OnJson = m => { if (m["type"]?.GetValue<string>() == "fs-end") ended.TrySetResult(m); };
+        fs.HandleJson(new JsonObject
+        {
+            ["type"] = "fs-get", ["from"] = "phone", ["path"] = source, ["xferId"] = 303L,
+        }, true);
+        Cancel("phone", 303);
+        gate.Set();
+        Check(ended.Task.Wait(TimeSpan.FromSeconds(10)), "A cancelled request still ends");
+        Check(ended.Task.Result["error"]?.GetValue<string>() == "Cancelled by the receiver" && ws.Chunks <= 1,
+            "fs-cancel right after fs-get stops the file");
+        ws.OnChunk = null;
+        ws.OnJson = null;
+        Console.WriteLine("PASS: cancelled uploads, from either end, only by the receiving device");
     }
 
     // Same listing and expectations as the Android FileExplorerActivityTest.
@@ -136,6 +218,19 @@ internal static class Program
 public sealed class WsClient
 {
     public List<JsonObject> Messages { get; } = new();
-    public void SendJson(JsonObject message) => Messages.Add(message);
-    public bool SendBinary(byte channel, byte[] payload) => true;
+    public int Chunks;
+    public Action<int>? OnChunk; // with the number of chunks sent so far
+    public Action<JsonObject>? OnJson;
+
+    public void SendJson(JsonObject message)
+    {
+        lock (Messages) Messages.Add(message);
+        OnJson?.Invoke(message);
+    }
+
+    public bool SendBinary(byte channel, byte[] payload)
+    {
+        OnChunk?.Invoke(Interlocked.Increment(ref Chunks));
+        return true;
+    }
 }
