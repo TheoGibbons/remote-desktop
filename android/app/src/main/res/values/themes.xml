@@ -66,13 +66,16 @@
     </style>
 
     <!-- A white icon button on the viewer's dark bar. 40dp wide so the whole
-         bar fits a 360dp portrait phone. -->
+         bar fits a 360dp portrait phone. No insets on any side: MaterialButton
+         adds them to the padding, which pushed the icon 4dp right of center. -->
     <style name="RdViewerBarIcon" parent="Widget.Material3.Button.IconButton">
         <item name="android:layout_width">40dp</item>
         <item name="android:layout_height">40dp</item>
         <item name="android:minWidth">0dp</item>
         <item name="android:minHeight">0dp</item>
         <item name="android:padding">8dp</item>
+        <item name="android:insetLeft">0dp</item>
+        <item name="android:insetRight">0dp</item>
         <item name="android:insetTop">0dp</item>
         <item name="android:insetBottom">0dp</item>
         <item name="iconTint">@color/viewer_bar_content</item>
