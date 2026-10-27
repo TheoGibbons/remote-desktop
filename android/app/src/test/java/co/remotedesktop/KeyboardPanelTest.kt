@@ -349,6 +349,30 @@ class KeyboardPanelTest {
     }
 
     @Test
+    fun printScreenPressesOnceWhenHeldAndCombinesWithHeldModifiers() {
+        for (layer in listOf("letters", "symbols", "function")) {
+            val panel = touchPanel(layer)
+            val keys = mutableListOf<Pair<String, String>>()
+            panel.onKey = { code, action -> keys.add(code to action) }
+            val point = panel.center("Print Screen")
+            touch(panel, MotionEvent.ACTION_DOWN, point)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertEquals(layer, emptyList<Pair<String, String>>(), keys)
+            touch(panel, MotionEvent.ACTION_UP, point)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+            assertEquals(layer, listOf("PRINTSCREEN" to "press"), keys)
+        }
+        // Win+PrtSc saves a screenshot to a file; Alt+PrtSc captures one window.
+        val panel = touchPanel()
+        val keys = mutableListOf<Pair<String, String>>()
+        panel.onKey = { code, action -> keys.add(code to action) }
+        panel.tap("Win")
+        panel.tap("Print Screen")
+        panel.tap("Win")
+        assertEquals(listOf("WIN" to "down", "PRINTSCREEN" to "press", "WIN" to "up"), keys)
+    }
+
+    @Test
     fun togglesDoNotRepeatWhenHeld() {
         val panel = touchPanel()
         val keys = mutableListOf<Pair<String, String>>()

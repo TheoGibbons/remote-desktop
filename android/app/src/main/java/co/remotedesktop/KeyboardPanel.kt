@@ -319,6 +319,9 @@ class KeyboardPanel(context: Context) : LinearLayout(context) {
             key("Fn", compact = true, special = true, textSp = 12f) { fnLayer = !fnLayer; buildAll() }
                 .also { highlight(it, fnLayer) },
             control("Esc", "ESC"), control("Tab", "TAB"),
+            // Not a repeating control: a held key would take a burst of screenshots.
+            key("PrtSc", compact = true, special = true, textSp = 11f) { emitKeyPress("PRINTSCREEN") }
+                .apply { contentDescription = "Print Screen" },
             key("Phone keyboard", compact = true, special = true, icon = "keyboard") { onOpenIme?.invoke() },
         )
     }

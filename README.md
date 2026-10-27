@@ -214,7 +214,7 @@ publish alongside the relay.
 **Phone → PC**
 - ✅ Always-visible mouse pointer (touchpad-style): drag to move it, tap = left
   click, 2-finger tap = right click, press & hold then drag = drag, 3-finger drag = scroll
-- ✅ Full on-screen keyboard including **Win, Ctrl, Alt, Shift**, function keys, arrows, Esc/Tab/etc., plus native-IME typing for long text
+- ✅ Full on-screen keyboard including **Win, Ctrl, Alt, Shift**, function keys, arrows, Esc/Tab/Print Screen/etc., plus native-IME typing for long text
 - ✅ Multiple monitors **stitched** into one canvas
 - ✅ Pinch to **zoom in/out** and 2-finger drag to **pan**
 - ✅ **Copy** puts whatever is selected on the PC on the phone's clipboard, with

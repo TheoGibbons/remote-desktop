@@ -183,6 +183,8 @@ that arrow Shift while pressing other keys for physical-keyboard shortcuts such
 as **Shift+Enter**, **Shift+Tab**, and **Shift+Arrow**. **Del** and **Backspace**
 repeat quickly while held, after a short initial delay. The
 **Shift** beside Ctrl stays enabled until toggled off for desktop shortcuts.
+**PrtSc** presses Print Screen once, however long it is held; with **Win** or
+**Alt** latched it sends Win+PrtSc or Alt+PrtSc.
 
 ## Google Play notes
 
