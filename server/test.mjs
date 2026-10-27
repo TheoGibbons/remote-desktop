@@ -11,8 +11,11 @@ const KEY = "test-session-key-1234567890";
 
 const server = spawn(process.execPath, ["server.js"], {
   env: { ...process.env, PORT: String(PORT) },
-  stdio: ["ignore", "ignore", "inherit"],
+  stdio: ["ignore", "pipe", "inherit"],
 });
+let relayLog = "";
+server.stdout.on("data", (d) => (relayLog += d));
+const leaveLine = (name) => relayLog.split(/\r?\n/).find((l) => l.startsWith(`[leave] ${name} `)) ?? "";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
@@ -94,8 +97,18 @@ async function main() {
   pc.ws.send(Buffer.from([0x83, 0, 1, 2, 3])); // addressed to nobody
   await sleep(150);
   ok("malformed addressed frames are dropped", phone.bins.length + phone2.bins.length === before);
-  phone2.ws.close();
+  phone2.ws.close(1000, "bye");
   await sleep(150);
+  ok("leave log says the device closed, and how",
+    /^\[leave\] my-other-phone \(android\) after \d+s: closed by the device \(1000: bye\), session peers=2$/
+      .test(leaveLine("my-other-phone")));
+
+  // A socket that just ends, with no close frame, is the network's doing.
+  const vanished = await connect("android", "vanishing-phone");
+  vanished.ws.terminate();
+  await sleep(150);
+  ok("leave log tells a lost connection from a closed one",
+    leaveLine("vanishing-phone").includes(": connection lost (1006"));
 
   // 4. Reconnect with the same device uid replaces the stale peer entry
   const tab1 = await connect("android", "my-tab", KEY, "uid-tablet-1");
@@ -107,6 +120,8 @@ async function main() {
     !tab2.welcome.peers.some((p) => p.id === tab1.welcome.id));
   ok("peers notified stale entry left",
     pc.msgs.some((m) => m.type === "peer-left" && m.id === tab1.welcome.id));
+  ok("leave log says the stale entry was replaced",
+    leaveLine("my-tab").includes(": replaced by its new connection,"));
   tab2.ws.close();
   await sleep(150);
 
@@ -210,6 +225,25 @@ async function main() {
   await sleep(300);
   raw.destroy();
   ok("malformed frame on a refused connection keeps the relay up", server.exitCode === null);
+
+  // 12. A device that stops answering pings is dropped, and the log says so.
+  // Run on its own relay with a short keepalive so the test needn't wait 60 s.
+  const pingPort = PORT + 400;
+  const pingRelay = spawn(process.execPath, ["server.js"], {
+    env: { ...process.env, PORT: String(pingPort), KEEPALIVE_MS: "200" },
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  let pingLog = "";
+  pingRelay.stdout.on("data", (d) => (pingLog += d));
+  for (let i = 0; i < 50 && !pingLog.includes("listening"); i++) await sleep(100);
+  const frozen = new WebSocket(`ws://127.0.0.1:${pingPort}/ws`, { autoPong: false });
+  frozen.on("error", () => {});
+  await once(frozen, "open");
+  frozen.send(JSON.stringify({ type: "hello", session: KEY, device: "windows", name: "frozen-pc" }));
+  await sleep(800);
+  ok("a device that stops answering pings is dropped for it",
+    /\[leave\] frozen-pc \(windows\) after \d+s: missed a ping \(no pong within 0\.2s\)/.test(pingLog));
+  pingRelay.kill();
 
   let pass = 0;
   for (const [name, p] of results) { console.log((p ? "PASS" : "FAIL") + "  " + name); if (p) pass++; }

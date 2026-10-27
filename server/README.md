@@ -82,6 +82,18 @@ npm test
 ```
 
 Spins up the relay on a scratch port and exercises pairing, JSON routing, binary
-relay (broadcast and addressed to chosen peers), session isolation, the minimum-key-length check, the brute-force rate
-limit (and that a device's own reconnects never trip it), the reasons given for
-refused connections, and that a malformed frame cannot crash the relay.
+relay (broadcast and addressed to chosen peers), session isolation, the
+minimum-key-length check, the brute-force rate limit (and that a device's own
+reconnects never trip it), the reasons given for refused connections, the reason
+logged when a device leaves, and that a malformed frame cannot crash the relay.
+
+## Logs
+
+Each `[leave]` line says how long the device was connected and why it left:
+
+| Reason | Meaning |
+|---|---|
+| `missed a ping (no pong within 30s)` | The relay dropped it. The device stopped answering, e.g. a PC app whose network thread was stuck. |
+| `closed by the device (code: reason)` | The app hung up, e.g. Exit, a settings change or a reconnect. |
+| `connection lost (1006: error)` | The socket ended with no goodbye from either side: the network, a VPN, or a process that died. |
+| `replaced by its new connection` | The same install reconnected before the old socket was noticed gone. |

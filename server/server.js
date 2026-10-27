@@ -7,6 +7,8 @@ import crypto from "crypto";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8090);
+// How often each device is pinged; one missed pong drops it. Tests shorten it.
+const KEEPALIVE_MS = Number(process.env.KEEPALIVE_MS || 30_000);
 const HELLO_TIMEOUT_MS = 10_000;
 const MAX_CONNS_PER_IP = 16;
 const HELLO_WINDOW_MS = 10 * 60_000;
@@ -117,7 +119,12 @@ wss.on("connection", (ws, req) => {
     device: null,
     sessionHash: null,
     alive: true,
+    joinedAt: 0,
+    // Why the relay dropped this device, when it was the relay's decision.
+    dropReason: null,
+    socketError: null,
   };
+  ws.on("error", (e) => (client.socketError = e.message));
 
   const helloTimer = setTimeout(() => {
     if (!client.sessionHash) closeWithError(ws, "hello-timeout", "no hello received");
@@ -144,10 +151,10 @@ wss.on("connection", (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", (code, reason) => {
     clearTimeout(helloTimer);
     ipS.conns = Math.max(0, ipS.conns - 1);
-    leaveSession(client);
+    leaveSession(client, client.dropReason ?? describeClose(client, code, reason));
   });
 });
 
@@ -183,6 +190,7 @@ function handleHello(client, msg, helloTimer) {
   client.name = String(msg.name || client.device).slice(0, 64);
   client.uid = typeof msg.uid === "string" && msg.uid ? msg.uid.slice(0, 64) : null;
   client.id = String(nextPeerId++);
+  client.joinedAt = Date.now();
 
   let peers = sessions.get(client.sessionHash);
   if (!peers) {
@@ -196,7 +204,7 @@ function handleHello(client, msg, helloTimer) {
     for (const p of [...peers.values()]) {
       if (p.uid === client.uid) {
         console.log(`[replace] ${p.name} superseded by new connection`);
-        leaveSession(p);
+        leaveSession(p, "replaced by its new connection");
         p.ws.terminate();
       }
     }
@@ -223,7 +231,20 @@ function handleHello(client, msg, helloTimer) {
   console.log(`[join] ${client.name} (${client.device}) from ${client.ip}, session peers=${peers.size}`);
 }
 
-function leaveSession(client) {
+/**
+ * Logged with every leave, so a device that keeps dropping says which end gave
+ * up: the relay (missed pings), the device (a close frame), or the network.
+ */
+function describeClose(client, code, reason) {
+  const why = reason?.length ? `: ${reason}` : "";
+  if (code === 1006) {
+    // No close frame: the socket ended without either side saying goodbye.
+    return `connection lost (1006${client.socketError ? `: ${client.socketError}` : ""})`;
+  }
+  return `closed by the device (${code}${why})`;
+}
+
+function leaveSession(client, reason) {
   if (!client.sessionHash) return;
   const hash = client.sessionHash;
   client.sessionHash = null; // idempotent: close after replacement won't re-broadcast
@@ -234,7 +255,8 @@ function leaveSession(client) {
     send(p, { type: "peer-left", id: client.id });
   }
   if (peers.size === 0) sessions.delete(hash);
-  console.log(`[leave] ${client.name}, session peers=${peers.size}`);
+  const secs = Math.round((Date.now() - client.joinedAt) / 1000);
+  console.log(`[leave] ${client.name} (${client.device}) after ${secs}s: ${reason}, session peers=${peers.size}`);
 }
 
 function relayJson(client, msg) {
@@ -304,6 +326,7 @@ setInterval(() => {
   for (const peers of sessions.values()) {
     for (const c of peers.values()) {
       if (!c.alive) {
+        c.dropReason = `missed a ping (no pong within ${KEEPALIVE_MS / 1000}s)`;
         c.ws.terminate();
         continue;
       }
@@ -313,7 +336,7 @@ setInterval(() => {
       } catch {}
     }
   }
-}, 30_000);
+}, KEEPALIVE_MS);
 
 // Periodic cleanup of stale IP state.
 setInterval(() => {
