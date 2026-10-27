@@ -65,6 +65,12 @@ public sealed class ViewRegionTracker
         lock (_lock) return _viewers.ContainsKey(peerId);
     }
 
+    /// <summary>Everyone the stream is for, which is who its frames are addressed to.</summary>
+    public string[] Viewers
+    {
+        get { lock (_lock) return _viewers.Keys.ToArray(); }
+    }
+
     public void RemoveViewer(string peerId)
     {
         lock (_lock)

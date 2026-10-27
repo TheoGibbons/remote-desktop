@@ -208,6 +208,7 @@ class FsHandler(private val context: Context) {
                         .put("xferId", xferId).put("name", name).put("size", size)
                 )
                 val buf = ByteArray(256 * 1024)
+                val recipient = listOf(toPeer) // only the device the file is for needs its chunks
                 var sent = 0L
                 while (true) {
                     checkContinue()
@@ -223,7 +224,7 @@ class FsHandler(private val context: Context) {
                     System.arraycopy(buf, 0, payload, 4, n)
                     // Back-pressure: wait while the socket queue is full.
                     var tries = 0
-                    while (!ConnectionManager.sendBinary(Crypto.CH_FILE, payload)) {
+                    while (!ConnectionManager.sendBinary(Crypto.CH_FILE, payload, recipient)) {
                         checkContinue()
                         if (++tries >= 300) throw IOException("Connection timed out while sending")
                         Thread.sleep(100)

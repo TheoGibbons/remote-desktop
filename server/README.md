@@ -82,6 +82,6 @@ npm test
 ```
 
 Spins up the relay on a scratch port and exercises pairing, JSON routing, binary
-relay, session isolation, the minimum-key-length check, the brute-force rate
+relay (broadcast and addressed to chosen peers), session isolation, the minimum-key-length check, the brute-force rate
 limit (and that a device's own reconnects never trip it), the reasons given for
 refused connections, and that a malformed frame cannot crash the relay.

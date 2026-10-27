@@ -46,6 +46,9 @@ object PhoneScreenCapture {
     /** Whether this peer has asked to view this phone and not stopped since. */
     fun isViewing(peerId: String): Boolean = viewers.contains(peerId)
 
+    /** Who frames are addressed to, so a device watching another host never gets them. */
+    fun recipients(): List<String> = viewers.filter { PeerAuth.isTrusted(it) }
+
     /** Clear requests on disconnect/revocation so a later session never resumes an old view. */
     fun onViewStopped(peerId: String? = null) {
         if (peerId == null) viewers.clear() else viewers.remove(peerId)

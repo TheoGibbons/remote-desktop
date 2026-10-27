@@ -66,6 +66,9 @@ object ConnectionManager {
      *  the state stays "blocked" across retries instead of "connecting". */
     @Volatile var blockedUntilMs = 0L
         private set
+    /** The relay delivers an addressed binary frame to just the peers it names.
+     *  Learned from this connection's welcome; older relays broadcast. */
+    @Volatile private var relayAddressesBinary = false
     val peers = CopyOnWriteArrayList<Peer>()
 
     /** Intent extra: the peer id of the desktop a viewer or file browser opens. */
@@ -210,21 +213,44 @@ object ConnectionManager {
         socket.send(env.toString())
     }
 
-    /** Send an encrypted binary frame (frameType 1 = video, 2 = file chunk). */
-    fun sendBinary(frameType: Byte, payload: ByteArray): Boolean {
+    /** Send an encrypted binary frame (frameType 1 = video, 2 = file chunk).
+     *  With [to], a relay that supports it delivers the frame only to those
+     *  peers; otherwise, and on older relays, it is broadcast. */
+    fun sendBinary(frameType: Byte, payload: ByteArray, to: Collection<String>? = null): Boolean {
         val socket = ws ?: return false
         // Don't queue unboundedly if the link is slower than the frame rate.
         if (socket.queueSize() > 6_000_000) return false
         val blob = Crypto.encrypt(encKey, payload, frameType)
-        val wire = ByteArray(1 + blob.size)
-        wire[0] = frameType
-        System.arraycopy(blob, 0, wire, 1, blob.size)
+        val route = if (!to.isNullOrEmpty() && relayAddressesBinary) addressHeader(to) else null
+        val wire = ByteArray(1 + (route?.size ?: 0) + blob.size)
+        // The relay strips the header and clears the flag, so the receiver
+        // decrypts against the plain frame type it always has.
+        wire[0] = if (route == null) frameType else (frameType.toInt() or ADDRESSED).toByte()
+        route?.copyInto(wire, 1)
+        System.arraycopy(blob, 0, wire, 1 + (route?.size ?: 0), blob.size)
         return socket.send(ByteString.of(*wire))
+    }
+
+    private const val ADDRESSED = 0x80
+
+    /** [count u8] then count x [idLen u8][id], as PROTOCOL.md lays out. */
+    private fun addressHeader(to: Collection<String>): ByteArray {
+        val ids = to.take(255).map { it.toByteArray(Charsets.UTF_8) }.filter { it.size in 1..255 }
+        val header = ByteArray(1 + ids.sumOf { 1 + it.size })
+        header[0] = ids.size.toByte()
+        var off = 1
+        for (id in ids) {
+            header[off++] = id.size.toByte()
+            id.copyInto(header, off)
+            off += id.size
+        }
+        return header
     }
 
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             Log.d("ConnectionManager", "WebSocket opened")
+            relayAddressesBinary = false // until this relay's welcome says otherwise
             val prefs = Prefs(appContext)
             // hello is cleartext and carries only the derived pairing id.
             webSocket.send(
@@ -301,6 +327,7 @@ object ConnectionManager {
             "welcome" -> {
                 PhoneScreenCapture.onViewStopped()
                 myId = msg.optString("id")
+                relayAddressesBinary = msg.optBoolean("binaryTo", false)
                 connectedAtMs = SystemClock.elapsedRealtime()
                 backoffMs = 2000L
                 peers.clear()
@@ -366,8 +393,8 @@ object ConnectionManager {
             "stop-view" ->
                 if (PeerAuth.isTrusted(from)) PhoneScreenCapture.onViewStopped(from)
 
-            // File system requests/responses. Chunks are broadcast like video,
-            // so serving also requires that no unapproved peer is present.
+            // File system requests/responses. Older relays broadcast chunks like
+            // video, so serving also requires that no unapproved peer is present.
             "fs-list", "fs-get", "fs-begin", "fs-end", "fs-cancel" ->
                 fs.handleJson(msg, peerAccessAllowed = Prefs(appContext).allowFileAccess &&
                     PeerAuth.isTrusted(from) && PeerAuth.allPeersTrusted)

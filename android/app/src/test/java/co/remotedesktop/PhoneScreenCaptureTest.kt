@@ -42,12 +42,14 @@ class ShadowPhoneCaptureConnection {
         var connected = true
         val info = mutableListOf<JSONObject>()
         val frames = mutableListOf<ByteArray>()
+        val recipients = mutableListOf<Collection<String>?>()
     }
     @Implementation fun getState() = if (connected) "connected" else "disconnected"
     @Implementation fun sendJson(message: JSONObject) { info.add(message) }
-    @Implementation fun sendBinary(channel: Byte, bytes: ByteArray): Boolean {
+    @Implementation fun sendBinary(channel: Byte, bytes: ByteArray, to: Collection<String>?): Boolean {
         assertEquals(Crypto.CH_VIDEO, channel)
         frames.add(bytes)
+        recipients.add(to)
         return true
     }
 }
@@ -82,6 +84,7 @@ class PhoneScreenCaptureTest {
         ShadowPhoneCaptureConnection.connected = true
         ShadowPhoneCaptureConnection.info.clear()
         ShadowPhoneCaptureConnection.frames.clear()
+        ShadowPhoneCaptureConnection.recipients.clear()
         PhoneScreenCapture.init(context)
         PhoneScreenCapture.stateListeners.clear()
         PhoneScreenCapture.onViewStopped()
@@ -114,8 +117,11 @@ class PhoneScreenCaptureTest {
     @Test fun stoppingOneViewerKeepsTheOtherAndDisablingControlClearsAllRequests() {
         PhoneScreenCapture.onViewRequested(context, "pc")
         PhoneScreenCapture.onViewRequested(context, "other-pc")
+        PhoneScreenCapture.onViewRequested(context, "stranger")
+        assertEquals(setOf("pc", "other-pc"), PhoneScreenCapture.recipients().toSet())
         PhoneScreenCapture.onViewStopped("pc")
         assertTrue(PhoneScreenCapture.maySendFrames(context))
+        assertEquals(listOf("other-pc"), PhoneScreenCapture.recipients())
         Prefs(context).allowControl = false
         assertFalse(PhoneScreenCapture.maySendFrames(context))
         Prefs(context).allowControl = true
@@ -147,6 +153,8 @@ class PhoneScreenCaptureTest {
         assertEquals(2, service.requests)
         service.callback.onFailure(AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
         assertEquals(1, ShadowPhoneCaptureConnection.frames.size) // Replace the stale screen.
+        // Only the viewer gets it: anyone else in the session may be watching another host.
+        assertEquals(listOf(listOf("pc")), ShadowPhoneCaptureConnection.recipients)
         main.idleFor(Duration.ofSeconds(1))
         assertEquals(3, service.requests)
         stream.setStreaming(false)

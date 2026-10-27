@@ -41,7 +41,7 @@ route to one peer; otherwise it is broadcast to all other peers in the session.
 
 | type          | fields                                | notes |
 |---------------|----------------------------------------|-------|
-| `welcome`     | `id` (your peer id), `peers` (array of `{id, device, name}`) | Reply to `hello`. |
+| `welcome`     | `id` (your peer id), `peers` (array of `{id, device, name}`), `binaryTo`? | Reply to `hello`. `binaryTo: true` means this relay delivers [addressed binary frames](#addressed-binary-frames); older relays omit it. |
 | `peer-joined` | `peer` `{id, device, name}`            | |
 | `peer-left`   | `id`                                   | |
 | `error`       | `code`, `message`, `retryAfter`?       | e.g. `rate-limited`, `banned`, `too-many-connections`, `bad-hello`. Connection is closed after. A ban carries `retryAfter`, the seconds until the relay accepts this IP again. |
@@ -83,11 +83,11 @@ fingerprint, and:
 **Enforcement.** Messages that view, control, or touch files or the clipboard
 (`start-view`, `request-keyframe`, `privacy-mode`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
 `touch`, `pinch`, `back`, `homebtn`, `recents`, `fs-*`, `clip-get`, `clip-set`) are dropped unless the
-sending peer is trusted. Because **binary frames are broadcast** and every key
-holder can decrypt them, a host additionally sends no video frames and serves
-no file transfers while *any* unapproved peer is present in the session (the
-stream resumes automatically once the peer is approved or leaves; a keyframe
-covers the gap).
+sending peer is trusted. Because every key holder can decrypt binary frames,
+and older relays **broadcast them** to the whole session, a host additionally
+sends no video frames and serves no file transfers while *any* unapproved peer
+is present in the session (the stream resumes automatically once the peer is
+approved or leaves; a keyframe covers the gap).
 
 **Revocation.** Each device shows its trusted-device list with per-device
 *Revoke* (delete the fingerprint — the device must be re-approved on its next
@@ -233,9 +233,35 @@ stale — there is no codec-style corruption. Recovery rules:
   release the old one) whenever the size differs. A size change is always
   accompanied by a keyframe and a fresh `screen-info`.
 
-So the wire layout is `[frameType(1)][nonce(12)][ciphertext][tag(16)]`. Binary
-frames are broadcast by the server to all other peers in the session (sessions
-are expected to hold 2 devices; the design tolerates more).
+So the wire layout is `[frameType(1)][nonce(12)][ciphertext][tag(16)]`. A
+binary frame sent like that is broadcast by the server to all other peers in
+the session.
+
+### Addressed binary frames
+
+Broadcast is wrong as soon as a session holds more than two devices. A phone
+viewing a PC that is itself viewing a second phone received both hosts'
+streams and drew them alternately, and any device that wasn't watching still
+paid the bandwidth. So a sender names the recipients, and the relay delivers
+the frame to those peers only:
+
+```
+[0x80 | frameType][count u8]{[idLen u8][peer id, UTF-8]} x count [nonce(12)][ciphertext][tag(16)]
+```
+
+The relay strips the recipient list and clears bit 7, so a receiver gets the
+plain `[frameType][nonce][ciphertext][tag]` above and decrypts it as it always
+has; the AAD is still the plain frame-type byte. Ids that aren't in the session
+are skipped, a peer listed twice gets the frame once, and a malformed or empty
+list drops the frame.
+
+Hosts address video to the peers that sent `start-view`, and file chunks to
+the device the file is going to. A relay that doesn't understand the format
+would broadcast it unchanged, which no receiver can read, so a sender
+addresses frames only on a connection whose `welcome` carried `binaryTo: true`,
+and broadcasts otherwise. A viewing app should still ignore frame types its
+host never sends (a desktop viewer ignores type `1`), since an older relay or
+sender broadcasts everything.
 
 ## Viewport streaming
 
@@ -257,9 +283,9 @@ congestion ladder and the configured `MaxStreamWidth` can both deliver fewer
 pixels than asked for — and never sends more than the region natively holds,
 because past 1:1 the extra pixels are interpolation rather than detail.
 
-Region mode is used only while **every** viewer has requested a region. Patches
-are broadcast, so a session has one stream and it must be one that every viewer
-can read: a viewer that never sends `view-region` (an older build, or the
+Region mode is used only while **every** viewer has requested a region. All
+viewers get the same patches, so a session has one stream and it must be one
+that every viewer can read: a viewer that never sends `view-region` (an older build, or the
 Windows PC viewer) keeps the whole-desktop stream, and its presence puts the
 session back on that path for everyone. With several region viewers the host
 streams the union of their requests at the densest resolution any of them asked
@@ -306,8 +332,8 @@ and the best case for inter-frame prediction, so the host can instead stream
 H.264 (binary frame type `4`) through whatever encoder the GPU registers.
 
 Like region mode this is negotiated and all-or-nothing: the host uses it only
-while **every** viewer has set `h264: true` on its `view-region`, because one
-stream is broadcast to the session. It also rides on region mode, since the
+while **every** viewer has set `h264: true` on its `view-region`, because every
+viewer gets the same stream. It also rides on region mode, since the
 encoder needs a fixed frame size and a well-defined crop, and a whole
 7680-wide desktop is past what most hardware encoders accept at all.
 

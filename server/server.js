@@ -24,6 +24,9 @@ const MIN_SESSION_KEY_LEN = 16;
 const MAX_VIDEO_BUFFER = 256 * 1024;
 const MAX_FILE_BUFFER = 8 * 1024 * 1024;
 const CH_FILE = 2;
+// Set on byte 0 of an addressed binary frame, which carries its recipients
+// in cleartext ahead of the encrypted payload. See PROTOCOL.md.
+const ADDRESSED = 0x80;
 
 /** sessionKeyHash -> Map<peerId, client> */
 const sessions = new Map();
@@ -208,6 +211,9 @@ function handleHello(client, msg, helloTimer) {
     type: "welcome",
     id: client.id,
     peers: [...peers.values()].map((p) => ({ id: p.id, device: p.device, name: p.name })),
+    // Clients address their binary frames only once they see this; an older
+    // relay would broadcast an addressed frame that no receiver can read.
+    binaryTo: true,
   });
 
   for (const p of peers.values()) {
@@ -248,9 +254,19 @@ function relayJson(client, msg) {
 
 function relayBinary(client, data) {
   const peers = sessions.get(client.sessionHash);
-  if (!peers) return;
-  const limit = data.length > 0 && data[0] === CH_FILE ? MAX_FILE_BUFFER : MAX_VIDEO_BUFFER;
-  for (const p of peers.values()) {
+  if (!peers || data.length === 0) return;
+  // Broadcast reaches every device in the session, which with three or more
+  // showed one viewer two hosts' streams alternating. An addressed frame goes
+  // only to the peers it names.
+  let recipients = peers.values();
+  if (data[0] & ADDRESSED) {
+    const addressed = unwrapAddressed(data);
+    if (!addressed) return;
+    data = addressed.frame;
+    recipients = addressed.to.map((id) => peers.get(id)).filter(Boolean);
+  }
+  const limit = data[0] === CH_FILE ? MAX_FILE_BUFFER : MAX_VIDEO_BUFFER;
+  for (const p of recipients) {
     // Skip peers already backed up: for video that keeps the relay from
     // becoming the buffer that makes the link feel slow, and it bounds memory
     // for a slow viewer either way.
@@ -258,6 +274,29 @@ function relayBinary(client, data) {
       p.ws.send(data);
     }
   }
+}
+
+/**
+ * `[0x80 | type][count u8]` then `count` x `[idLen u8][id]`, then the
+ * encrypted payload. Receivers get the plain `[type][payload]` they always
+ * have, so only senders need to know this format. Null when malformed.
+ */
+function unwrapAddressed(data) {
+  const count = data.length > 1 ? data[1] : 0;
+  const to = new Set();
+  let off = 2;
+  for (let i = 0; i < count; i++) {
+    if (off >= data.length) return null;
+    const len = data[off++];
+    if (off + len > data.length) return null;
+    to.add(data.toString("utf8", off, off + len));
+    off += len;
+  }
+  if (to.size === 0) return null;
+  const frame = Buffer.allocUnsafe(1 + data.length - off);
+  frame[0] = data[0] & ~ADDRESSED;
+  data.copy(frame, 1, off);
+  return { to: [...to], frame };
 }
 
 // Keepalive: drop dead connections.

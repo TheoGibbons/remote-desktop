@@ -314,6 +314,8 @@ public class FsService
             idbytes[2] = (byte)(xferId >> 8);
             idbytes[3] = (byte)xferId;
 
+            // Only the device the file is for needs its chunks.
+            var recipient = new[] { toPeer };
             using var fs = fi.OpenRead();
             var buf = new byte[ChunkSize];
             int n;
@@ -325,7 +327,7 @@ public class FsService
                 Buffer.BlockCopy(buf, 0, payload, 4, n);
                 // File data must not be dropped: retry while the socket is backed up.
                 int tries = 0;
-                while (!_ws.SendBinary(2, payload) && tries++ < 600) await Task.Delay(50, cancel);
+                while (!_ws.SendBinary(2, payload, recipient) && tries++ < 600) await Task.Delay(50, cancel);
                 sent += n;
                 TransferProgress?.Invoke(xferId, true, (int)(sent * 100 / Math.Max(1, fi.Length)), fi.Name);
             }

@@ -195,24 +195,11 @@ class ViewerActivity : AppCompatActivity() {
     private var hostCodec: String? = null
 
     private val binaryListener: (ByteArray) -> Unit = { data ->
+        // No type 1: only phones send full-frame JPEGs, and this views a
+        // desktop. With another phone in the session sharing its screen, an
+        // older relay broadcasts that stream here too, and drawing it showed
+        // the two screens alternating frame by frame.
         if (viewerResumed && data.isNotEmpty()) when (data[0].toInt()) {
-            1 -> { // legacy full-frame JPEG
-                val started = SystemClock.elapsedRealtimeNanos()
-                val bmp = BitmapFactory.decodeByteArray(data, 1, data.size - 1)
-                if (bmp != null) {
-                    screen.setFrame(bmp, screen.fullDesktopRect(bmp.width, bmp.height))
-                    streamStats.recordFrame(
-                        bytes = data.size,
-                        rectCount = 1,
-                        changedPixels = bmp.width.toLong() * bmp.height,
-                        decodeTimeNanos = SystemClock.elapsedRealtimeNanos() - started,
-                        isKeyframe = true,
-                        hadSequenceGap = false,
-                        width = bmp.width,
-                        height = bmp.height,
-                    )
-                } else streamStats.recordDecodeError()
-            }
             3 -> { releaseVideo(); handlePatch(data) }
             4 -> handleH264(data)
         }

@@ -127,6 +127,10 @@ public class ScreenStreamer
         Interlocked.Increment(ref _keyframeRequestCount);
     }
 
+    /// <summary>Only the viewers get the stream, so a device that isn't watching
+    /// never mistakes this desktop for the one it is watching. Null broadcasts.</summary>
+    private string[]? Recipients() => Regions.Viewers is { Length: > 0 } viewers ? viewers : null;
+
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int nIndex);
 
@@ -572,7 +576,7 @@ public class ScreenStreamer
                     }
 
                     bool isKey = ContainsIdr(au);
-                    if (!_ws.SendBinary(Crypto.ChH264, BuildH264Frame(isKey, outW, outH, srcRegion, au)))
+                    if (!_ws.SendBinary(Crypto.ChH264, BuildH264Frame(isKey, outW, outH, srcRegion, au), Recipients()))
                     {
                         forceKeyframe = true;
                         await PaceAsync(frameStart, ct);
@@ -687,7 +691,7 @@ public class ScreenStreamer
                 bool scrollThisFrame = canScroll && !keyframe;
                 var payload = BuildPatch(sendSurface, rects, keyframe, encParams!,
                     regionMode ? srcRegion : null, scrollThisFrame);
-                if (!_ws.SendBinary(Crypto.ChPatch, payload))
+                if (!_ws.SendBinary(Crypto.ChPatch, payload, Recipients()))
                 {
                     // Socket is gone. Keep the damage: it is still owed to the
                     // viewer, and reconnecting forces a keyframe anyway.

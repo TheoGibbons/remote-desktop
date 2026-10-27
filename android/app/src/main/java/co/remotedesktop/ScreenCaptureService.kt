@@ -160,9 +160,9 @@ class ScreenCaptureService : Service() {
             try {
                 if (!streaming) return@setOnImageAvailableListener
                 val token = streamGeneration
-                // Frames are broadcast to the whole session and any key holder
-                // can decrypt them — never send while an unapproved device is
-                // present. Resumes automatically once it is approved or leaves.
+                // Any key holder can decrypt frames, and older relays broadcast
+                // them to the whole session — never send while an unapproved
+                // device is present. Resumes automatically once it is approved or leaves.
                 if (!PhoneScreenCapture.maySendFrames(this)) return@setOnImageAvailableListener
                 val now = System.currentTimeMillis()
                 if (now - lastFrameAt < 1000L / maxFps) return@setOnImageAvailableListener
@@ -185,7 +185,7 @@ class ScreenCaptureService : Service() {
                 if (cropped !== bmp) cropped.recycle()
                 // ConnectionManager adds the frame-type byte and encrypts the JPEG.
                 if (streaming && token == streamGeneration && PhoneScreenCapture.maySendFrames(this))
-                    ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray())
+                    ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray(), PhoneScreenCapture.recipients())
             } catch (_: Exception) {
             } finally {
                 image.close()

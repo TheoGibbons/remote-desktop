@@ -20,6 +20,7 @@ internal static class Program
         {
             await ExpectFrame(ws, keyframe: true);
             await ExpectIdle(ws);
+            Console.WriteLine("PASS: frames are addressed to the viewer");
 
             // No capture damage and no viewport change: the request alone must
             // cause a frame, even if congestion delays it for a few ticks.
@@ -69,9 +70,11 @@ public sealed class WsClient
     public volatile bool VideoLaneBusy;
     public Channel<byte[]> Frames { get; } = Channel.CreateUnbounded<byte[]>();
     public void SendJson(JsonObject _) { }
-    public bool SendBinary(byte channel, byte[] payload)
+    public bool SendBinary(byte channel, byte[] payload, IReadOnlyCollection<string>? to = null)
     {
         if (channel != Crypto.ChH264) throw new Exception("Expected H.264 output");
+        // Broadcast would also reach devices that are watching some other host.
+        if (to == null || !to.SequenceEqual(new[] { "viewer" })) throw new Exception("Frame not addressed to the viewer");
         return Frames.Writer.TryWrite(payload);
     }
 }

@@ -256,6 +256,42 @@ class RelayRefusalTest {
         }
     }
 
+    @Test
+    fun binaryFramesAreAddressedOnlyOnARelayThatCanDeliverThem() {
+        val key = "relay-refusal-test-key-0123456789"
+        val (encKey, _) = Crypto.deriveKeys(key)
+        for (relayAddresses in listOf(true, false)) {
+            FakeRelay().use { relay ->
+                Prefs(context).apply { serverUrl = relay.url; sessionKey = key }
+                ConnectionManager.start(context)
+                relay.accept(5_000)!!.use { conn ->
+                    conn.read() // hello
+                    conn.sendText("""{"type":"welcome","id":"7","peers":[]""" +
+                        (if (relayAddresses) ""","binaryTo":true}""" else "}"))
+                    waitFor { ConnectionManager.state == "connected" }
+                    assertTrue(ConnectionManager.sendBinary(Crypto.CH_VIDEO, "frame".toByteArray(), listOf("12", "3")))
+                    val (opcode, wire) = conn.read()
+                    assertEquals(0x2, opcode)
+                    val blob = if (relayAddresses) {
+                        // [0x80 | type][count]{[idLen][id]}, as server.js unwraps it.
+                        assertEquals(0x81, wire[0].toInt() and 0xff)
+                        assertArrayEquals("2,2,'12',1,'3'",
+                            byteArrayOf(2, 2) + "12".toByteArray() + byteArrayOf(1) + "3".toByteArray(),
+                            wire.copyOfRange(1, 7))
+                        wire.copyOfRange(7, wire.size)
+                    } else {
+                        // An older relay would broadcast an addressed frame nobody can read.
+                        assertEquals(Crypto.CH_VIDEO, wire[0])
+                        wire.copyOfRange(1, wire.size)
+                    }
+                    // Encrypted against the plain frame type, which is what a receiver sees.
+                    assertArrayEquals("frame".toByteArray(), Crypto.decrypt(encKey, blob, Crypto.CH_VIDEO))
+                }
+                ConnectionManager.stop()
+            }
+        }
+    }
+
     /** Runs the main looper until the delayed reconnect reaches the relay. */
     private fun acceptRetry(relay: FakeRelay): FakeRelay.Connection {
         repeat(40) {

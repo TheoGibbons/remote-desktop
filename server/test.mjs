@@ -65,6 +65,38 @@ async function main() {
   ok("phone got binary frame", phone.bins.some((b) => b[0] === 1));
   ok("phone got patch frame", phone.bins.some((b) => b[0] === 3));
 
+  // 3b. Addressed binary frames reach only the peers they name, unwrapped to
+  // the plain [type][payload] a receiver always gets. With a third device in
+  // the session, a viewer otherwise receives every host's stream.
+  ok("welcome says binary frames can be addressed", pc.welcome.binaryTo === true);
+  const phone2 = await connect("android", "my-other-phone");
+  await sleep(150);
+  phone.bins.length = 0;
+  const addressed = (type, ids, payload) => Buffer.concat([
+    Buffer.from([0x80 | type, ids.length]),
+    ...ids.map((id) => Buffer.concat([Buffer.from([Buffer.byteLength(id)]), Buffer.from(id)])),
+    Buffer.from(payload),
+  ]);
+  pc.ws.send(addressed(3, [phone.welcome.id], "for-phone"));
+  phone2.ws.send(addressed(1, [pc.welcome.id], "for-pc"));
+  pc.ws.send(addressed(2, [phone.welcome.id, phone2.welcome.id, phone.welcome.id], "chunk"));
+  await sleep(150);
+  ok("addressed frame reaches its recipient unwrapped",
+    phone.bins.some((b) => b.equals(Buffer.from("\x03for-phone"))));
+  ok("addressed frame skips other peers", !phone2.bins.some((b) => b.includes("for-phone")));
+  ok("phone's frame reaches only the pc",
+    pc.bins.some((b) => b.equals(Buffer.from("\x01for-pc"))) && !phone.bins.some((b) => b.includes("for-pc")));
+  ok("frame addressed to several peers reaches each once",
+    phone.bins.filter((b) => b.includes("chunk")).length === 1 &&
+    phone2.bins.filter((b) => b.includes("chunk")).length === 1);
+  const before = phone.bins.length + phone2.bins.length;
+  pc.ws.send(Buffer.from([0x83, 2, 5, 0x31])); // recipient list runs past the end
+  pc.ws.send(Buffer.from([0x83, 0, 1, 2, 3])); // addressed to nobody
+  await sleep(150);
+  ok("malformed addressed frames are dropped", phone.bins.length + phone2.bins.length === before);
+  phone2.ws.close();
+  await sleep(150);
+
   // 4. Reconnect with the same device uid replaces the stale peer entry
   const tab1 = await connect("android", "my-tab", KEY, "uid-tablet-1");
   await sleep(150);

@@ -153,7 +153,8 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
                 sentSize = size
                 sentGeneration = token
             }
-            if (isCurrent(token)) ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray())
+            if (isCurrent(token))
+                ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray(), PhoneScreenCapture.recipients())
         } finally {
             if (scaled !== bitmap) scaled.recycle()
         }

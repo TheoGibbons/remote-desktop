@@ -126,6 +126,8 @@ internal static class Program
         ws.OnChunk = n => Cancel(n == 1 ? "someone-else" : "phone", 301);
         Check(!fs.SendFileAsync("phone", source, 301).GetAwaiter().GetResult(), "The phone's fs-cancel stops an upload");
         Check(ws.Chunks == 2, "Only the device receiving the file can cancel it");
+        Check(ws.ChunkRecipients.Count > 0 && ws.ChunkRecipients.All(r => r == "phone"),
+            "File chunks are addressed to the receiving device alone");
         Check(Last("fs-end", 301)["ok"]?.GetValue<bool>() == false &&
             Last("fs-end", 301)["error"]?.GetValue<string>() == "Cancelled by the receiver", "The phone is told its cancel took effect");
         Check(!fs.IsActive(301), "A cancelled upload is no longer active");
@@ -228,8 +230,11 @@ public sealed class WsClient
         OnJson?.Invoke(message);
     }
 
-    public bool SendBinary(byte channel, byte[] payload)
+    public List<string> ChunkRecipients { get; } = new();
+
+    public bool SendBinary(byte channel, byte[] payload, IReadOnlyCollection<string>? to = null)
     {
+        lock (ChunkRecipients) ChunkRecipients.Add(to == null ? "everyone" : string.Join(",", to));
         OnChunk?.Invoke(Interlocked.Increment(ref Chunks));
         return true;
     }

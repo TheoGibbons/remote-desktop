@@ -99,6 +99,10 @@ public class WsClient : IDisposable
 
     public bool IsConnected => _ws?.State == WebSocketState.Open && MyId != null;
 
+    /// <summary>The relay delivers an addressed binary frame to just the peers it
+    /// names. Learned from this connection's welcome; older relays broadcast.</summary>
+    public bool RelayAddressesBinary { get; private set; }
+
     /// <summary>Video bytes waiting in the app-level lane (excludes whatever the
     /// socket itself is still draining).</summary>
     public long QueuedVideoBytes { get { lock (_outLock) return _queuedVideoBytes; } }
@@ -222,6 +226,7 @@ public class WsClient : IDisposable
                 try { _ws?.Dispose(); } catch { }
                 _ws = null;
                 MyId = null;
+                RelayAddressesBinary = false;
             }
 
             if (!_running) break;
@@ -383,6 +388,8 @@ public class WsClient : IDisposable
             if (type == "welcome")
             {
                 MyId = node["id"]?.GetValue<string>();
+                RelayAddressesBinary = node["binaryTo"] is JsonValue routes &&
+                    routes.TryGetValue<bool>(out var yes) && yes;
                 _backoffMs = MinBackoffMs; // joined the session: this URL is working
                 StateChanged?.Invoke("connected");
             }
@@ -439,22 +446,47 @@ public class WsClient : IDisposable
 
     /// <summary>
     /// Queue an encrypted binary frame. Video (1 = full frame, 3 = dirty-rect
-    /// patch) goes to the droppable lane and always returns true; file chunks
-    /// (2) go to the ordered lane and return false when it is full, which is the
-    /// cue for the caller to retry.
+    /// patch, 4 = H.264) goes to the droppable lane and always returns true;
+    /// file chunks (2) go to the ordered lane and return false when it is full,
+    /// which is the cue for the caller to retry.
+    ///
+    /// With <paramref name="to"/>, a relay that supports it delivers the frame
+    /// only to those peers; otherwise, and on older relays, it is broadcast.
     /// </summary>
-    public bool SendBinary(byte frameType, byte[] payload)
+    public bool SendBinary(byte frameType, byte[] payload, IReadOnlyCollection<string>? to = null)
     {
         if (_ws?.State != WebSocketState.Open) return false;
 
         var blob = Crypto.Encrypt(_encKey, payload, frameType);
-        var wire = new byte[1 + blob.Length];
-        wire[0] = frameType;
-        Buffer.BlockCopy(blob, 0, wire, 1, blob.Length);
+        var route = to is { Count: > 0 } && RelayAddressesBinary ? AddressHeader(to) : null;
+        var wire = new byte[1 + (route?.Length ?? 0) + blob.Length];
+        // The relay strips the header and clears the flag, so the receiver
+        // decrypts against the plain frame type it always has.
+        wire[0] = route == null ? frameType : (byte)(frameType | AddressedFlag);
+        route?.CopyTo(wire, 1);
+        Buffer.BlockCopy(blob, 0, wire, 1 + (route?.Length ?? 0), blob.Length);
 
         return frameType == Crypto.ChFile
             ? EnqueueReliable(new OutFrame(wire, Lane.File))
             : EnqueueVideo(wire);
+    }
+
+    private const byte AddressedFlag = 0x80;
+
+    /// <summary>[count u8] then count x [idLen u8][id], as PROTOCOL.md lays out.</summary>
+    private static byte[] AddressHeader(IReadOnlyCollection<string> to)
+    {
+        var ids = to.Take(255).Select(Encoding.UTF8.GetBytes).Where(b => b.Length is > 0 and <= 255).ToList();
+        var header = new byte[1 + ids.Sum(b => 1 + b.Length)];
+        header[0] = (byte)ids.Count;
+        int off = 1;
+        foreach (var id in ids)
+        {
+            header[off++] = (byte)id.Length;
+            id.CopyTo(header, off);
+            off += id.Length;
+        }
+        return header;
     }
 
     public void Dispose() => Stop();
