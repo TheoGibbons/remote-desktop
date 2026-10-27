@@ -11,5 +11,6 @@
          doubles, without a GPU, relay connection, or changing the desktop. -->
     <Compile Include="../RemoteDesktopWin/ScreenStreamer.cs" Link="ScreenStreamer.cs" />
     <Compile Include="../RemoteDesktopWin/ViewRegions.cs" Link="ViewRegions.cs" />
+    <Compile Include="../RemoteDesktopWin/FrameMailbox.cs" Link="FrameMailbox.cs" />
   </ItemGroup>
 </Project>

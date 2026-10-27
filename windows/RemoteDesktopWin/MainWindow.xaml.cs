@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 
 namespace RemoteDesktopWin;
 
@@ -17,6 +18,12 @@ public partial class MainWindow : Window
     private readonly PeerAuth _auth;
     private readonly PrivacyOverlayManager _privacy;
     private readonly HashSet<string> _autoUnprivacyViewers = new();
+    private readonly FrameMailbox _phoneFrames;
+    private readonly FrameMailbox _pcPatches;
+
+    // A few hundred milliseconds of a desktop stream. A window further behind
+    // than that is better served by a keyframe than by catching up.
+    private const int MaxWaitingPatches = 8;
 
     private record Peer(string Id, string Device, string Name);
 
@@ -96,8 +103,8 @@ public partial class MainWindow : Window
         // pauses whenever an unapproved device shares the session (checked on
         // the capture thread — use the persisted consent flag, not the CheckBox).
         _streamer.Gate = () => _settings.AllowRemoteControl && _auth.AllPeersTrusted;
-        // BeginInvoke: the prompt is modal, and OnJson runs inside a blocking
-        // Dispatcher.Invoke from the socket thread — don't stall the receive loop.
+        // BeginInvoke: the prompt is modal, so it opens after OnJson returns
+        // rather than from inside it.
         _auth.ApprovalNeeded += req => Dispatcher.BeginInvoke(() => ShowApprovalPrompt(req));
         _auth.Changed += RefreshDeviceList;
         _auth.Changed += () =>
@@ -122,11 +129,21 @@ public partial class MainWindow : Window
             Title += " (administrator)";
         }
 
-        _ws.StateChanged += s => Dispatcher.Invoke(() => OnState(s));
-        _ws.JsonReceived += m => Dispatcher.Invoke(() => OnJson(m));
+        // Frames are drawn below input and rendering, so a stream the PC cannot
+        // keep up with costs frames rather than a frozen window.
+        Action<Action> drawLater = draw => Dispatcher.BeginInvoke(DispatcherPriority.Background, draw);
+        _phoneFrames = new FrameMailbox(1, frame => _phoneView?.OnFrame(frame), drawLater);
+        _pcPatches = new FrameMailbox(MaxWaitingPatches, patch => _pcView?.OnPatch(patch), drawLater);
+
+        // Never make the socket thread wait for the window: while it waits it
+        // answers no pings, so the relay drops the PC, and the PC can neither
+        // notice nor reconnect until the window catches up. BeginInvoke keeps
+        // the messages in order.
+        _ws.StateChanged += s => Dispatcher.BeginInvoke(() => OnState(s));
+        _ws.JsonReceived += OnJsonReceived;
         _ws.BinaryReceived += OnBinary;
-        _fs.TransferStatus += s => Dispatcher.Invoke(() => TransferText.Text = s);
-        _fs.TransferProgress += (xferId, sending, percent, name) => Dispatcher.Invoke(() =>
+        _fs.TransferStatus += s => Dispatcher.BeginInvoke(() => TransferText.Text = s);
+        _fs.TransferProgress += (xferId, sending, percent, name) => Dispatcher.BeginInvoke(() =>
         {
             // A cancel can land between a chunk and its progress; don't bring that file back.
             if (_fs.IsActive(xferId)) TransferText.ShowTransfer(sending, $"{percent}% {name}");
@@ -368,6 +385,13 @@ public partial class MainWindow : Window
 
     private void OnState(string state)
     {
+        // Posted from the socket thread, so an exception here would end the app.
+        try { ApplyState(state); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Ignored a state change that failed: {ex}"); }
+    }
+
+    private void ApplyState(string state)
+    {
         _lastState = state;
         if (state != "connected")
         {
@@ -472,10 +496,18 @@ public partial class MainWindow : Window
         ApplySectionVisibility();
     }
 
+    private void OnJsonReceived(JsonNode msg)
+    {
+        // fs-begin is the exception: it opens the file that the chunks behind
+        // it are written to, and chunks are written on the socket thread.
+        if (msg["type"]?.GetValue<string>() == "fs-begin") Dispatcher.Invoke(() => OnJson(msg));
+        else Dispatcher.BeginInvoke(() => OnJson(msg));
+    }
+
     private void OnJson(JsonNode msg)
     {
-        // This runs inside the socket thread's Dispatcher.Invoke, which rethrows
-        // there; one malformed message would drop the relay connection.
+        // Posted from the socket thread: an exception here would end the app,
+        // and under Invoke one malformed message would drop the relay connection.
         try { HandleJson(msg); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Ignored a message that failed: {ex}"); }
     }
@@ -778,13 +810,13 @@ public partial class MainWindow : Window
         switch (data[0])
         {
             case 1: // full-frame JPEG (phone host)
-                Dispatcher.BeginInvoke(() => _phoneView?.OnFrame(data));
+                _phoneFrames.Post(data);
                 break;
             case 2: // file chunk
                 _fs.HandleFileChunk(data);
                 break;
             case 3: // dirty-rect screen patch (Windows host)
-                Dispatcher.BeginInvoke(() => _pcView?.OnPatch(data));
+                _pcPatches.Post(data);
                 break;
             // No case 4: this viewer does not decode H.264, so it never sets
             // h264 on its view-region, and a host will not put a session on

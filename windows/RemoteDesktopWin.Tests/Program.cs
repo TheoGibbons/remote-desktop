@@ -9,6 +9,8 @@ internal static class Program
 {
     private static async Task Main()
     {
+        CheckFrameMailbox();
+
         var ws = new WsClient();
         var streamer = new ScreenStreamer(ws);
         streamer.Regions.SetRegion("viewer", new ViewRegion(0, 0, 0.1, 0.1, 100, 100));
@@ -47,6 +49,37 @@ internal static class Program
             cts.Cancel();
             await loop.WaitAsync(TimeSpan.FromSeconds(2));
         }
+    }
+
+    private static void CheckFrameMailbox()
+    {
+        var batches = new Queue<Action>();
+        var drawn = new List<byte>();
+        var phone = new FrameMailbox(1, f => drawn.Add(f[0]), batches.Enqueue);
+        foreach (byte b in new byte[] { 1, 2, 3 }) phone.Post(new[] { b });
+        if (batches.Count != 1) throw new Exception("Waiting frames should share one scheduled draw");
+        batches.Dequeue()();
+        if (!drawn.SequenceEqual(new byte[] { 3 })) throw new Exception("Only the newest phone frame should be drawn");
+        Console.WriteLine("PASS: a window that falls behind draws only the newest phone frame");
+
+        drawn.Clear();
+        var patches = new FrameMailbox(3, f => drawn.Add(f[0]), batches.Enqueue);
+        foreach (byte b in new byte[] { 1, 2, 3, 4, 5 }) patches.Post(new[] { b });
+        batches.Dequeue()();
+        if (!drawn.SequenceEqual(new byte[] { 3, 4, 5 })) throw new Exception("Patches past the limit should drop the oldest");
+        Console.WriteLine("PASS: waiting patches are capped, oldest dropped, the rest in order");
+
+        // A frame that arrives mid-batch gets a batch of its own, so a stream
+        // that never pauses still lets the UI thread do other work in between.
+        drawn.Clear();
+        FrameMailbox? feeding = null;
+        feeding = new FrameMailbox(3, f => { drawn.Add(f[0]); if (f[0] == 1) feeding!.Post(new byte[] { 2 }); }, batches.Enqueue);
+        feeding.Post(new byte[] { 1 });
+        batches.Dequeue()();
+        if (!drawn.SequenceEqual(new byte[] { 1 }) || batches.Count != 1) throw new Exception("A batch should not grow while it runs");
+        batches.Dequeue()();
+        if (!drawn.SequenceEqual(new byte[] { 1, 2 })) throw new Exception("The later frame should be drawn next");
+        Console.WriteLine("PASS: frames arriving during a draw wait for the next batch");
     }
 
     private static async Task ExpectFrame(WsClient ws, bool keyframe, int timeoutMs = 2_000)

@@ -221,7 +221,8 @@ public class FsService
             t.Percent = percent;
             name = Path.GetFileName(t.FinalPath);
         }
-        // Outside the lock: handlers wait on the UI thread, which takes it in ExpectDownload.
+        // Outside the lock: a handler that waited on the UI thread, which takes it
+        // in ExpectDownload, would deadlock.
         TransferProgress?.Invoke(id, false, percent, name);
     }
 
