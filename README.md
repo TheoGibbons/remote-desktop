@@ -243,6 +243,14 @@ publish alongside the relay.
 - ✅ File explorer (separate screen from the remote view) to browse the other device's filesystem and **send files back and forth** (phone *or* PC)
 - ✅ Per-IP **rate limiting** on the session-key check so a leaked key can't be brute-forced/spammed
 
+### Roadmap
+
+- ⬜ **Phone → Phone (Android-to-Android).** View and control one Android phone
+  from another. The phone already streams its screen and takes taps, swipes and
+  typing; what's missing is a phone viewer for another phone's stream (full-frame
+  JPEG, type `1`) that sends `tap`/`touch`/`swipe`/`key`/`text` instead of
+  desktop mouse input, plus a View button for phones in the Android devices list.
+
 ## How it works
 
 Pairing is the "set up once" part:
