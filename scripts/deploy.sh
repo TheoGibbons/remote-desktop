@@ -117,6 +117,10 @@ fi
 # most pushes change only the apps. Compose's own test decides: the running
 # containers carry the current config hash and were created from the image just
 # built.
+#
+# `compose config` prints a literal $ escaped as $$, while the container holds
+# the label Traefik reads. Unescape it before comparing, or a label with a
+# literal $, such as a redirectregex ${1}, would always look changed.
 routing_labels() { { grep -o '"traefik\.[^"]*": *"[^"]*"' || true; } | sed 's/": *"/":"/' | sort; }
 up_to_date() {
   local service="$1" hash image id
@@ -135,7 +139,7 @@ for service in "${rolled[@]}"; do
   fi
   if [[ -n "$running_ids" ]]; then
     live_labels="$(docker inspect --format '{{json .Config.Labels}}' "${running_ids%%$'\n'*}" | routing_labels)"
-    new_labels="$("${compose[@]}" config --format json "$service" | routing_labels)"
+    new_labels="$("${compose[@]}" config --format json "$service" | sed 's/\$\$/$/g' | routing_labels)"
     if [[ "$live_labels" == "$new_labels" ]]; then
       rollout+=(--pre-stop-hook 'touch /tmp/drain && sleep 20')
     else
