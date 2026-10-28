@@ -13,6 +13,7 @@ namespace RemoteDesktopWin;
 /// </summary>
 public static class Toast
 {
+    // Oldest at the bottom.
     private static readonly List<Window> Open = new();
 
     public static void Show(string message, int durationMs = 3500)
@@ -49,16 +50,7 @@ public static class Toast
             Content = border,
         };
 
-        win.Loaded += (_, _) =>
-        {
-            var wa = SystemParameters.WorkArea;
-            win.Left = wa.Right - win.ActualWidth - 16;
-            // Stack above any toasts that are already showing.
-            win.Top = wa.Bottom - win.ActualHeight - 16 - Open.Where(w => w != win).Sum(w => w.ActualHeight + 8);
-        };
-
-        Open.Add(win);
-        win.Closed += (_, _) => Open.Remove(win);
+        Stack(win);
         win.Show();
 
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(durationMs) };
@@ -70,5 +62,35 @@ public static class Toast
             win.BeginAnimation(UIElement.OpacityProperty, fade);
         };
         timer.Start();
+    }
+
+    /// <summary>Places a window about to be shown above the toasts already
+    /// showing, and keeps the stack closed up as windows come and go.</summary>
+    internal static void Stack(Window win)
+    {
+        Open.Add(win);
+        win.Loaded += (_, _) => Arrange();
+        win.SizeChanged += (_, _) => Arrange();
+        win.Closed += (_, _) =>
+        {
+            Open.Remove(win);
+            Arrange();
+        };
+    }
+
+    // Each sits on the one below it, so a toast that closes lets the ones above
+    // drop into its place. Placing each new one by the total height of the rest
+    // instead put it on top of a long-lived one once a shorter one below it had gone.
+    private static void Arrange()
+    {
+        var wa = SystemParameters.WorkArea;
+        var bottom = wa.Bottom - 16;
+        foreach (var w in Open)
+        {
+            if (!w.IsLoaded) continue;
+            w.Left = wa.Right - w.ActualWidth - 16;
+            w.Top = bottom - w.ActualHeight;
+            bottom = w.Top - 8;
+        }
     }
 }
