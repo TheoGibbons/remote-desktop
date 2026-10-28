@@ -48,7 +48,16 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
   exit 1
 fi
 
+pulled_from="$(git rev-parse HEAD)"
 git pull --ff-only
+
+# Bash keeps running the copy of this script it started with, not the one just
+# pulled, so a change to deploy.sh would otherwise take effect one deploy late.
+# Start over on the new copy; its own pull then finds nothing new.
+if ! git diff --quiet "$pulled_from" HEAD -- scripts/deploy.sh; then
+  echo "scripts/deploy.sh changed; restarting on the new copy."
+  exec bash "$repo_dir/scripts/deploy.sh" "$@"
+fi
 
 # BuildKit's default provenance attestation gives every build a new image ID,
 # even from unchanged sources, so Compose would replace the relay and site on
