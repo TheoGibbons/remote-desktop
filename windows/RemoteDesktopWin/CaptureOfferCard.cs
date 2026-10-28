@@ -46,6 +46,7 @@ internal sealed class CaptureOfferCard : Window
     private readonly TextBlock _detail = Line(12.5, MutedBrush);
     private readonly TextBlock _names = Line(12.5, MutedBrush);
     private readonly TextBlock _action = Line(12.5, ActionBrush);
+    private readonly TextBlock _folderLink;
     private readonly DispatcherTimer _timer = new();
     private CaptureOffer.Stage? _shown;
     private TimeSpan? _left; // until it closes on its own; null while downloading
@@ -89,8 +90,9 @@ internal sealed class CaptureOfferCard : Window
         ResizeMode = ResizeMode.NoResize;
         SizeToContent = SizeToContent.WidthAndHeight;
 
+        _folderLink = FolderLink();
         var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        foreach (var line in new[] { _title, _detail, _names, _action }) text.Children.Add(line);
+        foreach (var line in new[] { _title, _detail, _names, _action, _folderLink }) text.Children.Add(line);
         _title.Margin = new Thickness(0, 0, 0, 2);
         _action.Margin = new Thickness(0, 4, 0, 0);
         _action.TextWrapping = TextWrapping.Wrap;
@@ -267,9 +269,10 @@ internal sealed class CaptureOfferCard : Window
             CaptureOffer.Stage.Offered => ("Click to download", ActionBrush),
             CaptureOffer.Stage.Downloading => ($"Downloading… {_offer.Percent}%", MutedBrush),
             CaptureOffer.Stage.Saved when _offer.SavedPaths.Count == 1 => ("Saved to Downloads · click to open", GoodBrush),
-            CaptureOffer.Stage.Saved => ($"Saved {_offer.SavedPaths.Count} files to Downloads · click to show", GoodBrush),
+            CaptureOffer.Stage.Saved => ($"Saved {_offer.SavedPaths.Count} files to Downloads", GoodBrush),
             _ => ($"Couldn't download: {_offer.Error?.TrimEnd('.')}.{retry}", BadBrush),
         };
+        _folderLink.Visibility = _offer.Status == CaptureOffer.Stage.Saved ? Visibility.Visible : Visibility.Collapsed;
         _card.Cursor = Clickable ? Cursors.Hand : Cursors.Arrow;
         _close.ToolTip = _offer.Status == CaptureOffer.Stage.Downloading ? "Cancel the download" : "Dismiss";
 
@@ -307,14 +310,44 @@ internal sealed class CaptureOfferCard : Window
         }
     }
 
+    /// <summary>Shown under the saved message, which only says what clicking the card does.</summary>
+    private TextBlock FolderLink()
+    {
+        var link = Line(12.5, ActionBrush);
+        link.Text = "Show in folder";
+        link.Cursor = Cursors.Hand;
+        link.HorizontalAlignment = HorizontalAlignment.Left;
+        link.Margin = new Thickness(0, 2, 0, 0);
+        link.MouseEnter += (_, _) => link.TextDecorations = TextDecorations.Underline;
+        link.MouseLeave += (_, _) => link.TextDecorations = null;
+        // Handled here, so the card underneath doesn't open the file as well.
+        link.MouseLeftButtonDown += (_, e) => e.Handled = true;
+        link.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            _pressed = false;
+            ShowInFolder();
+        };
+        return link;
+    }
+
     /// <summary>One file opens in its app; several show in their folder.</summary>
     private void Open()
     {
-        var paths = _offer.SavedPaths;
-        if (paths.Count == 0) return;
-        // Through Explorer, so it opens as the signed-in user even while this
-        // app runs as administrator.
-        var args = paths.Count == 1 ? $"\"{paths[0]}\"" : $"/select,\"{paths[^1]}\"";
+        if (_offer.SavedPaths.Count == 1) Explorer($"\"{_offer.SavedPaths[0]}\"");
+        else ShowInFolder();
+    }
+
+    /// <summary>Downloads, with the last file saved selected.</summary>
+    private void ShowInFolder()
+    {
+        if (_offer.SavedPaths.Count > 0) Explorer($"/select,\"{_offer.SavedPaths[^1]}\"");
+    }
+
+    // Through Explorer, so things open as the signed-in user even while this
+    // app runs as administrator.
+    private void Explorer(string args)
+    {
         try { Process.Start(new ProcessStartInfo("explorer.exe", args) { UseShellExecute = false }); }
         catch (Exception ex) { Toast.Show("Couldn't open it: " + ex.Message); }
         FadeOut();

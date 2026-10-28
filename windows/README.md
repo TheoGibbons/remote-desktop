@@ -195,7 +195,8 @@ unapproved device is present in the session, streaming and file serving pause.
 - **New photos and screenshots from a phone** pop up as a card in the corner of
   the screen, with a preview, for a minute (longer while the pointer rests on
   it). Click it to download them into Downloads, then click again to open the
-  file, or the folder for several. **✕** dismisses it, or cancels a download
+  file, or the folder for several; **Show in folder** opens Downloads with the
+  file selected. **✕** dismisses it, or cancels a download
   under way; a failed download can be retried with another click. The card
   never takes focus from what you are typing in. To stop them, turn off
   **Offer new photos to PCs** on the phone.
