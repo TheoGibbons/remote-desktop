@@ -15,9 +15,11 @@ Kotlin app (min SDK 26 / Android 8.0, compile/target SDK 36 / Android 16). It:
 ## Build
 
 Open the `android/` folder in **Android Studio** with support for Android Gradle
-Plugin 8.11 and press Run. Use JDK 21 for Gradle so the Android 16 unit tests can
+Plugin 9.4 and press Run. Use JDK 21 for Gradle so the Android 16 unit tests can
 run. The app still targets Java 17 bytecode. Install Android SDK Platform 36 when
-prompted; the Gradle wrapper selects Gradle 8.13 automatically.
+prompted; the Gradle wrapper selects Gradle 9.8.2 automatically. Kotlin is built
+into the Android Gradle plugin, so the app applies no Kotlin plugin of its own;
+the root `build.gradle.kts` pins the Kotlin version.
 
 Or from the command line (needs the Android SDK; set `sdk.dir` in
 `android/local.properties` or the `ANDROID_HOME` env var):
