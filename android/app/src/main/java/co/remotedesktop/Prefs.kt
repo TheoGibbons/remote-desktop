@@ -72,7 +72,19 @@ class Prefs(context: Context) {
     /** Consent: paired devices may browse this phone's storage and push files to it. */
     var allowFileAccess: Boolean
         get() = sp.getBoolean("allowFileAccess", true)
-        set(v) = sp.edit().putBoolean("allowFileAccess", v).apply()
+        set(v) {
+            sp.edit().putBoolean("allowFileAccess", v).apply()
+            CaptureOffers.refresh()
+        }
+
+    /** Photos, videos and screenshots taken on this phone pop up on paired
+     *  PCs, ready to download. Needs [allowFileAccess] too. */
+    var offerCaptures: Boolean
+        get() = sp.getBoolean("offerCaptures", true)
+        set(v) {
+            sp.edit().putBoolean("offerCaptures", v).apply()
+            CaptureOffers.refresh()
+        }
 
     /** Stable per-install id so the relay replaces this device's stale
      *  connection on reconnect instead of listing it twice. A phone restored

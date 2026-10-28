@@ -71,9 +71,113 @@ internal static class Program
             Console.WriteLine("PASS: complete, duplicate, incomplete, cancelled, unknown-size, empty, denied and failed-save transfers");
 
             CheckCancelling(ws, fs, dir, Begin, Chunk, End);
+            CheckCaptureOffers(dir);
         }
         finally { Directory.Delete(dir, true); }
         CheckSortOrders();
+    }
+
+    private static void CheckCaptureOffers(string dir)
+    {
+        var ws = new WsClient();
+        var fs = new FsService(ws) { IncomingDir = dir };
+        var posted = new Queue<Action>();
+        void RunPosted() { while (posted.TryDequeue(out var action)) action(); }
+        CaptureOffer? Offer(JsonArray files, string? thumb = null) => CaptureOffer.Parse(ws, fs, "phone", "Pixel",
+            new JsonObject { ["type"] = "fs-offer", ["files"] = files, ["thumb"] = thumb }, posted.Enqueue);
+        JsonObject File(string path, string kind, long size = 0, string? name = null) => new()
+        {
+            ["path"] = path, ["name"] = name, ["size"] = size, ["kind"] = kind,
+        };
+        List<JsonObject> Gets() => ws.Messages.Where(m => m["type"]?.GetValue<string>() == "fs-get").ToList();
+        // The phone answering an fs-get, as FsHandler does.
+        void Send(JsonObject get, byte[]? bytes, string? error = null)
+        {
+            // As a long, the way a parsed message holds it.
+            long id = get["xferId"]!.GetValue<uint>();
+            if (bytes != null)
+            {
+                var name = get["path"]!.GetValue<string>().Split('/')[^1];
+                fs.HandleJson(new JsonObject
+                {
+                    ["type"] = "fs-begin", ["from"] = "phone", ["xferId"] = id, ["name"] = name, ["size"] = (long)bytes.Length,
+                }, peerAccessAllowed: false); // fetched, not pushed, so file access on this PC doesn't matter
+                fs.HandleFileChunk(new byte[] { 2, (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id }.Concat(bytes).ToArray());
+            }
+            fs.HandleJson(new JsonObject
+            {
+                ["type"] = "fs-end", ["from"] = "phone", ["xferId"] = id, ["ok"] = error == null, ["error"] = error,
+            }, true);
+            RunPosted();
+        }
+
+        var burst = Offer(new JsonArray
+        {
+            File("/storage/emulated/0/DCIM/Camera/a.jpg", "photo", 3, "a.jpg"),
+            File("/storage/emulated/0/DCIM/Camera/b.jpg", "photo", 2),
+            new JsonObject { ["name"] = "no-path.jpg", ["kind"] = "photo" },
+        }, Convert.ToBase64String(new byte[] { 0xFF, 0xD8, 0xFF }))!;
+        Check(burst.Files.Count == 2 && burst.Files[1].Name == "b.jpg", "Offered files without a path are skipped, and names default to the path's");
+        Check(burst.Title == "2 new photos" && burst.Names == "a.jpg and 1 more" && burst.TotalSize == 5, "A burst is described as one offer");
+        Check(burst.Thumbnail!.SequenceEqual(new byte[] { 0xFF, 0xD8, 0xFF }), "The preview arrives as sent");
+
+        var changes = 0;
+        burst.Changed += () => changes++;
+        burst.Download();
+        burst.Download(); // a second click while it runs asks for nothing more
+        var gets = Gets();
+        Check(gets.Count == 2 && gets.All(g => g["to"]?.GetValue<string>() == "phone") &&
+              gets[0]["path"]?.GetValue<string>() == "/storage/emulated/0/DCIM/Camera/a.jpg",
+            "Clicking asks the phone for each file once");
+        Check(burst.Status == CaptureOffer.Stage.Downloading && changes == 1, "The card hears the download start");
+        Send(gets[0], new byte[] { 1, 2, 3 });
+        Check(burst.Status == CaptureOffer.Stage.Downloading && burst.SavedPaths.Count == 1 && burst.Percent == 50,
+            "One file of two arrived");
+        Check(System.IO.File.ReadAllBytes(burst.SavedPaths[0]).SequenceEqual(new byte[] { 1, 2, 3 }), "It was saved whole");
+        Send(gets[1], null, "No such file");
+        Check(burst.Status == CaptureOffer.Stage.Failed && burst.Error == "No such file", "A refused file fails the offer, saying why");
+
+        burst.Download();
+        var retry = Gets().Skip(2).ToList();
+        Check(retry.Count == 1 && retry[0]["path"]?.GetValue<string>() == "/storage/emulated/0/DCIM/Camera/b.jpg",
+            "Trying again asks only for the file still missing");
+        Send(retry[0], new byte[] { 4, 5 });
+        Check(burst.Status == CaptureOffer.Stage.Saved && burst.SavedPaths.Count == 2 &&
+              burst.SavedPaths.All(p => Path.GetDirectoryName(p) == dir), "Both files end up in Downloads");
+        Console.WriteLine("PASS: an offer downloads each file on click, says why one failed, and retries only that one");
+
+        var shot = Offer(new JsonArray { File("/storage/emulated/0/Pictures/Screenshots/s.png", "screenshot", 10) })!;
+        Check(shot.Title == "New screenshot" && shot.Thumbnail == null, "One screenshot, without a preview");
+        shot.Download();
+        var get = Gets().Last();
+        var id = get["xferId"]!.GetValue<uint>();
+        Check(fs.IsActive(id), "Its download is under way");
+        shot.PeerGone();
+        Check(shot.Status == CaptureOffer.Stage.Failed && shot.Error == "Pixel went offline" && !fs.IsActive(id),
+            "A phone that leaves fails the download and drops it");
+        Check(ws.Messages.Any(m => m["type"]?.GetValue<string>() == "fs-cancel" && m["xferId"]?.GetValue<uint>() == id),
+            "The phone is asked to stop, in case it is still there");
+        var asked = Gets().Count;
+        shot.Download();
+        Check(Gets().Count == asked && shot.Status == CaptureOffer.Stage.Failed, "Nothing is asked of a phone that has gone");
+
+        var clip = Offer(new JsonArray { File("/storage/emulated/0/DCIM/Screen recordings/r.mp4", "screen-recording") })!;
+        clip.Download();
+        clip.Cancel();
+        var clipId = Gets().Last()["xferId"]!.GetValue<uint>();
+        Send(Gets().Last(), new byte[] { 9 });
+        Check(!fs.IsActive(clipId) && clip.SavedPaths.Count == 0 && !Directory.EnumerateFiles(dir, "r*.mp4").Any(),
+            "A cancelled download is never saved");
+
+        Check(Offer(new JsonArray { File("/x/a.jpg", "photo"), File("/x/b.mp4", "video") })!.Title == "2 new files" &&
+              clip.Title == "New screen recording" &&
+              Offer(new JsonArray { File("/x/c", "something-new") })!.Title == "New file", "Titles name the kind of file");
+        Check(Offer(new JsonArray())  == null && Offer(new JsonArray { new JsonObject { ["path"] = 7 } }) == null &&
+              CaptureOffer.Parse(ws, fs, "phone", "Pixel", new JsonObject { ["type"] = "fs-offer" }, posted.Enqueue) == null,
+            "An offer of nothing usable shows nothing");
+        Check(Offer(new JsonArray { File("/x/a.jpg", "photo") }, "not base64!")!.Thumbnail == null &&
+              Offer(new JsonArray { File("/x/a.jpg", "photo") }, "")!.Thumbnail == null, "A broken or empty preview is dropped");
+        Console.WriteLine("PASS: offers fail cleanly when the phone leaves or the download is cancelled, and name what they hold");
     }
 
     private static void CheckCancelling(WsClient ws, FsService fs, string dir,

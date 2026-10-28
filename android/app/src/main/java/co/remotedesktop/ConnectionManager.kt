@@ -112,11 +112,13 @@ object ConnectionManager {
         PeerAuth.onSessionStart(pid) // wipes the trust store if the key changed
         enabled = true
         backoffMs = 2000L
+        CaptureOffers.start(appContext)
         connect()
     }
 
     fun stop() {
         PhoneScreenCapture.onViewStopped()
+        CaptureOffers.stop()
         enabled = false
         retryScheduled = false
         main.removeCallbacks(reconnect)

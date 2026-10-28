@@ -221,6 +221,9 @@ publish alongside the relay.
   formatting for apps that take rich paste; copied files can be saved to the
   phone instead. **Paste** sends the phone's clipboard to the PC and pastes it
 
+- ✅ **New photos, videos and screenshots** taken on the phone pop up on the PC
+  for a minute; click the card to download them into Downloads
+
 **PC → Phone**
 - ✅ Tap / swipe on the phone screen; right-click for Back, middle-click for Home
 - ✅ Type into the phone with the PC's keyboard (Android 13 and later): Enter,

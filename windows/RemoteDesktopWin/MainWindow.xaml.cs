@@ -397,6 +397,7 @@ public partial class MainWindow : Window
         {
             _peers.Clear();
             _auth.ResetConnection(); // peer ids are stale after a drop
+            CaptureOfferCard.PeerLeft(null);
             RefreshDeviceList();
         }
         UpdateStatusCard();
@@ -548,6 +549,7 @@ public partial class MainWindow : Window
                     // Drop their viewport, or the stream stays cropped to a
                     // region nobody is looking at any more.
                     _streamer.Regions.RemoveViewer(leftId);
+                    CaptureOfferCard.PeerLeft(leftId);
                 }
                 RefreshDeviceList();
                 if (_pcView != null && _pcView.PeerId == leftId) _pcView.Close();
@@ -726,6 +728,14 @@ public partial class MainWindow : Window
                 // that no unapproved device is present in the session.
                 _fs.HandleJson(msg, peerAccessAllowed:
                     AllowFilesCheck.IsChecked == true && _auth.IsTrusted(from) && _auth.AllPeersTrusted);
+                break;
+
+            case "fs-offer":
+                // A phone just took a photo, video or screenshot. Only an
+                // approved device may put a card on this screen.
+                if (_auth.IsTrusted(from) && from != null &&
+                    CaptureOffer.Parse(_ws, _fs, from, PeerName(from), msg, a => Dispatcher.BeginInvoke(a)) is { } offer)
+                    CaptureOfferCard.Show(offer);
                 break;
 
             case "fs-list-result":

@@ -10,7 +10,7 @@ public class FileEntry
     public string SizeText => Dir ? "" : FormatSize(Size);
     public string MTimeText => MTime == 0 ? "" : DateTimeOffset.FromUnixTimeMilliseconds(MTime).LocalDateTime.ToString("yyyy-MM-dd HH:mm");
 
-    private static string FormatSize(long s) => s switch
+    internal static string FormatSize(long s) => s switch
     {
         < 1024 => $"{s} B",
         < 1024 * 1024 => $"{s / 1024.0:F1} KB",

@@ -164,6 +164,27 @@ a paste there is expected to come from the PC.
 | `fs-end`         | `to`, `xferId`, `ok`, `error?` | A sender cancels its own transfer by ending it early with `ok: false`. |
 | `fs-cancel`      | `to`, `xferId` | Receiver gives up on a file it asked for with `fs-get`, before or after its `fs-begin`. The sender stops and ends it with `fs-end` `ok: false`; only the device the file is going to can cancel it. The receiver drops what has arrived at once and ignores the rest. Older senders ignore this and send the whole file, so a receiver also refuses an `fs-begin` for a download it cancelled before it began, even while it accepts pushes. |
 | `fs-saved`       | `to`, `xferId`, `path?`, `error?` | Receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Windows replies with `error` if saving fails or a known-size file is incomplete. Older peers may omit this reply; Android share-sheet sends wait for confirmation and show an unconfirmed result on timeout. |
+| `fs-offer`       | `to`, `files` `[{path, name, size, kind}]`, `thumb?` | A phone tells a PC about photos, videos, screenshots or screen recordings it has just saved, so the PC can offer to download them with `fs-get` on `path`. `kind` is `photo`, `video`, `screenshot` or `screen-recording`; a PC treats anything else as a plain file. `thumb` is a base64 JPEG preview of the last file, at most 256 px on its longer side, where the phone could make one. See [New captures](#new-captures). |
+
+### New captures
+
+A phone sends `fs-offer` only to PCs that it and they have approved, only while
+its file access is on and every peer in the session is approved, which are the
+conditions under which it would serve the `fs-get` that follows. It never
+offers a file later: a capture saved while no PC could take it up stays
+unoffered. Several files saved in quick succession, like a burst of shots, go
+out as one offer.
+
+The phone learns of new files from MediaStore's change notifications, so it
+does no work while nothing is being saved. A file counts as a capture when it
+was written in the last ten minutes and sits where cameras and the system save:
+at most one folder into `DCIM` (`DCIM/Camera`, `DCIM/Screenshots`), or in a
+`Screenshots` or screen-recordings folder in `Pictures` or `Movies`. Deeper
+folders are left alone, since that is where people keep archives. A file moved
+or restored into one of these folders keeps its old modification time and is
+not offered.
+
+A PC acts on `fs-offer` only from an approved device, and older apps ignore it.
 
 **Clipboard** (only a Windows host serves these; a phone or another PC sends them)
 

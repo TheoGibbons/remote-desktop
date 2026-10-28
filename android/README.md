@@ -90,6 +90,17 @@ lose that capability immediately, without revoking the OS permission. Disabling
 control, stopping a view, disconnecting, or revoking a viewer ends its capture
 request. Re-enabling control requires the desktop to request viewing again.
 
+The third switch, **Offer new photos to PCs** (on by default), makes each
+photo, video, screenshot or screen recording you take pop up on your paired PCs
+for a minute, ready to download with a click. It needs *Browse and transfer
+files*, since that is how the PC fetches the file. Nothing polls: Android tells
+the app when MediaStore changes, and the app looks once the change settles, so
+a burst of shots arrives as one offer. Only files written in the last ten
+minutes in the camera's or the system's own folders count (`DCIM/Camera`,
+`DCIM/Screenshots`, `Pictures/Screenshots`, screen-recording folders), so
+downloads, chat apps and archives kept deeper in `DCIM` never pop up. A capture
+taken while no PC is online is not offered later.
+
 **Reconnecting.** The app reconnects on its own, waiting longer after each
 failure (up to 30 seconds). While it isn't connected, the refresh button on the
 connection-status card tries again immediately. If the relay refuses the

@@ -51,7 +51,8 @@ not launch the UI or connect to a relay.
 Run `dotnet run --project windows/RemoteDesktopWin.FileTransferTests` for file
 save confirmations, duplicate names, incomplete and cancelled transfers (from
 either end, before and after they begin),
-unknown sizes, empty files and save failures. These checks use temporary files
+unknown sizes, empty files and save failures, and for downloading what a phone
+offers when it takes a photo or screenshot. These checks use temporary files
 and a transport double, without connecting to a relay.
 
 Run `dotnet run --project windows/RemoteDesktopWin.ClipboardTests` for the
@@ -191,6 +192,13 @@ unapproved device is present in the session, streaming and file serving pause.
   after the phone confirms the saved files. **Cancel**, beside the status line
   while a download or upload runs, stops it: a part-downloaded file is
   deleted, and cancelling an upload drops the rest of its queue.
+- **New photos and screenshots from a phone** pop up as a card in the corner of
+  the screen, with a preview, for a minute (longer while the pointer rests on
+  it). Click it to download them into Downloads, then click again to open the
+  file, or the folder for several. **✕** dismisses it, or cancels a download
+  under way; a failed download can be retried with another click. The card
+  never takes focus from what you are typing in. To stop them, turn off
+  **Offer new photos to PCs** on the phone.
 - **QR code** (next to *Generate*) → shows the server URL + session key as a QR
   code the phone scans to pair in one step.
 - Closing the window hides the app to the **tray** — paired devices can still

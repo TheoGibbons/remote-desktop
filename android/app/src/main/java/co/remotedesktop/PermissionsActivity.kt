@@ -33,6 +33,8 @@ class PermissionsActivity : AppCompatActivity() {
     private lateinit var screenShareStatus: TextView
     private lateinit var a11yStatus: TextView
     private lateinit var fileAccessStatus: TextView
+    private lateinit var offerCapturesSwitch: MaterialSwitch
+    private lateinit var offerCapturesSub: TextView
 
     private val captureStateListener: () -> Unit = { refresh() }
 
@@ -76,6 +78,11 @@ class PermissionsActivity : AppCompatActivity() {
         findViewById<MaterialSwitch>(R.id.allowFilesSwitch).apply {
             isChecked = prefs.allowFileAccess
             setOnCheckedChangeListener { _, v -> prefs.allowFileAccess = v; refresh() }
+        }
+        offerCapturesSub = findViewById(R.id.offerCapturesSub)
+        offerCapturesSwitch = findViewById<MaterialSwitch>(R.id.offerCapturesSwitch).apply {
+            isChecked = prefs.offerCaptures
+            setOnCheckedChangeListener { _, v -> prefs.offerCaptures = v }
         }
 
         findViewById<View>(R.id.screenShareRow).setOnClickListener {
@@ -143,6 +150,10 @@ class PermissionsActivity : AppCompatActivity() {
         }
         setPill(a11yStatus, a11y)
         setPill(fileAccessStatus, filesOk)
+        // A PC can only download what it's offered while file access is on.
+        offerCapturesSwitch.isEnabled = prefs.allowFileAccess
+        offerCapturesSub.setText(if (prefs.allowFileAccess) R.string.offer_captures_description
+            else R.string.offer_captures_needs_files)
         screenShareSub.text =
             if (sharing) "Smoother viewing is active for this session — tap to stop"
             else if (persistentCapture) "Optional smoother viewing. Requires approval again after a restart."

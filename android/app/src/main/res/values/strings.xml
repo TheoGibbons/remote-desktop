@@ -103,4 +103,7 @@
     <string name="peer_browse">Browse</string>
     <string name="peer_browse_description">Browse files on %1$s</string>
     <string name="viewer_awaiting_approval">Approve this phone on %1$s.\nCode: %2$s</string>
+    <string name="offer_captures">Offer new photos to PCs</string>
+    <string name="offer_captures_description">Photos, videos and screenshots you take pop up on your PCs, ready to download</string>
+    <string name="offer_captures_needs_files">Needs Browse and transfer files</string>
 </resources>
