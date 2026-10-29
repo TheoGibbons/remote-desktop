@@ -84,7 +84,7 @@
                                 <TextBlock x:Name="Icon" Text="&#xF12B;" FontFamily="Segoe MDL2 Assets" FontSize="16"
                                            Foreground="{StaticResource RdPrimaryBrush}"
                                            VerticalAlignment="Center" Margin="0,0,12,0"/>
-                                <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="13"
+                                <TextBlock Grid.Column="1" Text="{Binding DisplayName}" FontSize="13"
                                            Foreground="{StaticResource RdOnSurfaceBrush}"
                                            TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
                                 <TextBlock Grid.Column="2" Text="{Binding SizeText}" Style="{StaticResource RdCaption}"

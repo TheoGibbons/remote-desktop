@@ -42,9 +42,12 @@ class ShadowSessionPeerAuth {
 @Implements(Environment::class)
 class ShadowSessionEnvironment : ShadowEnvironment() {
     companion object {
+        /** Whether All files access is granted. */
+        @JvmStatic var storageManager = false
+
         @JvmStatic
         @Implementation
-        fun isExternalStorageManager() = false
+        fun isExternalStorageManager() = storageManager
     }
 }
 

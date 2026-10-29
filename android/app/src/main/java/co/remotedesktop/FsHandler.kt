@@ -1,10 +1,13 @@
 package co.remotedesktop
 
+import android.Manifest
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.storage.StorageManager
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.core.content.FileProvider
@@ -129,19 +132,53 @@ class FsHandler(private val context: Context) {
         )
     }
 
-    private fun resolve(path: String): File =
-        if (path.isEmpty()) root else File(path)
+    /** Internal storage, an SD card or a USB drive, with the name Android gives it. */
+    private class Volume(val dir: File, val label: String)
+
+    /** The mounted storage volumes. */
+    private fun volumes(): List<Volume> {
+        val sm = context.getSystemService(StorageManager::class.java)
+        val dirs = if (Build.VERSION.SDK_INT >= 30) sm.storageVolumes.mapNotNull { it.directory }
+            // This app's folder on each mounted volume, e.g. /storage/0000-0000/Android/data/<package>/files.
+            else context.getExternalFilesDirs(null).filterNotNull().map { File(it.path.substringBefore("/Android/data/")) }
+        return dirs.map { Volume(it, sm.getStorageVolume(it)?.getDescription(context) ?: it.name) }
+    }
+
+    private fun hasFileAccess() =
+        if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+        else context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
 
     private fun handleList(msg: JSONObject) {
         val from = msg.optString("from")
         val reqId = msg.optString("reqId")
-        val pathStr = msg.optString("path")
+        val path = msg.optString("path")
+        // Up from a volume's root asks for /storage/emulated or /storage, which apps
+        // can't list even with All files access. List the volumes there instead, or
+        // stay at the root while internal storage is the only one.
+        val top = root.parentFile?.parentFile
+        val aboveRoot = path.isNotEmpty() && File(path).let { it == root.parentFile || it == top }
+        val volumes = if (aboveRoot) volumes().filter { top != null && it.dir.startsWith(top) } else emptyList()
+        val dir = if (volumes.size > 1) top!! else if (path.isEmpty() || aboveRoot) root else File(path)
         val entries = JSONArray()
         var error: String? = null
-        try {
-            val dir = resolve(pathStr)
-            val files = dir.listFiles()
-                ?: throw Exception("Cannot read ${dir.path} — grant 'All files access' in the app")
+        if (volumes.size > 1) {
+            // Each named by its path below /storage, so the browsing device can open it.
+            for (v in volumes) {
+                entries.put(
+                    JSONObject()
+                        .put("name", v.dir.toRelativeString(dir))
+                        .put("label", v.label)
+                        .put("dir", true)
+                        .put("size", 0)
+                        .put("mtime", 0)
+                )
+            }
+        } else try {
+            val files = dir.listFiles() ?: throw Exception(when {
+                !hasFileAccess() -> "Cannot read ${dir.path} — enable File access in Permissions & Access"
+                !dir.isDirectory -> "No folder at ${dir.path}"
+                else -> "Android doesn't let apps open ${dir.path}"
+            })
             for (f in files) {
                 entries.put(
                     JSONObject()
@@ -159,7 +196,7 @@ class FsHandler(private val context: Context) {
                 .put("type", "fs-list-result")
                 .put("to", from)
                 .put("reqId", reqId)
-                .put("path", if (pathStr.isEmpty()) root.path else pathStr)
+                .put("path", dir.path)
                 .put("downloadsPath", Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).path)
                 .put("entries", entries)
                 .put("error", error ?: JSONObject.NULL)

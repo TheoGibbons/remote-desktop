@@ -180,7 +180,9 @@ unapproved device is present in the session, streaming and file serving pause.
 - **Browse files** → a file explorer to download from / upload to the selected
   device (a PC or a phone). It opens in that device's Downloads folder, newest
   first; the sort button changes the order (name, size or date, either way)
-  and can group folders first, and remembers your choice. Downloads are saved to
+  and can group folders first, and remembers your choice. On a phone with an SD
+  card (or a USB drive), the up arrow at the top of its storage lists them all
+  by name; pick one to switch to it. Downloads are saved to
   your Downloads folder — asked of Windows rather than assumed, so a relocated
   Downloads is honoured; uploads land in the peer's `Downloads` folder on
   Windows or Android alike. A name that clashes with a file already there gets

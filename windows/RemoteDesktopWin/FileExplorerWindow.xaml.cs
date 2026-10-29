@@ -170,6 +170,7 @@ public partial class FileExplorerWindow : Window
             _entries.Add(new FileEntry
             {
                 Name = e!["name"]!.GetValue<string>(),
+                Label = e["label"]?.GetValue<string>(),
                 Dir = e["dir"]?.GetValue<bool>() ?? false,
                 Size = e["size"]?.GetValue<long>() ?? 0,
                 MTime = e["mtime"]?.GetValue<long>() ?? 0,

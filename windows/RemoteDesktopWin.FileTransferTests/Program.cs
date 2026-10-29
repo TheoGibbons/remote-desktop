@@ -308,6 +308,16 @@ internal static class Program
         }
         Console.WriteLine("PASS: all six sort orders keep folders first when ticked");
 
+        // A phone's storage volumes show, and sort, by what Android calls them.
+        var volumes = new[]
+        {
+            new FileEntry { Name = "0000-0000", Label = "SD card", Dir = true },
+            new FileEntry { Name = "emulated/0", Label = "Internal storage", Dir = true },
+        };
+        Check(volumes.Sorted(FileSort.ModifiedDesc).Select(e => e.DisplayName).SequenceEqual(new[] { "Internal storage", "SD card" }),
+            "Storage volumes sort by their labels");
+        Console.WriteLine("PASS: storage volumes sort by their labels");
+
         var settings = new AppSettings();
         Check(settings.FileBrowserSort == nameof(FileSort.ModifiedDesc) && !settings.FileBrowserFoldersFirst,
             "The file browser starts newest first, with folders mixed in");

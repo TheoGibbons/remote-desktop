@@ -157,8 +157,8 @@ a paste there is expected to come from the PC.
 
 | type             | fields | notes |
 |------------------|--------|-------|
-| `fs-list`        | `to`, `path`, `reqId` | Empty `path` = roots (drives on Windows, storage root on Android). |
-| `fs-list-result` | `reqId`, `path`, `entries` `[{name, dir, size, mtime}]`, `error?`, `downloadsPath?` | Both apps advertise their absolute upload destination in `downloadsPath`, so the browsing device can open there and return there as an upload starts. Older peers omit it. |
+| `fs-list`        | `to`, `path`, `reqId` | Empty `path` = roots (drives on Windows, storage root on Android). Android answers the folders above a storage volume (`/storage/emulated`, `/storage`), which apps can't list, with its volumes at `/storage` when it has more than one, else with internal storage. |
+| `fs-list-result` | `reqId`, `path`, `entries` `[{name, dir, size, mtime, label?}]`, `error?`, `downloadsPath?` | Both apps advertise their absolute upload destination in `downloadsPath`, so the browsing device can open there and return there as an upload starts. Older peers omit it. A storage volume's entry has its path below `path` as `name` (`emulated/0`) and what Android calls it as `label` ("SD card"); browsers show the label when present. |
 | `fs-get`         | `to`, `path`, `xferId` | Ask peer to send me a file. |
 | `fs-begin`       | `to`, `xferId`, `name`, `size` | Sender announces an incoming file (used for both push-upload and get-response). |
 | `fs-end`         | `to`, `xferId`, `ok`, `error?` | A sender cancels its own transfer by ending it early with `ok: false`. |

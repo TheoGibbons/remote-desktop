@@ -4,6 +4,10 @@ namespace RemoteDesktopWin;
 public class FileEntry
 {
     public required string Name { get; init; }
+    /// <summary>What a phone calls one of its storage volumes, e.g. "SD card"; its
+    /// <see cref="Name"/> is then a path. Null for anything else.</summary>
+    public string? Label { get; init; }
+    public string DisplayName => Label ?? Name;
     public bool Dir { get; init; }
     public long Size { get; init; }
     public long MTime { get; init; }
@@ -52,16 +56,16 @@ public static class FileSorting
         var grouped = entries.OrderByDescending(e => foldersFirst && e.Dir);
         var ordered = sort switch
         {
-            FileSort.NameAsc => grouped.ThenBy(e => e.Name.ToLowerInvariant(), StringComparer.Ordinal),
-            FileSort.NameDesc => grouped.ThenByDescending(e => e.Name.ToLowerInvariant(), StringComparer.Ordinal),
+            FileSort.NameAsc => grouped.ThenBy(e => e.DisplayName.ToLowerInvariant(), StringComparer.Ordinal),
+            FileSort.NameDesc => grouped.ThenByDescending(e => e.DisplayName.ToLowerInvariant(), StringComparer.Ordinal),
             FileSort.SizeDesc => grouped.ThenByDescending(SizeKey),
             FileSort.SizeAsc => grouped.ThenBy(SizeKey),
             FileSort.ModifiedDesc => grouped.ThenByDescending(e => e.MTime),
             _ => grouped.ThenBy(e => e.MTime),
         };
         return ordered
-            .ThenBy(e => e.Name.ToLowerInvariant(), StringComparer.Ordinal)
-            .ThenBy(e => e.Name, StringComparer.Ordinal)
+            .ThenBy(e => e.DisplayName.ToLowerInvariant(), StringComparer.Ordinal)
+            .ThenBy(e => e.DisplayName, StringComparer.Ordinal)
             .ToList();
     }
 }

@@ -1,5 +1,8 @@
 package co.remotedesktop
 
+import android.os.Environment
+import android.os.Process
+import android.os.storage.StorageManager
 import android.util.Base64
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -12,7 +15,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowEnvironment
+import org.robolectric.shadows.StorageVolumeBuilder
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.Collections
@@ -21,7 +27,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
+@Config(sdk = [35], shadows = [ShadowSessionEnvironment::class])
 class FsHandlerTest {
     private val context get() = RuntimeEnvironment.getApplication()
     private val saved = mutableListOf<String>()
@@ -42,6 +48,7 @@ class FsHandlerTest {
     @After
     fun disconnect() {
         for ((name, value) in previous) connectionField(name).set(ConnectionManager, value)
+        ShadowSessionEnvironment.storageManager = false
     }
 
     private fun FsHandler.expect(xferId: Int, from: String? = "pc") =
@@ -62,10 +69,72 @@ class FsHandlerTest {
     private fun FsHandler.cancelFrom(peer: String, xferId: Int) =
         handleJson(JSONObject().put("type", "fs-cancel").put("from", peer).put("xferId", xferId), true)
 
+    private fun FsHandler.list(path: String): JSONObject {
+        handleJson(JSONObject().put("type", "fs-list").put("from", "pc").put("path", path), true)
+        return socket.messages.last { it.optString("type") == "fs-list-result" }
+    }
+
     private fun sent(type: String, xferId: Int) =
         socket.messages.filter { it.optString("type") == type && it.optInt("xferId") == xferId }
 
     private fun partFiles() = context.cacheDir.listFiles { f -> f.name.endsWith(".part") }.orEmpty()
+
+    @Test
+    fun upFromAStorageVolumeListsEveryVolume() {
+        val previousRoot = Environment.getExternalStorageDirectory()
+        val top = File(context.cacheDir, "storage")
+        val internal = File(top, "emulated/0").apply { mkdirs() }
+        val sd = File(top, "0000-0000").apply { mkdirs() }
+        File(sd, "DCIM").mkdir()
+        val storage = shadowOf(context.getSystemService(StorageManager::class.java))
+        storage.addStorageVolume(StorageVolumeBuilder("primary", internal, "Internal storage",
+            Process.myUserHandle(), Environment.MEDIA_MOUNTED).setIsPrimary(true).setIsEmulated(true).build())
+        storage.addStorageVolume(StorageVolumeBuilder("0000-0000", sd, "SD card",
+            Process.myUserHandle(), Environment.MEDIA_MOUNTED).setIsRemovable(true).build())
+        ShadowEnvironment.setExternalStorageDirectory(internal.toPath())
+        try {
+            val fs = FsHandler(context)
+            // Up from internal storage, then from the SD card.
+            for (up in listOf(internal.parent!!, top.path)) {
+                val result = fs.list(up)
+                assertTrue(result.isNull("error"))
+                assertEquals(top.path, result.getString("path"))
+                val volumes = result.getJSONArray("entries").let { a -> List(a.length()) { a.getJSONObject(it) } }
+                assertEquals(listOf("Internal storage", "SD card"), volumes.map { it.getString("label") })
+                // Each opens by joining its name to the listing's path, as the PC does.
+                assertEquals(listOf(internal.path, sd.path), volumes.map { File(top, it.getString("name")).path })
+            }
+            assertEquals("DCIM", fs.list(sd.path).getJSONArray("entries").getJSONObject(0).getString("name"))
+        } finally {
+            storage.resetStorageVolumeList()
+            ShadowEnvironment.setExternalStorageDirectory(previousRoot.toPath())
+            top.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun upFromTheOnlyStorageVolumeStaysThere() {
+        val root = Environment.getExternalStorageDirectory()
+        val file = File(root, "a.txt").apply { writeText("a") }
+        try {
+            val result = FsHandler(context).list(root.parent!!)
+            assertTrue(result.isNull("error"))
+            assertEquals(root.path, result.getString("path"))
+            assertEquals("a.txt", result.getJSONArray("entries").getJSONObject(0).getString("name"))
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun anUnreadableFolderOnlyBlamesFileAccessWhileItIsOff() {
+        val fs = FsHandler(context)
+        val missing = File(Environment.getExternalStorageDirectory(), "missing").path
+        assertEquals("Cannot read $missing — enable File access in Permissions & Access",
+            fs.list(missing).getString("error"))
+        ShadowSessionEnvironment.storageManager = true
+        assertEquals("No folder at $missing", fs.list(missing).getString("error"))
+    }
 
     @Test
     fun aRefusedDownloadReportsItsErrorEvenWithoutFsBegin() {
