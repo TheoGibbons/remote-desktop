@@ -178,22 +178,29 @@ unapproved device is present in the session, streaming and file serving pause.
     Backspace, arrows and Ctrl shortcuts; Esc is Back, and Ctrl+V pastes this
     PC's clipboard.
 - **Browse files** → a file explorer to download from / upload to the selected
-  device (a PC or a phone). It opens in that device's Downloads folder, newest
-  first; the sort button changes the order (name, size or date, either way)
-  and can group folders first, and remembers your choice. On a phone with an SD
-  card (or a USB drive), the up arrow at the top of its storage lists them all
-  by name; pick one to switch to it. Downloads are saved to
+  device (a PC or a phone), titled with its name. Each device gets its own
+  window, so files can go to two phones at once, and each window's status line
+  shows only that device's transfers. It opens in that device's Downloads
+  folder, newest first; the sort button changes the order (name, size or date,
+  either way) and can group folders first, and remembers your choice. On a
+  phone with an SD card (or a USB drive), the up arrow at the top of its storage
+  lists them all by name; pick one to switch to it. Downloads are saved to
   your Downloads folder — asked of Windows rather than assumed, so a relocated
   Downloads is honoured; uploads land in the peer's `Downloads` folder on
   Windows or Android alike. A name that clashes with a file already there gets
   a counter appended — nothing is overwritten.
-  Choose **Upload files to phone...** or drag files onto the **Phone files**
-  window to send them — several at once, also when the app runs as
-  administrator. Files added while an upload runs join its queue. The browser
-  moves to the phone's Downloads folder as the upload starts and refreshes
-  after the phone confirms the saved files. **Cancel**, beside the status line
-  while a download or upload runs, stops it: a part-downloaded file is
-  deleted, and cancelling an upload drops the rest of its queue.
+  Choose **Upload** or drag files onto the device's files window to send them
+  — several at once, also when the app runs as administrator. Files added while
+  an upload runs join its queue. The browser moves to the phone's Downloads
+  folder as the upload starts and refreshes after the phone confirms the saved
+  files. **Cancel**, beside the status line while a download or upload runs,
+  stops that window's transfers: a part-downloaded file is deleted, and
+  cancelling an upload drops the rest of its queue.
+- **Transfers** (beside the main window's transfer line, beside a files
+  window's **Download**, or in the tray menu) lists every file sent or received
+  this session, with which device it went to or came from, its progress and how
+  it ended. Each file still under way has its own cancel button, which stops
+  just that file; **Clear finished** tidies the list.
 - **New photos and screenshots from a phone** pop up as a card in the corner of
   the screen, with a preview, for a minute (longer while the pointer rests on
   it). Click it to download them into Downloads, then click again to open the

@@ -56,7 +56,10 @@ public partial class MainWindow : Window
     private readonly List<Peer> _peers = new();
     private PhoneViewWindow? _phoneView;
     private PcViewWindow? _pcView;
-    private FileExplorerWindow? _fileExplorer;
+    // One per device, so each upload goes to the device its window names.
+    private readonly Dictionary<string, FileExplorerWindow> _fileExplorers = new();
+    private readonly TransferList _transfers;
+    private TransfersWindow? _transfersWindow;
     private System.Windows.Forms.NotifyIcon? _tray;
     private bool _exiting;
     private bool _trayTipShown;
@@ -82,6 +85,7 @@ public partial class MainWindow : Window
             MaxWidth = _settings.MaxStreamWidth,
         };
         _fs = new FsService(_ws);
+        _transfers = new TransferList(_fs, PeerName);
         _clip = new ClipboardService(_ws.SendJson,
             peer => AllowStreamCheck.IsChecked == true && _auth.IsTrusted(peer),
             () => AllowFilesCheck.IsChecked == true);
@@ -142,11 +146,13 @@ public partial class MainWindow : Window
         _ws.StateChanged += s => Dispatcher.BeginInvoke(() => OnState(s));
         _ws.JsonReceived += OnJsonReceived;
         _ws.BinaryReceived += OnBinary;
-        _fs.TransferStatus += s => Dispatcher.BeginInvoke(() => TransferText.Text = s);
-        _fs.TransferProgress += (xferId, sending, percent, name) => Dispatcher.BeginInvoke(() =>
+        _fs.TransferChanged += u => Dispatcher.BeginInvoke(() =>
         {
-            // A cancel can land between a chunk and its progress; don't bring that file back.
-            if (_fs.IsActive(xferId)) TransferText.ShowTransfer(sending, $"{percent}% {name}");
+            // Null once that file has ended: a cancel can land between a chunk and its progress.
+            if (_transfers.Apply(u) is not { } row) return;
+            // Every device's transfers show here, so each names its device.
+            if (u.HasProgress) TransferText.ShowTransfer(u.Sending, $"{u.Percent}% {u.Name} · {row.PeerName}");
+            else if (u.Text is { } text) TransferText.Text = $"{text} · {row.PeerName}";
         });
 
         SetupTray();
@@ -193,6 +199,7 @@ public partial class MainWindow : Window
 
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("Open", null, (_, _) => RestoreFromTray());
+        menu.Items.Add("Transfers", null, (_, _) => ShowTransfers());
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => ExitApp());
         _tray.ContextMenuStrip = menu;
@@ -739,10 +746,10 @@ public partial class MainWindow : Window
                 break;
 
             case "fs-list-result":
-                _fileExplorer?.OnListResult(msg);
+                if (from != null && _fileExplorers.TryGetValue(from, out var listed)) listed.OnListResult(msg);
                 break;
             case "fs-saved":
-                _fileExplorer?.OnUploadResult(msg);
+                if (from != null && _fileExplorers.TryGetValue(from, out var saved)) saved.OnUploadResult(msg);
                 break;
         }
     }
@@ -1016,15 +1023,31 @@ public partial class MainWindow : Window
     private void OpenFilesFor(Peer? peer)
     {
         if (peer == null) { Toast.Show("That device is no longer online."); return; }
-        if (_fileExplorer == null || !_fileExplorer.IsLoaded)
+        if (_fileExplorers.TryGetValue(peer.Id, out var open))
         {
-            _fileExplorer = new FileExplorerWindow(_ws, _fs, peer.Id, _settings);
-            _fileExplorer.Closed += (_, _) => _fileExplorer = null;
-            _fileExplorer.Show();
+            open.Activate();
+            return;
+        }
+        var explorer = new FileExplorerWindow(_ws, _fs, peer.Id, peer.Name, _settings, ShowTransfers);
+        _fileExplorers[peer.Id] = explorer;
+        explorer.Closed += (_, _) => _fileExplorers.Remove(peer.Id);
+        explorer.Show();
+    }
+
+    private void Transfers_Click(object sender, RoutedEventArgs e) => ShowTransfers();
+
+    private void ShowTransfers()
+    {
+        if (_transfersWindow == null)
+        {
+            _transfersWindow = new TransfersWindow(_transfers);
+            _transfersWindow.Closed += (_, _) => _transfersWindow = null;
+            _transfersWindow.Show();
         }
         else
         {
-            _fileExplorer.Activate();
+            if (_transfersWindow.WindowState == WindowState.Minimized) _transfersWindow.WindowState = WindowState.Normal;
+            _transfersWindow.Activate();
         }
     }
 }

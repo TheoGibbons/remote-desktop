@@ -228,7 +228,16 @@
                     Margin="0,10,0,0" Visibility="Collapsed" Click="More_Click" Content="Show more settings"
                     ToolTip="Show the session ID and this computer's settings"/>
 
-            <TextBlock x:Name="TransferText" Style="{StaticResource RdCaption}" Margin="4,10,4,0"/>
+            <Grid Margin="4,10,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="TransferText" Style="{StaticResource RdCaption}" VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" Margin="0,0,8,0"/>
+                <Button Grid.Column="1" Content="Transfers" Style="{StaticResource RdTextButton}"
+                        Click="Transfers_Click" ToolTip="Uploads and downloads with every device, each with its own cancel"/>
+            </Grid>
 
             <Border x:Name="VersionCard" Style="{StaticResource RdCard}" Margin="0,12,0,0">
                 <StackPanel>

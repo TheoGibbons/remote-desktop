@@ -123,13 +123,13 @@ public sealed class CaptureOffer
         Error = null;
         _attempted = wanted.Count;
         _finished = 0;
-        _fs.TransferProgress += OnProgress;
+        _fs.TransferChanged += OnTransferChanged;
         foreach (var file in wanted)
         {
             var id = _fs.NextXferId();
             _running[id] = file;
             _percent[id] = 0;
-            _fs.ExpectDownload(id, PeerId,
+            _fs.ExpectDownload(id, PeerId, file.Name,
                 path => _post(() => Finished(id, path, null)),
                 error => _post(() => Finished(id, null, error)));
             _ws.SendJson(new JsonObject { ["type"] = "fs-get", ["to"] = PeerId, ["path"] = file.Path, ["xferId"] = id });
@@ -137,16 +137,21 @@ public sealed class CaptureOffer
         Changed?.Invoke();
     }
 
-    // On the socket thread, for every transfer in progress.
-    private void OnProgress(uint xferId, bool sending, int percent, string name)
+    // On the socket thread, for every transfer.
+    private void OnTransferChanged(TransferUpdate u)
     {
-        if (sending) return;
-        _post(() =>
+        if (u.Sending) return;
+        if (u.HasProgress)
         {
-            if (!_percent.ContainsKey(xferId)) return;
-            _percent[xferId] = percent;
-            Changed?.Invoke();
-        });
+            _post(() =>
+            {
+                if (!_percent.ContainsKey(u.XferId)) return;
+                _percent[u.XferId] = u.Percent;
+                Changed?.Invoke();
+            });
+        }
+        // Cancelled in the transfers window.
+        else if (u.State == TransferState.Cancelled) _post(() => Finished(u.XferId, null, "Cancelled"));
     }
 
     private void Finished(uint xferId, string? path, string? error)
@@ -162,7 +167,7 @@ public sealed class CaptureOffer
         else Error = error ?? "unknown error";
         if (_running.Count == 0)
         {
-            _fs.TransferProgress -= OnProgress;
+            _fs.TransferChanged -= OnTransferChanged;
             Status = _done.Count == Files.Count ? Stage.Saved : Stage.Failed;
         }
         Changed?.Invoke();
@@ -171,10 +176,11 @@ public sealed class CaptureOffer
     /// <summary>Stops the downloads still running. Files already saved stay.</summary>
     public void Cancel()
     {
+        // First, so these cancels don't come back as failures.
+        _fs.TransferChanged -= OnTransferChanged;
         foreach (var id in _running.Keys) _fs.Cancel(id);
         _running.Clear();
         _percent.Clear();
-        _fs.TransferProgress -= OnProgress;
     }
 
     /// <summary>The phone left, or this PC lost the relay: a download can't finish.</summary>

@@ -4,6 +4,30 @@ using System.Text.Json.Nodes;
 
 namespace RemoteDesktopWin;
 
+public enum TransferState { Waiting, Running, Done, Failed, Cancelled }
+
+/// <summary>
+/// Where one file this PC sends or receives has got. <see cref="Percent"/> is -1
+/// until the first chunk is counted, and stays so for a file of unknown size.
+/// </summary>
+public sealed record TransferUpdate(uint XferId, string Peer, bool Sending, string Name, long Size,
+    TransferState State, int Percent = -1, string? Error = null)
+{
+    public bool Finished => State is TransferState.Done or TransferState.Failed or TransferState.Cancelled;
+
+    public bool HasProgress => State == TransferState.Running && Percent >= 0;
+
+    /// <summary>What a status line says about this update; null when it only moves the progress on.</summary>
+    public string? Text => State switch
+    {
+        TransferState.Done => Sending ? $"Sent {Name}" : $"Received {Name}",
+        TransferState.Failed => Sending ? $"Send failed: {Error}" : $"Receive failed: {Error}",
+        TransferState.Cancelled => $"Cancelled {Name}",
+        TransferState.Running when !Sending && Percent < 0 => $"Receiving {Name}...",
+        _ => null,
+    };
+}
+
 /// <summary>
 /// Serves the local filesystem to peers (listing + transfers) and receives
 /// files pushed by peers. See PROTOCOL.md, "File system".
@@ -30,7 +54,13 @@ public class FsService
         public int Percent = -1; // last reported, so each whole percent is reported once
         public Action<string>? OnDone; // final path or null via OnError
         public Action<string>? OnError;
+
+        public TransferUpdate Update(uint xferId, TransferState state, int percent = -1, string? error = null) =>
+            new(xferId, Peer, false, Path.GetFileName(FinalPath), Expected, state, percent, error);
     }
+
+    /// <summary>A download this PC asked for with fs-get, until its fs-begin arrives.</summary>
+    private record PendingGet(string Peer, string Name, Action<string> OnDone, Action<string> OnError);
 
     /// <summary>A file this device is sending, until its fs-end.</summary>
     private class OutgoingTransfer
@@ -76,12 +106,9 @@ public class FsService
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
     }
 
-    public event Action<string>? TransferStatus;
-
-    /// <param name="sending">true while this PC sends the file, false while it receives it.</param>
-    public delegate void TransferProgressHandler(uint xferId, bool sending, int percent, string name);
-
-    public event TransferProgressHandler? TransferProgress;
+    /// <summary>Raised on whichever thread moved a transfer on: the socket's, a
+    /// worker's, or the one that started or cancelled it.</summary>
+    public event Action<TransferUpdate>? TransferChanged;
 
     public FsService(WsClient ws)
     {
@@ -126,25 +153,23 @@ public class FsService
     public void Cancel(uint xferId)
     {
         if (StopSending(xferId, null, "Cancelled by the sender")) return;
-        string? peer = null;
+        PendingGet? get;
         IncomingTransfer? t;
         lock (_incoming)
         {
-            if (_pendingGets.Remove(xferId, out var get))
-            {
-                peer = get.peer;
-                _cancelledGets.Add(xferId);
-            }
-            if (_incoming.Remove(xferId, out t)) peer = t.Peer;
+            if (_pendingGets.Remove(xferId, out get)) _cancelledGets.Add(xferId);
+            _incoming.Remove(xferId, out t);
         }
-        if (peer == null) return;
         if (t != null)
         {
             t.Stream.Dispose();
             try { File.Delete(t.TempPath); } catch { /* Nothing more to do for a cancelled file. */ }
-            TransferStatus?.Invoke($"Cancelled {Path.GetFileName(t.FinalPath)}");
         }
-        _ws.SendJson(new JsonObject { ["type"] = "fs-cancel", ["to"] = peer, ["xferId"] = xferId });
+        else if (get == null) return;
+        var cancelled = t?.Update(xferId, TransferState.Cancelled)
+            ?? new TransferUpdate(xferId, get!.Peer, false, get.Name, -1, TransferState.Cancelled);
+        _ws.SendJson(new JsonObject { ["type"] = "fs-cancel", ["to"] = cancelled.Peer, ["xferId"] = xferId });
+        TransferChanged?.Invoke(cancelled);
     }
 
     /// <param name="peer">Only stop the send if it goes to this peer; null for any.</param>
@@ -208,22 +233,21 @@ public class FsService
         // [2][xferId uint32 BE][data]
         if (frame.Length < 5) return;
         uint id = (uint)((frame[1] << 24) | (frame[2] << 16) | (frame[3] << 8) | frame[4]);
+        IncomingTransfer? t;
         int percent;
-        string name;
         lock (_incoming)
         {
-            if (!_incoming.TryGetValue(id, out var t)) return;
+            if (!_incoming.TryGetValue(id, out t)) return;
             t.Stream.Write(frame, 5, frame.Length - 5);
             t.Received += frame.Length - 5;
             if (t.Expected <= 0) return;
             percent = (int)Math.Min(100, t.Received * 100 / t.Expected);
             if (percent == t.Percent) return;
             t.Percent = percent;
-            name = Path.GetFileName(t.FinalPath);
         }
         // Outside the lock: a handler that waited on the UI thread, which takes it
         // in ExpectDownload, would deadlock.
-        TransferProgress?.Invoke(id, false, percent, name);
+        TransferChanged?.Invoke(t.Update(id, TransferState.Running, percent));
     }
 
     private void HandleList(JsonNode msg)
@@ -294,18 +318,24 @@ public class FsService
     {
         var transfer = Track(xferId, toPeer);
         var cancel = transfer.Cancel.Token;
+        var name = Path.GetFileName(localPath);
+        long size = -1;
+        TransferUpdate Update(TransferState state, int percent = -1, string? error = null) =>
+            new(xferId, toPeer, true, name, size, state, percent, error);
         try
         {
             cancel.ThrowIfCancellationRequested();
             var fi = new FileInfo(localPath);
+            size = fi.Length;
             _ws.SendJson(new JsonObject
             {
                 ["type"] = "fs-begin",
                 ["to"] = toPeer,
                 ["xferId"] = xferId,
                 ["name"] = fi.Name,
-                ["size"] = fi.Length,
+                ["size"] = size,
             });
+            TransferChanged?.Invoke(Update(TransferState.Running));
 
             // Payload layout (before encryption): [xferId(4 BE)][chunk bytes].
             // WsClient prepends the frame-type byte (2) and encrypts the payload.
@@ -330,14 +360,14 @@ public class FsService
                 int tries = 0;
                 while (!_ws.SendBinary(2, payload, recipient) && tries++ < 600) await Task.Delay(50, cancel);
                 sent += n;
-                TransferProgress?.Invoke(xferId, true, (int)(sent * 100 / Math.Max(1, fi.Length)), fi.Name);
+                TransferChanged?.Invoke(Update(TransferState.Running, (int)(sent * 100 / Math.Max(1, size))));
             }
             // A read already under way finishes despite the token.
             cancel.ThrowIfCancellationRequested();
 
             Untrack(xferId);
             _ws.SendJson(new JsonObject { ["type"] = "fs-end", ["to"] = toPeer, ["xferId"] = xferId, ["ok"] = true });
-            TransferStatus?.Invoke($"Sent {fi.Name}");
+            TransferChanged?.Invoke(Update(TransferState.Done));
             return true;
         }
         catch (Exception ex)
@@ -352,7 +382,7 @@ public class FsService
                 ["ok"] = false,
                 ["error"] = cancelled ?? ex.Message,
             });
-            TransferStatus?.Invoke(cancelled != null ? $"Cancelled {Path.GetFileName(localPath)}" : $"Send failed: {ex.Message}");
+            TransferChanged?.Invoke(cancelled != null ? Update(TransferState.Cancelled) : Update(TransferState.Failed, error: ex.Message));
             return false;
         }
     }
@@ -360,12 +390,14 @@ public class FsService
     // ---------- receiving files ----------
 
     /// <summary>Register expectations for a download we initiated (fs-get).</summary>
-    private readonly Dictionary<uint, (string peer, Action<string> onDone, Action<string> onError)> _pendingGets = new();
+    private readonly Dictionary<uint, PendingGet> _pendingGets = new();
 
     /// <param name="peer">The device the file is asked from; Cancel tells it to stop.</param>
-    public void ExpectDownload(uint xferId, string peer, Action<string> onDone, Action<string> onError)
+    /// <param name="name">What the file is called there, until it arrives under the name it's saved as.</param>
+    public void ExpectDownload(uint xferId, string peer, string name, Action<string> onDone, Action<string> onError)
     {
-        lock (_incoming) _pendingGets[xferId] = (peer, onDone, onError);
+        lock (_incoming) _pendingGets[xferId] = new PendingGet(peer, name, onDone, onError);
+        TransferChanged?.Invoke(new TransferUpdate(xferId, peer, false, name, -1, TransferState.Waiting));
     }
 
     private void HandleBegin(JsonNode msg, bool peerAccessAllowed)
@@ -373,6 +405,7 @@ public class FsService
         var xferId = (uint)(msg["xferId"]?.GetValue<long>() ?? 0);
         var name = SanitizeFileName(msg["name"]?.GetValue<string>() ?? "file.bin");
         var size = msg["size"]?.GetValue<long>() ?? 0;
+        var peer = msg["from"]?.GetValue<string>() ?? "";
 
         lock (_incoming)
         {
@@ -382,34 +415,40 @@ public class FsService
             if (!peerAccessAllowed && !_pendingGets.ContainsKey(xferId)) return;
         }
 
+        IncomingTransfer t;
         try
         {
             Directory.CreateDirectory(IncomingDir);
             var finalPath = UniquePath(Path.Combine(IncomingDir, name));
             var tempPath = finalPath + ".part";
-            var t = new IncomingTransfer
+            t = new IncomingTransfer
             {
                 Stream = File.Create(tempPath),
                 FinalPath = finalPath,
                 TempPath = tempPath,
-                Peer = msg["from"]?.GetValue<string>() ?? "",
+                Peer = peer,
                 Expected = size,
             };
-            lock (_incoming)
-            {
-                if (_pendingGets.Remove(xferId, out var cbs))
-                {
-                    t.OnDone = cbs.onDone;
-                    t.OnError = cbs.onError;
-                }
-                _incoming[xferId] = t;
-            }
-            TransferStatus?.Invoke($"Receiving {name}...");
         }
         catch (Exception ex)
         {
-            TransferStatus?.Invoke($"Receive failed: {ex.Message}");
+            // Nowhere to put it, so a download asked for can't finish: say so now.
+            PendingGet? get;
+            lock (_incoming) _pendingGets.Remove(xferId, out get);
+            TransferChanged?.Invoke(new TransferUpdate(xferId, peer, false, name, size, TransferState.Failed, Error: ex.Message));
+            get?.OnError(ex.Message);
+            return;
         }
+        lock (_incoming)
+        {
+            if (_pendingGets.Remove(xferId, out var get))
+            {
+                t.OnDone = get.OnDone;
+                t.OnError = get.OnError;
+            }
+            _incoming[xferId] = t;
+        }
+        TransferChanged?.Invoke(t.Update(xferId, TransferState.Running));
     }
 
     private void HandleEnd(JsonNode msg)
@@ -417,20 +456,21 @@ public class FsService
         var xferId = (uint)(msg["xferId"]?.GetValue<long>() ?? 0);
         var ok = msg["ok"]?.GetValue<bool>() ?? false;
         IncomingTransfer? t;
-        Action<string>? onRefused = null;
+        PendingGet? refused = null;
         lock (_incoming)
         {
             _cancelledGets.Remove(xferId);
             // A refused or missing file ends without fs-begin. Tell whoever asked
             // for it, or its download waits forever.
-            if (!_incoming.Remove(xferId, out t) && !ok && _pendingGets.Remove(xferId, out var get)) onRefused = get.onError;
+            if (!_incoming.Remove(xferId, out t) && !ok) _pendingGets.Remove(xferId, out refused);
         }
         if (t == null)
         {
-            if (onRefused == null) return;
+            if (refused == null) return;
             var refusal = msg["error"]?.GetValue<string>() ?? "unknown error";
-            TransferStatus?.Invoke($"Receive failed: {refusal}");
-            onRefused(refusal);
+            TransferChanged?.Invoke(new TransferUpdate(xferId, refused.Peer, false, refused.Name, -1,
+                TransferState.Failed, Error: refusal));
+            refused.OnError(refusal);
             return;
         }
         try
@@ -444,7 +484,7 @@ public class FsService
                 ["type"] = "fs-saved", ["to"] = msg["from"]?.GetValue<string>(),
                 ["xferId"] = xferId, ["path"] = t.FinalPath,
             });
-            TransferStatus?.Invoke($"Received {Path.GetFileName(t.FinalPath)}");
+            TransferChanged?.Invoke(t.Update(xferId, TransferState.Done));
             t.OnDone?.Invoke(t.FinalPath);
         }
         catch (Exception ex)
@@ -456,7 +496,7 @@ public class FsService
                 ["type"] = "fs-saved", ["to"] = msg["from"]?.GetValue<string>(),
                 ["xferId"] = xferId, ["error"] = err,
             });
-            TransferStatus?.Invoke($"Receive failed: {err}");
+            TransferChanged?.Invoke(t.Update(xferId, TransferState.Failed, error: err));
             t.OnError?.Invoke(err);
         }
     }

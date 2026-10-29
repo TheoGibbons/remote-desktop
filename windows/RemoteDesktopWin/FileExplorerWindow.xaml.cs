@@ -11,12 +11,14 @@ using System.Windows.Threading;
 
 namespace RemoteDesktopWin;
 
-/// <summary>Browses the phone's filesystem; transfers land in Downloads.</summary>
+/// <summary>Browses one device's filesystem; transfers land in Downloads.</summary>
 public partial class FileExplorerWindow : Window
 {
     private readonly WsClient _ws;
     private readonly FsService _fs;
     private readonly string _phoneId;
+    private readonly string _phoneName;
+    private readonly Action _showTransfers;
     private string _path = "";
     private int _reqCounter;
     private readonly HashSet<uint> _uploadIds = new();
@@ -38,23 +40,23 @@ public partial class FileExplorerWindow : Window
     private bool _foldersFirst;
     private List<FileEntry> _entries = new();
 
-    public FileExplorerWindow(WsClient ws, FsService fs, string phoneId, AppSettings settings)
+    /// <param name="showTransfers">Opens the window listing every device's transfers.</param>
+    public FileExplorerWindow(WsClient ws, FsService fs, string phoneId, string phoneName, AppSettings settings,
+        Action showTransfers)
     {
         InitializeComponent();
         _ws = ws;
         _fs = fs;
         _phoneId = phoneId;
+        _phoneName = phoneName;
+        _showTransfers = showTransfers;
         _settings = settings;
+        Title = phoneName;
         _sort = Enum.TryParse(settings.FileBrowserSort, out FileSort sort) && Enum.IsDefined(sort) ? sort : FileSort.ModifiedDesc;
         _foldersFirst = settings.FileBrowserFoldersFirst;
         UpdateSortButton();
-        _fs.TransferStatus += OnTransferStatus;
-        _fs.TransferProgress += OnTransferProgress;
-        Closed += (_, _) =>
-        {
-            _fs.TransferStatus -= OnTransferStatus;
-            _fs.TransferProgress -= OnTransferProgress;
-        };
+        _fs.TransferChanged += OnTransferChanged;
+        Closed += (_, _) => _fs.TransferChanged -= OnTransferChanged;
         if (MainWindow.IsElevated()) Loaded += (_, _) => AcceptElevatedFileDrops();
         // Open in Downloads, which the first listing says where to find.
         _navigateToDownloads = true;
@@ -71,28 +73,37 @@ public partial class FileExplorerWindow : Window
 
     private string UploadProgress => _uploadTotal > 1 ? $" ({_uploadIndex}/{_uploadTotal})" : "";
 
-    private void OnTransferStatus(string s)
+    private void OnTransferChanged(TransferUpdate u)
     {
+        // Other devices' transfers show in their own windows.
+        if (u.Peer != _phoneId) return;
         // Uploads report on this thread. Apply them now: a queued update would
         // land after the batch moves on and overwrite its newer status.
-        if (Dispatcher.CheckAccess()) SetStatus(s + UploadProgress);
-        else Dispatcher.BeginInvoke(() => SetStatus(s));
+        if (Dispatcher.CheckAccess()) ShowUpdate(u, UploadProgress);
+        else Dispatcher.BeginInvoke(() => ShowUpdate(u, ""));
     }
 
-    private void OnTransferProgress(uint xferId, bool sending, int percent, string name)
+    private void ShowUpdate(TransferUpdate u, string batchProgress)
     {
-        var text = $"{percent}% {name}";
-        if (Dispatcher.CheckAccess()) SetStatus(text + UploadProgress, sending);
-        // By the time a queued update runs, its transfer may have finished or been cancelled.
-        else Dispatcher.BeginInvoke(() => { if (_fs.IsActive(xferId)) SetStatus(text, sending); });
+        // Cancelled in the transfers window; its own end never comes.
+        if (u.State == TransferState.Cancelled && _downloadIds.Remove(u.XferId)) UpdateCancelButton();
+        if (u.HasProgress)
+        {
+            // By the time a queued update runs, its transfer may have finished or been cancelled.
+            if (_fs.IsActive(u.XferId)) SetStatus($"{u.Percent}% {u.Name}{batchProgress}", u.Sending);
+        }
+        else if (u.Text is { } text) SetStatus(text + batchProgress);
     }
 
     private void UpdateCancelButton() =>
         CancelButton.Visibility = _downloadIds.Count > 0 || _uploading ? Visibility.Visible : Visibility.Collapsed;
 
+    private void Transfers_Click(object sender, RoutedEventArgs e) => _showTransfers();
+
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
-        foreach (var id in _downloadIds) _fs.Cancel(id);
+        // A copy: each cancel reports back here, which takes it off the list.
+        foreach (var id in _downloadIds.ToList()) _fs.Cancel(id);
         _downloadIds.Clear();
         if (_uploading)
         {
@@ -270,7 +281,7 @@ public partial class FileExplorerWindow : Window
             return;
         }
         var xferId = _fs.NextXferId();
-        _fs.ExpectDownload(xferId, _phoneId,
+        _fs.ExpectDownload(xferId, _phoneId, entry.Name,
             path => Dispatcher.BeginInvoke(() => DownloadEnded(xferId, "Saved to " + path)),
             err => Dispatcher.BeginInvoke(() => DownloadEnded(xferId, "Failed: " + err)));
         _downloadIds.Add(xferId);
@@ -487,13 +498,13 @@ public partial class FileExplorerWindow : Window
             }
             else if (_uploadTotal == 1)
             {
-                if (sent == 1) Toast.Show($"“{sentName}” uploaded to the phone's Downloads folder.");
+                if (sent == 1) Toast.Show($"“{sentName}” uploaded to the Downloads folder on {_phoneName}.");
             }
             else if (sent > 0)
             {
                 var count = sent == _uploadTotal ? $"{sent} files" : $"{sent} of {_uploadTotal} files";
                 SetStatus($"Sent {count} to Downloads");
-                Toast.Show($"{count} uploaded to the phone's Downloads folder.");
+                Toast.Show($"{count} uploaded to the Downloads folder on {_phoneName}.");
             }
         }
         catch (Exception ex)

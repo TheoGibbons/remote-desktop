@@ -72,9 +72,82 @@ internal static class Program
 
             CheckCancelling(ws, fs, dir, Begin, Chunk, End);
             CheckCaptureOffers(dir);
+            CheckTransfersPerDevice(dir);
         }
         finally { Directory.Delete(dir, true); }
         CheckSortOrders();
+    }
+
+    private static void CheckTransfersPerDevice(string dir)
+    {
+        var ws = new WsClient();
+        var fs = new FsService(ws) { IncomingDir = dir };
+        var updates = new List<TransferUpdate>();
+        // This thread stands in for the UI thread the list lives on.
+        var list = new TransferList(fs, id => id == "s20" ? "Galaxy S20" : "Galaxy S26");
+        fs.TransferChanged += u =>
+        {
+            updates.Add(u);
+            list.Apply(u);
+        };
+        JsonObject Last(string type, uint id) => ws.Messages.Last(m => m["type"]?.GetValue<string>() == type &&
+            m["xferId"]?.GetValue<uint>() == id);
+
+        // A file to each phone at once, as two files windows send them: the
+        // second starts while the first is under way.
+        var source = Path.Combine(dir, "both.bin");
+        File.WriteAllBytes(source, new byte[3 * 256 * 1024]);
+        Task<bool>? second = null;
+        ws.OnChunk = n => { if (n == 1) second = fs.SendFileAsync("s26", source, 401); };
+        Check(fs.SendFileAsync("s20", source, 400).GetAwaiter().GetResult() && second!.GetAwaiter().GetResult(),
+            "Two phones can each be sent a file at once");
+        ws.OnChunk = null;
+        Check(ws.ChunkRecipients.Count(r => r == "s20") == 3 && ws.ChunkRecipients.Count(r => r == "s26") == 3,
+            "Each phone is sent every chunk of its own file");
+        Check(Last("fs-end", 400)["to"]?.GetValue<string>() == "s20" && Last("fs-end", 401)["to"]?.GetValue<string>() == "s26",
+            "Each file ends at the phone it was for");
+        Check(updates.Where(u => u.XferId == 400).All(u => u.Peer == "s20" && u.Sending) &&
+              updates.Where(u => u.XferId == 401).All(u => u.Peer == "s26" && u.Sending),
+            "Every update names the device its file goes to, so each files window shows only its own");
+        Check(list.Rows.Select(r => r.Detail).SequenceEqual(new[] { "To Galaxy S26 · Sent, 768.0 KB", "To Galaxy S20 · Sent, 768.0 KB" }),
+            "The transfers window lists each file with its device, newest first");
+        Console.WriteLine("PASS: two phones sent a file at once each get their own, and every update names its device");
+
+        // A download, cancelled in the transfers window while its chunks arrive.
+        var saved = new List<string>();
+        var failed = new List<string>();
+        fs.ExpectDownload(402, "s20", "photo.jpg", saved.Add, failed.Add);
+        var photo = list.Rows[0];
+        Check(photo.XferId == 402 && photo.Detail == "From Galaxy S20 · Waiting" && photo.CanCancel,
+            "A download is listed as soon as it is asked for");
+        fs.HandleJson(new JsonObject
+        {
+            ["type"] = "fs-begin", ["from"] = "s20", ["xferId"] = 402L, ["name"] = "photo.jpg", ["size"] = 10L,
+        }, false);
+        fs.HandleFileChunk(new byte[] { 2, 0, 0, 1, 146, 1, 2, 3, 4 });
+        Check(photo.ShowProgress && photo.Detail == "From Galaxy S20 · 40% of 10 B", "Its progress moves on");
+        list.Cancel(photo);
+        Check(photo.State == TransferState.Cancelled && !photo.CanCancel && !fs.IsActive(402) &&
+              Last("fs-cancel", 402)["to"]?.GetValue<string>() == "s20", "Cancel stops that one file and tells its phone");
+        Check(failed.Count == 0 && saved.Count == 0, "A cancelled download isn't reported as a failure");
+        Check(list.Apply(new TransferUpdate(402, "s20", false, "photo.jpg", 10, TransferState.Running, 70)) == null &&
+              photo.State == TransferState.Cancelled, "Progress that arrives late doesn't bring it back");
+
+        // An upload cancelled in the transfers window, after the finished files are cleared.
+        ws.Chunks = 0;
+        ws.OnChunk = n =>
+        {
+            if (n != 1) return;
+            list.ClearFinished();
+            Check(list.Rows.Count == 1 && list.Rows[0].XferId == 403 && !list.HasFinished,
+                "Clearing keeps the file still on its way");
+            list.Cancel(list.Rows[0]);
+        };
+        Check(!fs.SendFileAsync("s26", source, 403).GetAwaiter().GetResult() &&
+              Last("fs-end", 403)["error"]?.GetValue<string>() == "Cancelled by the sender", "An upload can be cancelled there too");
+        ws.OnChunk = null;
+        Check(list.Rows.Single().Detail == "To Galaxy S26 · Cancelled", "And it says so");
+        Console.WriteLine("PASS: the transfers window cancels one file at a time, and late progress can't revive it");
     }
 
     private static void CheckCaptureOffers(string dir)
@@ -168,6 +241,14 @@ internal static class Program
         Send(Gets().Last(), new byte[] { 9 });
         Check(!fs.IsActive(clipId) && clip.SavedPaths.Count == 0 && !Directory.EnumerateFiles(dir, "r*.mp4").Any(),
             "A cancelled download is never saved");
+        Check(clip.Status == CaptureOffer.Stage.Downloading, "The card's own cancel isn't taken for a failure");
+
+        var pic = Offer(new JsonArray { File("/storage/emulated/0/DCIM/Camera/p.jpg", "photo", 4) })!;
+        pic.Download();
+        fs.Cancel(Gets().Last()["xferId"]!.GetValue<uint>()); // as the transfers window does
+        RunPosted();
+        Check(pic.Status == CaptureOffer.Stage.Failed && pic.Error == "Cancelled",
+            "A download cancelled in the transfers window fails its card, which can try again");
 
         Check(Offer(new JsonArray { File("/x/a.jpg", "photo"), File("/x/b.mp4", "video") })!.Title == "2 new files" &&
               clip.Title == "New screen recording" &&
@@ -194,7 +275,7 @@ internal static class Program
             ["type"] = "fs-cancel", ["from"] = from, ["xferId"] = (long)id,
         }, true);
 
-        fs.ExpectDownload(201, "phone", saved.Add, failed.Add);
+        fs.ExpectDownload(201, "phone", "big.bin", saved.Add, failed.Add);
         begin(201, "big.bin", 10, false);
         chunk(201, new byte[] { 1, 2, 3 });
         Check(fs.IsActive(201), "A download is active while it arrives");
@@ -207,7 +288,7 @@ internal static class Program
         Check(!Any("fs-saved", 201) && saved.Count == 0 && failed.Count == 0, "A cancelled download is never saved or reported");
         Check(!Directory.EnumerateFiles(dir, "big*").Any(), "A cancelled download leaves no partial file");
 
-        fs.ExpectDownload(202, "phone", saved.Add, failed.Add);
+        fs.ExpectDownload(202, "phone", "late.bin", saved.Add, failed.Add);
         fs.Cancel(202);
         Check(Any("fs-cancel", 202), "A download can be cancelled before it begins");
         begin(202, "late.bin", 1, true);
@@ -216,7 +297,7 @@ internal static class Program
         Check(!Directory.EnumerateFiles(dir, "late*").Any() && !Any("fs-saved", 202),
             "A download cancelled before it began is not kept as a push when an older phone sends it anyway");
 
-        fs.ExpectDownload(203, "phone", saved.Add, failed.Add);
+        fs.ExpectDownload(203, "phone", "missing.bin", saved.Add, failed.Add);
         fs.HandleJson(new JsonObject
         {
             ["type"] = "fs-end", ["from"] = "phone", ["xferId"] = 203L, ["ok"] = false, ["error"] = "No such file",
