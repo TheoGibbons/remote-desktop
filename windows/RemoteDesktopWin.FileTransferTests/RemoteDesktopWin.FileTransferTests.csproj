@@ -10,6 +10,7 @@
     <Compile Include="../RemoteDesktopWin/CaptureOffer.cs" Link="CaptureOffer.cs" />
     <Compile Include="../RemoteDesktopWin/FileEntry.cs" Link="FileEntry.cs" />
     <Compile Include="../RemoteDesktopWin/TransferList.cs" Link="TransferList.cs" />
+    <Compile Include="../RemoteDesktopWin/DownloadsFolderOpener.cs" Link="DownloadsFolderOpener.cs" />
     <Compile Include="../RemoteDesktopWin/AppSettings.cs" Link="AppSettings.cs" />
     <Compile Include="../RemoteDesktopWin/AppDefaults.cs" Link="AppDefaults.cs" />
   </ItemGroup>

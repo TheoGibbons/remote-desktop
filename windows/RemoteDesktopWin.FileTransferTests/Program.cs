@@ -73,6 +73,8 @@ internal static class Program
             CheckCancelling(ws, fs, dir, Begin, Chunk, End);
             CheckCaptureOffers(dir);
             CheckTransfersPerDevice(dir);
+            CheckQueuedDownloads(dir);
+            CheckOpeningDownloads(dir);
         }
         finally { Directory.Delete(dir, true); }
         CheckSortOrders();
@@ -148,6 +150,166 @@ internal static class Program
         ws.OnChunk = null;
         Check(list.Rows.Single().Detail == "To Galaxy S26 · Cancelled", "And it says so");
         Console.WriteLine("PASS: the transfers window cancels one file at a time, and late progress can't revive it");
+    }
+
+    private static void CheckQueuedDownloads(string dir)
+    {
+        var ws = new WsClient();
+        var fs = new FsService(ws) { IncomingDir = dir };
+        var list = new TransferList(fs, _ => "Galaxy S20");
+        fs.TransferChanged += u => list.Apply(u);
+        var saved = new List<string>();
+        var failed = new List<string>();
+        List<uint> Gets(string to) => ws.Messages.Where(m => m["type"]?.GetValue<string>() == "fs-get" &&
+            m["to"]?.GetValue<string>() == to).Select(m => m["xferId"]!.GetValue<uint>()).ToList();
+        bool Cancelled(uint id) => ws.Messages.Any(m => m["type"]?.GetValue<string>() == "fs-cancel" &&
+            m["xferId"]?.GetValue<uint>() == id);
+        void Send(uint id, string from, string name, byte[] bytes)
+        {
+            fs.HandleJson(new JsonObject
+            {
+                ["type"] = "fs-begin", ["from"] = from, ["xferId"] = (long)id, ["name"] = name, ["size"] = (long)bytes.Length,
+            }, false);
+            fs.HandleFileChunk(new byte[] { 2, (byte)(id >> 24), (byte)(id >> 16), (byte)(id >> 8), (byte)id }.Concat(bytes).ToArray());
+            fs.HandleJson(new JsonObject { ["type"] = "fs-end", ["from"] = from, ["xferId"] = (long)id, ["ok"] = true }, false);
+        }
+
+        // A folder picked in a files window: each of its files is queued for the
+        // folder made for it below Downloads.
+        var camera = Path.Combine(dir, "DCIM", "Camera");
+        for (uint id = 501; id <= 505; id++)
+            fs.QueueDownload(id, "s20", $"/storage/emulated/0/DCIM/Camera/{id}.jpg", $"{id}.jpg", camera, saved.Add, failed.Add);
+        fs.QueueDownload(601, "s26", "/sdcard/a.txt", "a.txt", dir, saved.Add, failed.Add);
+        Check(Gets("s20").SequenceEqual(new uint[] { 501, 502 }) && Gets("s26").SequenceEqual(new uint[] { 601 }),
+            "Queued downloads are asked for two at a time from each device, oldest first");
+        Check(ws.Messages.Single(m => m["xferId"]?.GetValue<uint>() == 501)["path"]?.GetValue<string>() ==
+            "/storage/emulated/0/DCIM/Camera/501.jpg", "Each is asked for by its path on the device");
+        Check(list.ActiveCount == 6 && list.Rows.Count(r => r.Detail == "From Galaxy S20 · Waiting") == 6,
+            "Every queued file is listed as waiting from the start");
+        Check(fs.IsActive(505), "A file waiting its turn is active");
+
+        Send(501, "s20", "501.jpg", new byte[] { 1, 2 });
+        Check(saved.Single() == Path.Combine(camera, "501.jpg") && File.ReadAllBytes(saved[0]).SequenceEqual(new byte[] { 1, 2 }),
+            "A queued file is saved in its own folder, which is made for it");
+        Check(Gets("s20").SequenceEqual(new uint[] { 501, 502, 503 }), "The next file is asked for as one arrives");
+
+        fs.Cancel(504);
+        Check(!Cancelled(504) && !fs.IsActive(504) && list.Rows.Single(r => r.XferId == 504).State == TransferState.Cancelled,
+            "A file cancelled while it waits is listed as cancelled, and its device is told nothing");
+        fs.Cancel(502);
+        Check(Cancelled(502) && Gets("s20").SequenceEqual(new uint[] { 501, 502, 503, 505 }),
+            "Cancelling a file under way asks for the next, skipping one cancelled while it waited");
+        fs.HandleJson(new JsonObject
+        {
+            ["type"] = "fs-end", ["from"] = "s20", ["xferId"] = 503L, ["ok"] = false, ["error"] = "No such file",
+        }, false);
+        Check(failed.SequenceEqual(new[] { "No such file" }), "A refused queued file reports why");
+        Send(505, "s20", "505.jpg", new byte[] { 5 });
+        Check(list.ActiveCount == 1 && !list.Rows.Single(r => r.XferId == 601).Finished,
+            "Only the other device's file is still under way");
+        Send(601, "s26", "a.txt", new byte[] { 6 });
+        Check(list.ActiveCount == 0 && saved.Count == 3 && saved[2] == Path.Combine(dir, "a.txt"),
+            "Nothing is under way once every queued file has ended");
+
+        // The phone leaves with files still to come: they fail rather than wait for good.
+        for (uint id = 510; id <= 512; id++)
+            fs.QueueDownload(id, "s20", $"/storage/emulated/0/DCIM/Camera/{id}.jpg", $"{id}.jpg", camera, saved.Add, failed.Add);
+        fs.QueueDownload(602, "s26", "/sdcard/b.txt", "b.txt", dir, saved.Add, failed.Add);
+        fs.HandleJson(new JsonObject
+        {
+            ["type"] = "fs-begin", ["from"] = "s20", ["xferId"] = 510L, ["name"] = "510.jpg", ["size"] = 4L,
+        }, false);
+        fs.HandleFileChunk(new byte[] { 2, 0, 0, 1, 254, 1 });
+        fs.PeerLeft("s20", "Galaxy S20 went offline");
+        Check(failed.Count(f => f == "Galaxy S20 went offline") == 3 && list.ActiveCount == 1 &&
+              list.Rows.Single(r => r.XferId == 512).Detail == "From Galaxy S20 · Failed: Galaxy S20 went offline",
+            "A device that leaves fails every file still to come from it, and no other device's");
+        Check(!Directory.EnumerateFiles(camera, "*.part").Any(), "A file cut off part way leaves nothing behind");
+        fs.PeerLeft(null, "The connection to the relay was lost");
+        Check(list.ActiveCount == 0 && failed[^1] == "The connection to the relay was lost", "Losing the relay fails the rest");
+
+        Directory.CreateDirectory(Path.Combine(dir, "Pictures"));
+        Check(FsService.UniquePath(Path.Combine(dir, "Pictures")) == Path.Combine(dir, "Pictures (1)"),
+            "A folder's name that is taken gets a counter too");
+        Console.WriteLine("PASS: queued downloads go two at a time per device into their own folders, can be cancelled while they wait, and fail when their device leaves");
+    }
+
+    private static void CheckOpeningDownloads(string dir)
+    {
+        var fs = new FsService(new WsClient()) { IncomingDir = dir };
+        var list = new TransferList(fs, _ => "Galaxy S20");
+        fs.TransferChanged += u => list.Apply(u);
+        var now = new DateTime(2026, 10, 30, 12, 0, 0, DateTimeKind.Utc);
+        var shown = false;
+        var selected = new List<string>();
+        var asked = new List<string>();
+        // Stands in for the UI thread's queue.
+        var posted = new Queue<Action>();
+        var opener = new DownloadsFolderOpener(list, dir, posted.Enqueue, folder =>
+        {
+            asked.Add(folder);
+            return Task.FromResult(shown);
+        }, selected.Add, () => now);
+        void Download(uint id, string name)
+        {
+            fs.ExpectDownload(id, "s20", name, _ => { }, _ => { });
+            fs.HandleJson(new JsonObject
+            {
+                ["type"] = "fs-begin", ["from"] = "s20", ["xferId"] = (long)id, ["name"] = name, ["size"] = 0L,
+            }, false);
+            fs.HandleJson(new JsonObject { ["type"] = "fs-end", ["from"] = "s20", ["xferId"] = (long)id, ["ok"] = true }, false);
+            // As a files window hears of it: after the transfers list.
+            opener.Saved(Path.Combine(dir, name));
+            while (posted.TryDequeue(out var action)) action();
+        }
+
+        fs.ExpectDownload(700, "s20", "last.jpg", _ => { }, _ => { });
+        Download(701, "first.jpg");
+        Check(selected.Count == 0 && asked.Count == 0, "Downloads isn't shown while another file is still on its way");
+        Download(700, "last.jpg");
+        Check(asked.SequenceEqual(new[] { dir }) && selected.SequenceEqual(new[] { Path.Combine(dir, "last.jpg") }),
+            "Once nothing is under way, Downloads is shown once with the last file selected");
+
+        now += TimeSpan.FromSeconds(59);
+        Download(702, "soon.jpg");
+        Check(selected.Count == 1 && asked.Count == 1, "Not again within a minute");
+        now += TimeSpan.FromSeconds(2);
+        list.Apply(new TransferUpdate(799, "s20", true, "upload.bin", 1, TransferState.Done));
+        while (posted.TryDequeue(out var action)) action();
+        Check(selected.Count == 1, "A download held back for the minute isn't shown later on");
+        Download(703, "later.jpg");
+        Check(selected.Count == 2 && selected[1] == Path.Combine(dir, "later.jpg"), "But a download after the minute is");
+
+        now += TimeSpan.FromMinutes(5);
+        shown = true;
+        Download(704, "open.jpg");
+        Check(asked.Count == 3 && selected.Count == 2, "Nor while Explorer shows Downloads already");
+        shown = false;
+        Download(705, "closed.jpg");
+        Check(selected.Count == 3, "And again once it's closed, since nothing was opened meanwhile");
+
+        // A file the phone sends unasked, as from its share sheet.
+        var pushed = new List<string>();
+        fs.PushSaved += path =>
+        {
+            pushed.Add(path);
+            opener.Saved(path);
+        };
+        now += TimeSpan.FromMinutes(5);
+        fs.HandleJson(new JsonObject
+        {
+            ["type"] = "fs-begin", ["from"] = "s20", ["xferId"] = 706L, ["name"] = "shared.pdf", ["size"] = 1L,
+        }, true);
+        fs.HandleFileChunk(new byte[] { 2, 0, 0, 2, 194, 7 });
+        fs.HandleJson(new JsonObject { ["type"] = "fs-end", ["from"] = "s20", ["xferId"] = 706L, ["ok"] = true }, true);
+        while (posted.TryDequeue(out var action)) action();
+        Check(pushed.SequenceEqual(new[] { Path.Combine(dir, "shared.pdf") }) && selected[^1] == pushed[0],
+            "A file sent unasked shows Downloads too, selected");
+        now += TimeSpan.FromMinutes(5);
+        Download(707, "asked.jpg");
+        Check(pushed.Count == 1 && selected[^1] == Path.Combine(dir, "asked.jpg"),
+            "A download asked for isn't taken for one sent unasked");
+        Console.WriteLine("PASS: Downloads opens once a batch or a file sent unasked has landed, at most once a minute, and not while Explorer shows it");
     }
 
     private static void CheckCaptureOffers(string dir)

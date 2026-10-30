@@ -42,6 +42,13 @@ public class FsService
     // Downloads given up before their fs-begin. An older sender ignores
     // fs-cancel and sends the file anyway, which must not be kept as a push.
     private readonly HashSet<uint> _cancelledGets = new();
+    // Queued downloads are asked for a few at a time from each device, so a
+    // folder of thousands of files arrives one file after another. A PC sends
+    // every file it's asked for at once, and a chunk that waits too long for
+    // the socket is dropped.
+    private const int QueuedGetsPerPeer = 2;
+    private readonly LinkedList<uint> _queuedGets = new(); // not yet asked for, oldest first
+    private readonly Dictionary<uint, string> _askedGets = new(); // queued, asked for and not ended, with their device
 
     private class IncomingTransfer
     {
@@ -60,7 +67,10 @@ public class FsService
     }
 
     /// <summary>A download this PC asked for with fs-get, until its fs-begin arrives.</summary>
-    private record PendingGet(string Peer, string Name, Action<string> OnDone, Action<string> OnError);
+    /// <param name="Dir">The folder it is saved in; null for Downloads.</param>
+    /// <param name="Path">What to ask for while a queued download waits its turn; null once it is asked for.</param>
+    private record PendingGet(string Peer, string Name, Action<string> OnDone, Action<string> OnError,
+        string? Dir = null, string? Path = null);
 
     /// <summary>A file this device is sending, until its fs-end.</summary>
     private class OutgoingTransfer
@@ -110,6 +120,10 @@ public class FsService
     /// worker's, or the one that started or cancelled it.</summary>
     public event Action<TransferUpdate>? TransferChanged;
 
+    /// <summary>Raised with where a file a peer sent unasked was saved, after its
+    /// <see cref="TransferChanged"/> says it's done.</summary>
+    public event Action<string>? PushSaved;
+
     public FsService(WsClient ws)
     {
         _ws = ws;
@@ -157,7 +171,8 @@ public class FsService
         IncomingTransfer? t;
         lock (_incoming)
         {
-            if (_pendingGets.Remove(xferId, out get)) _cancelledGets.Add(xferId);
+            // One still waiting its turn was never asked for, so its device has nothing to stop.
+            if (_pendingGets.Remove(xferId, out get) && get.Path == null) _cancelledGets.Add(xferId);
             _incoming.Remove(xferId, out t);
         }
         if (t != null)
@@ -168,8 +183,48 @@ public class FsService
         else if (get == null) return;
         var cancelled = t?.Update(xferId, TransferState.Cancelled)
             ?? new TransferUpdate(xferId, get!.Peer, false, get.Name, -1, TransferState.Cancelled);
-        _ws.SendJson(new JsonObject { ["type"] = "fs-cancel", ["to"] = cancelled.Peer, ["xferId"] = xferId });
+        if (t != null || get!.Path == null)
+            _ws.SendJson(new JsonObject { ["type"] = "fs-cancel", ["to"] = cancelled.Peer, ["xferId"] = xferId });
         TransferChanged?.Invoke(cancelled);
+        AskNext(xferId);
+    }
+
+    /// <summary>
+    /// Fails every file coming from a device that has left, or from every device
+    /// when <paramref name="peer"/> is null because this PC lost the relay: none of
+    /// them can arrive now, and they would otherwise wait for good.
+    /// </summary>
+    public void PeerLeft(string? peer, string error)
+    {
+        var gets = new List<(uint XferId, PendingGet Get)>();
+        var incoming = new List<(uint XferId, IncomingTransfer T)>();
+        lock (_incoming)
+        {
+            foreach (var (id, get) in _pendingGets.Where(g => peer == null || g.Value.Peer == peer).ToList())
+            {
+                _pendingGets.Remove(id);
+                _askedGets.Remove(id);
+                gets.Add((id, get));
+            }
+            foreach (var (id, t) in _incoming.Where(t => peer == null || t.Value.Peer == peer).ToList())
+            {
+                _incoming.Remove(id);
+                _askedGets.Remove(id);
+                incoming.Add((id, t));
+            }
+        }
+        foreach (var (id, get) in gets)
+        {
+            TransferChanged?.Invoke(new TransferUpdate(id, get.Peer, false, get.Name, -1, TransferState.Failed, Error: error));
+            get.OnError(error);
+        }
+        foreach (var (id, t) in incoming)
+        {
+            t.Stream.Dispose();
+            try { File.Delete(t.TempPath); } catch { /* The failure is reported either way. */ }
+            TransferChanged?.Invoke(t.Update(id, TransferState.Failed, error: error));
+            t.OnError?.Invoke(error);
+        }
     }
 
     /// <param name="peer">Only stop the send if it goes to this peer; null for any.</param>
@@ -400,6 +455,57 @@ public class FsService
         TransferChanged?.Invoke(new TransferUpdate(xferId, peer, false, name, -1, TransferState.Waiting));
     }
 
+    /// <summary>
+    /// Downloads <paramref name="path"/> from a peer into <paramref name="dir"/>, which
+    /// is made when the file arrives. It waits its turn behind the downloads queued
+    /// before it from the same device, listed as waiting like any download yet to begin.
+    /// </summary>
+    public void QueueDownload(uint xferId, string peer, string path, string name, string dir,
+        Action<string> onDone, Action<string> onError)
+    {
+        lock (_incoming)
+        {
+            _pendingGets[xferId] = new PendingGet(peer, name, onDone, onError, dir, path);
+            _queuedGets.AddLast(xferId);
+        }
+        TransferChanged?.Invoke(new TransferUpdate(xferId, peer, false, name, -1, TransferState.Waiting));
+        AskNext(peer);
+    }
+
+    /// <summary>Frees the place a queued download had, so the next one from its device is asked for.</summary>
+    private void AskNext(uint ended)
+    {
+        string? peer;
+        lock (_incoming) _askedGets.Remove(ended, out peer);
+        if (peer != null) AskNext(peer);
+    }
+
+    private void AskNext(string peer)
+    {
+        var ask = new List<(uint XferId, string Path)>();
+        lock (_incoming)
+        {
+            var asked = _askedGets.Values.Count(p => p == peer);
+            for (var node = _queuedGets.First; node != null && asked < QueuedGetsPerPeer;)
+            {
+                var next = node.Next;
+                // Cancelled while it waited, or for another device.
+                if (!_pendingGets.TryGetValue(node.Value, out var get)) _queuedGets.Remove(node);
+                else if (get.Peer == peer)
+                {
+                    _queuedGets.Remove(node);
+                    _pendingGets[node.Value] = get with { Path = null };
+                    _askedGets[node.Value] = peer;
+                    ask.Add((node.Value, get.Path!));
+                    asked++;
+                }
+                node = next;
+            }
+        }
+        foreach (var (xferId, path) in ask)
+            _ws.SendJson(new JsonObject { ["type"] = "fs-get", ["to"] = peer, ["path"] = path, ["xferId"] = xferId });
+    }
+
     private void HandleBegin(JsonNode msg, bool peerAccessAllowed)
     {
         var xferId = (uint)(msg["xferId"]?.GetValue<long>() ?? 0);
@@ -407,19 +513,22 @@ public class FsService
         var size = msg["size"]?.GetValue<long>() ?? 0;
         var peer = msg["from"]?.GetValue<string>() ?? "";
 
+        string dir;
         lock (_incoming)
         {
             if (_cancelledGets.Remove(xferId)) return;
             // An unsolicited push (no matching fs-get from us) needs consent;
             // without a registered transfer its chunks are dropped on arrival.
-            if (!peerAccessAllowed && !_pendingGets.ContainsKey(xferId)) return;
+            _pendingGets.TryGetValue(xferId, out var get);
+            if (!peerAccessAllowed && get == null) return;
+            dir = get?.Dir ?? IncomingDir;
         }
 
         IncomingTransfer t;
         try
         {
-            Directory.CreateDirectory(IncomingDir);
-            var finalPath = UniquePath(Path.Combine(IncomingDir, name));
+            Directory.CreateDirectory(dir);
+            var finalPath = UniquePath(Path.Combine(dir, name));
             var tempPath = finalPath + ".part";
             t = new IncomingTransfer
             {
@@ -437,6 +546,7 @@ public class FsService
             lock (_incoming) _pendingGets.Remove(xferId, out get);
             TransferChanged?.Invoke(new TransferUpdate(xferId, peer, false, name, size, TransferState.Failed, Error: ex.Message));
             get?.OnError(ex.Message);
+            AskNext(xferId);
             return;
         }
         lock (_incoming)
@@ -471,6 +581,7 @@ public class FsService
             TransferChanged?.Invoke(new TransferUpdate(xferId, refused.Peer, false, refused.Name, -1,
                 TransferState.Failed, Error: refusal));
             refused.OnError(refusal);
+            AskNext(xferId);
             return;
         }
         try
@@ -485,7 +596,8 @@ public class FsService
                 ["xferId"] = xferId, ["path"] = t.FinalPath,
             });
             TransferChanged?.Invoke(t.Update(xferId, TransferState.Done));
-            t.OnDone?.Invoke(t.FinalPath);
+            if (t.OnDone != null) t.OnDone(t.FinalPath);
+            else PushSaved?.Invoke(t.FinalPath);
         }
         catch (Exception ex)
         {
@@ -499,24 +611,29 @@ public class FsService
             TransferChanged?.Invoke(t.Update(xferId, TransferState.Failed, error: err));
             t.OnError?.Invoke(err);
         }
+        finally
+        {
+            AskNext(xferId);
+        }
     }
 
-    private static string SanitizeFileName(string name)
+    internal static string SanitizeFileName(string name)
     {
         foreach (var c in Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
         return string.IsNullOrWhiteSpace(name) ? "file.bin" : name;
     }
 
-    private static string UniquePath(string path)
+    /// <summary>The path, or the first free one with a counter appended. A folder takes its place too.</summary>
+    internal static string UniquePath(string path)
     {
-        if (!File.Exists(path)) return path;
+        if (!Path.Exists(path)) return path;
         var dir = Path.GetDirectoryName(path)!;
         var stem = Path.GetFileNameWithoutExtension(path);
         var ext = Path.GetExtension(path);
         for (int i = 1; ; i++)
         {
             var candidate = Path.Combine(dir, $"{stem} ({i}){ext}");
-            if (!File.Exists(candidate)) return candidate;
+            if (!Path.Exists(candidate)) return candidate;
         }
     }
 }

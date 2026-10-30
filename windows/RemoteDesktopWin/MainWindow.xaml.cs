@@ -59,6 +59,7 @@ public partial class MainWindow : Window
     // One per device, so each upload goes to the device its window names.
     private readonly Dictionary<string, FileExplorerWindow> _fileExplorers = new();
     private readonly TransferList _transfers;
+    private readonly DownloadsFolderOpener _downloadsOpener;
     private TransfersWindow? _transfersWindow;
     private System.Windows.Forms.NotifyIcon? _tray;
     private bool _exiting;
@@ -86,6 +87,10 @@ public partial class MainWindow : Window
         };
         _fs = new FsService(_ws);
         _transfers = new TransferList(_fs, PeerName);
+        _downloadsOpener = new DownloadsFolderOpener(_transfers, _fs.IncomingDir,
+            a => Dispatcher.BeginInvoke(DispatcherPriority.Background, a));
+        // Posted like the transfer list's updates, so the list has heard the file is done.
+        _fs.PushSaved += path => Dispatcher.BeginInvoke(() => _downloadsOpener.Saved(path));
         _clip = new ClipboardService(_ws.SendJson,
             peer => AllowStreamCheck.IsChecked == true && _auth.IsTrusted(peer),
             () => AllowFilesCheck.IsChecked == true);
@@ -405,6 +410,8 @@ public partial class MainWindow : Window
             _peers.Clear();
             _auth.ResetConnection(); // peer ids are stale after a drop
             CaptureOfferCard.PeerLeft(null);
+            // After the cards, which cancel their own downloads.
+            _fs.PeerLeft(null, "The connection to the relay was lost");
             RefreshDeviceList();
         }
         UpdateStatusCard();
@@ -549,6 +556,7 @@ public partial class MainWindow : Window
 
             case "peer-left":
                 var leftId = msg["id"]?.GetValue<string>();
+                var leftName = PeerName(leftId);
                 _peers.RemoveAll(p => p.Id == leftId);
                 if (leftId != null)
                 {
@@ -557,6 +565,7 @@ public partial class MainWindow : Window
                     // region nobody is looking at any more.
                     _streamer.Regions.RemoveViewer(leftId);
                     CaptureOfferCard.PeerLeft(leftId);
+                    _fs.PeerLeft(leftId, $"{leftName} went offline");
                 }
                 RefreshDeviceList();
                 if (_pcView != null && _pcView.PeerId == leftId) _pcView.Close();
@@ -1028,7 +1037,8 @@ public partial class MainWindow : Window
             open.Activate();
             return;
         }
-        var explorer = new FileExplorerWindow(_ws, _fs, peer.Id, peer.Name, _settings, ShowTransfers);
+        var explorer = new FileExplorerWindow(_ws, _fs, peer.Id, peer.Name, _settings, ShowTransfers,
+            _downloadsOpener.Saved);
         _fileExplorers[peer.Id] = explorer;
         explorer.Closed += (_, _) => _fileExplorers.Remove(peer.Id);
         explorer.Show();

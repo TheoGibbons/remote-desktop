@@ -189,18 +189,30 @@ unapproved device is present in the session, streaming and file serving pause.
   Downloads is honoured; uploads land in the peer's `Downloads` folder on
   Windows or Android alike. A name that clashes with a file already there gets
   a counter appended — nothing is overwritten.
+  Select files and folders (Shift and Ctrl pick several) and choose
+  **Download**, or double-click a file. A folder comes with everything in it,
+  subfolders and all, into a folder of its own in Downloads; its files are
+  counted first, and a download of more than 10 files or 100 MB asks before it
+  starts. Files come two at a time from each device, the rest waiting in
+  **Transfers**. Once nothing is left under way there, Downloads opens in File
+  Explorer with the download selected, unless Explorer already shows Downloads,
+  and at most once a minute. The same goes for files a device sends this PC
+  unasked, such as from a phone's share sheet.
   Choose **Upload** or drag files onto the device's files window to send them
   — several at once, also when the app runs as administrator. Files added while
   an upload runs join its queue. The browser moves to the phone's Downloads
   folder as the upload starts and refreshes after the phone confirms the saved
-  files. **Cancel**, beside the status line while a download or upload runs,
-  stops that window's transfers: a part-downloaded file is deleted, and
-  cancelling an upload drops the rest of its queue.
+  files. **Cancel**, beside the status line while a download or upload runs
+  (or a folder is being counted), stops that window's transfers: a
+  part-downloaded file is deleted, and the rest of a download's or upload's
+  queue is dropped.
 - **Transfers** (beside the main window's transfer line, beside a files
   window's **Download**, or in the tray menu) lists every file sent or received
   this session, with which device it went to or came from, its progress and how
   it ended. Each file still under way has its own cancel button, which stops
-  just that file; **Clear finished** tidies the list.
+  just that file; **Clear finished** tidies the list. Files still to come from a
+  device that goes offline, or from any device when this PC loses the relay,
+  fail rather than wait for good.
 - **New photos and screenshots from a phone** pop up as a card in the corner of
   the screen, with a preview, for a minute (longer while the pointer rests on
   it). Click it to download them into Downloads, then click again to open the

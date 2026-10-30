@@ -67,7 +67,7 @@
         <!-- ============ Folder contents ============ -->
         <Border Grid.Row="1" Style="{StaticResource RdCard}" Padding="6" Margin="0,12">
             <Grid>
-                <ListBox x:Name="EntryList" SelectionMode="Single" MouseDoubleClick="Entry_DoubleClick"
+                <ListBox x:Name="EntryList" SelectionMode="Extended" MouseDoubleClick="Entry_DoubleClick"
                          Background="Transparent" BorderThickness="0" Padding="0"
                          ItemContainerStyle="{StaticResource FileRow}"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
@@ -146,7 +146,8 @@
                     <TextBlock Text="Transfers"/>
                 </StackPanel>
             </Button>
-            <Button Grid.Column="3" Style="{StaticResource RdOutlinedButton}" Click="Download_Click">
+            <Button Grid.Column="3" Style="{StaticResource RdOutlinedButton}" Click="Download_Click"
+                    ToolTip="Save the selected files and folders in this PC's Downloads folder. Double-click a file to download just that one">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <TextBlock Text="Download"/>

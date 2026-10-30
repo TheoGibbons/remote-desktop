@@ -68,6 +68,9 @@ public sealed class TransferList
 
     public bool HasFinished => Rows.Any(r => r.Finished);
 
+    /// <summary>How many files are waiting, sending or receiving.</summary>
+    public int ActiveCount { get; private set; }
+
     /// <summary>Raised after any row is added, moved on or cleared.</summary>
     public event Action? Changed;
 
@@ -86,10 +89,12 @@ public sealed class TransferList
             row = new TransferRow(u.XferId, u.Sending, _peerName(u.Peer));
             _rows[u.XferId] = row;
             Rows.Insert(0, row);
+            ActiveCount++;
         }
         // A cancel can land between a chunk and its progress; don't bring that file back.
         else if (row.Finished) return null;
         row.Update(u);
+        if (row.Finished) ActiveCount--;
         Changed?.Invoke();
         return row;
     }

@@ -19,10 +19,21 @@ public partial class FileExplorerWindow : Window
     private readonly string _phoneId;
     private readonly string _phoneName;
     private readonly Action _showTransfers;
+    private readonly Action<string> _downloaded;
     private string _path = "";
     private int _reqCounter;
     private readonly HashSet<uint> _uploadIds = new();
-    private readonly HashSet<uint> _downloadIds = new(); // running downloads, which Cancel stops
+    private readonly List<uint> _downloadIds = new(); // downloads not yet ended, oldest first, which Cancel stops
+    // The downloads started since the last batch ended, and how they went.
+    private int _downloadTotal;
+    private int _downloadsEnded;
+    private int _downloadsSaved;
+    private int _downloadsFailed;
+    private string? _downloadError;
+    // While a download lists its folders to count their files.
+    private CancellationTokenSource? _counting;
+    private readonly Dictionary<string, TaskCompletionSource<JsonNode>> _countListings = new();
+    private int _countReqs;
     private readonly Queue<string> _uploadQueue = new();
     private int _uploadIndex;
     private int _uploadTotal;
@@ -41,8 +52,10 @@ public partial class FileExplorerWindow : Window
     private List<FileEntry> _entries = new();
 
     /// <param name="showTransfers">Opens the window listing every device's transfers.</param>
+    /// <param name="downloaded">Told of each file a download saves in Downloads, or of the
+    /// folder there that a folder's file went in.</param>
     public FileExplorerWindow(WsClient ws, FsService fs, string phoneId, string phoneName, AppSettings settings,
-        Action showTransfers)
+        Action showTransfers, Action<string> downloaded)
     {
         InitializeComponent();
         _ws = ws;
@@ -50,13 +63,19 @@ public partial class FileExplorerWindow : Window
         _phoneId = phoneId;
         _phoneName = phoneName;
         _showTransfers = showTransfers;
+        _downloaded = downloaded;
         _settings = settings;
         Title = phoneName;
         _sort = Enum.TryParse(settings.FileBrowserSort, out FileSort sort) && Enum.IsDefined(sort) ? sort : FileSort.ModifiedDesc;
         _foldersFirst = settings.FileBrowserFoldersFirst;
         UpdateSortButton();
         _fs.TransferChanged += OnTransferChanged;
-        Closed += (_, _) => _fs.TransferChanged -= OnTransferChanged;
+        // Downloads already queued carry on without the window.
+        Closed += (_, _) =>
+        {
+            _fs.TransferChanged -= OnTransferChanged;
+            _counting?.Cancel();
+        };
         if (MainWindow.IsElevated()) Loaded += (_, _) => AcceptElevatedFileDrops();
         // Open in Downloads, which the first listing says where to find.
         _navigateToDownloads = true;
@@ -73,38 +92,46 @@ public partial class FileExplorerWindow : Window
 
     private string UploadProgress => _uploadTotal > 1 ? $" ({_uploadIndex}/{_uploadTotal})" : "";
 
+    private string DownloadProgress =>
+        _downloadTotal > 1 ? $" ({Math.Min(_downloadsEnded + 1, _downloadTotal)}/{_downloadTotal})" : "";
+
     private void OnTransferChanged(TransferUpdate u)
     {
         // Other devices' transfers show in their own windows.
         if (u.Peer != _phoneId) return;
         // Uploads report on this thread. Apply them now: a queued update would
         // land after the batch moves on and overwrite its newer status.
-        if (Dispatcher.CheckAccess()) ShowUpdate(u, UploadProgress);
-        else Dispatcher.BeginInvoke(() => ShowUpdate(u, ""));
+        if (Dispatcher.CheckAccess()) ShowUpdate(u, u.Sending ? UploadProgress : DownloadProgress);
+        else Dispatcher.BeginInvoke(() => ShowUpdate(u, u.Sending ? "" : DownloadProgress));
     }
 
     private void ShowUpdate(TransferUpdate u, string batchProgress)
     {
-        // Cancelled in the transfers window; its own end never comes.
-        if (u.State == TransferState.Cancelled && _downloadIds.Remove(u.XferId)) UpdateCancelButton();
         if (u.HasProgress)
         {
             // By the time a queued update runs, its transfer may have finished or been cancelled.
             if (_fs.IsActive(u.XferId)) SetStatus($"{u.Percent}% {u.Name}{batchProgress}", u.Sending);
         }
         else if (u.Text is { } text) SetStatus(text + batchProgress);
+        // Cancelled here or in the transfers window; its own end never comes.
+        if (u.State == TransferState.Cancelled) DownloadEnded(u.XferId, null, null);
     }
 
     private void UpdateCancelButton() =>
-        CancelButton.Visibility = _downloadIds.Count > 0 || _uploading ? Visibility.Visible : Visibility.Collapsed;
+        CancelButton.Visibility = _downloadIds.Count > 0 || _uploading || _counting != null
+            ? Visibility.Visible : Visibility.Collapsed;
 
     private void Transfers_Click(object sender, RoutedEventArgs e) => _showTransfers();
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
+        _counting?.Cancel();
         // A copy: each cancel reports back here, which takes it off the list.
-        foreach (var id in _downloadIds.ToList()) _fs.Cancel(id);
-        _downloadIds.Clear();
+        // Newest first, so a file cancelled under way doesn't make room for
+        // one that is about to be cancelled too.
+        var downloads = _downloadIds.ToList();
+        downloads.Reverse();
+        foreach (var id in downloads) _fs.Cancel(id);
         if (_uploading)
         {
             // The batch reports how far it got once the current file stops.
@@ -112,7 +139,6 @@ public partial class FileExplorerWindow : Window
             _uploadQueue.Clear();
             _fs.Cancel(_lastUploadId);
         }
-        else SetStatus("Download cancelled");
         UpdateCancelButton();
     }
 
@@ -144,8 +170,14 @@ public partial class FileExplorerWindow : Window
 
     public void OnListResult(JsonNode msg)
     {
-        if (msg["from"]?.GetValue<string>() != _phoneId ||
-            msg["reqId"]?.GetValue<string>() != _reqCounter.ToString()) return;
+        if (msg["from"]?.GetValue<string>() != _phoneId) return;
+        var reqId = msg["reqId"]?.GetValue<string>();
+        if (reqId != null && _countListings.TryGetValue(reqId, out var counted))
+        {
+            counted.TrySetResult(msg);
+            return;
+        }
+        if (reqId != _reqCounter.ToString()) return;
         var downloadsPath = msg["downloadsPath"]?.GetValue<string>();
         if (!string.IsNullOrEmpty(downloadsPath)) _downloadsPath = downloadsPath;
         var error = msg["error"]?.GetValue<string>();
@@ -242,11 +274,11 @@ public partial class FileExplorerWindow : Window
         UpdateSortButton();
         // ItemsSource is null while a folder loads; that listing sorts itself.
         if (EntryList.ItemsSource == null) return;
-        var selected = EntryList.SelectedItem;
+        var selected = EntryList.SelectedItems.Cast<FileEntry>().ToList();
         EntryList.ItemsSource = _entries.Sorted(_sort, _foldersFirst);
-        if (selected == null) return;
-        EntryList.SelectedItem = selected;
-        EntryList.ScrollIntoView(selected);
+        if (selected.Count == 0) return;
+        foreach (var entry in selected) EntryList.SelectedItems.Add(entry);
+        EntryList.ScrollIntoView(selected[0]);
     }
 
     private string Join(string dir, string name) =>
@@ -254,8 +286,12 @@ public partial class FileExplorerWindow : Window
 
     private void Entry_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (EntryList.SelectedItem is not FileEntry entry) return;
+        // The row clicked rather than the selection, which may hold several;
+        // a double-click on the scroll bar is on no row at all.
+        if (ItemsControl.ContainerFromElement(EntryList, (DependencyObject)e.OriginalSource)
+            is not ListBoxItem { DataContext: FileEntry entry }) return;
         if (entry.Dir) RequestList(Join(_path, entry.Name));
+        else _ = DownloadAsync(new List<FileEntry> { entry });
     }
 
     private void Up_Click(object sender, RoutedEventArgs e)
@@ -273,35 +309,215 @@ public partial class FileExplorerWindow : Window
         if (e.Key == Key.Enter) RequestList(PathBox.Text.Trim());
     }
 
+    // More than this asks first, unless it's one file picked on its own.
+    private const int ConfirmFiles = 10;
+    private const long ConfirmBytes = 100L * 1024 * 1024;
+
+    /// <summary>A file a download asks for: <paramref name="Top"/> is the folder picked
+    /// that holds it, if any, and <paramref name="Folder"/> its folder below that one.</summary>
+    private record DownloadItem(string RemotePath, string Name, FileEntry? Top, string Folder, long Size);
+
     private void Download_Click(object sender, RoutedEventArgs e)
     {
-        if (EntryList.SelectedItem is not FileEntry entry || entry.Dir)
+        // In the order shown, not the order they were picked in.
+        var selected = EntryList.SelectedItems.Cast<FileEntry>().ToHashSet();
+        _ = DownloadAsync(EntryList.Items.Cast<FileEntry>().Where(selected.Contains).ToList());
+    }
+
+    /// <summary>
+    /// Downloads files, and every file inside folders, into Downloads, each
+    /// folder into a folder of its own there. A download of more than a few
+    /// files, or a big one, is counted and confirmed first.
+    /// </summary>
+    private async Task DownloadAsync(List<FileEntry> picked)
+    {
+        if (picked.Count == 0)
         {
-            SetStatus("Select a file first");
+            SetStatus("Select files or folders first");
             return;
         }
-        var xferId = _fs.NextXferId();
-        _fs.ExpectDownload(xferId, _phoneId, entry.Name,
-            path => Dispatcher.BeginInvoke(() => DownloadEnded(xferId, "Saved to " + path)),
-            err => Dispatcher.BeginInvoke(() => DownloadEnded(xferId, "Failed: " + err)));
-        _downloadIds.Add(xferId);
-        _ws.SendJson(new JsonObject
+        if (_counting != null)
         {
-            ["type"] = "fs-get",
-            ["to"] = _phoneId,
-            ["path"] = Join(_path, entry.Name),
-            ["xferId"] = xferId,
-        });
-        SetStatus($"Downloading {entry.Name}...");
+            SetStatus("Still counting the files in the last folder chosen");
+            return;
+        }
+        // Where they are, even if the window moves on while folders are counted.
+        var from = _path;
+        var files = picked.Where(p => !p.Dir)
+            .Select(p => new DownloadItem(Join(from, p.Name), p.Name, null, "", p.Size)).ToList();
+        var folders = picked.Where(p => p.Dir).ToList();
+        var unreadable = 0;
+        if (folders.Count > 0)
+        {
+            _counting = new CancellationTokenSource();
+            UpdateCancelButton();
+            try
+            {
+                foreach (var folder in folders)
+                    unreadable += await CountAsync(folder, Join(from, folder.Name), files, _counting.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Download cancelled");
+                return;
+            }
+            catch (TimeoutException)
+            {
+                SetStatus($"Couldn't count the files: {_phoneName} didn't answer");
+                return;
+            }
+            finally
+            {
+                _counting.Dispose();
+                _counting = null;
+                UpdateCancelButton();
+            }
+        }
+
+        var size = files.Sum(f => f.Size);
+        var skipped = unreadable switch
+        {
+            0 => "",
+            1 => "One folder couldn't be opened, so its files are left out.",
+            _ => $"{unreadable} folders couldn't be opened, so their files are left out.",
+        };
+        if (files.Count == 0)
+        {
+            SetStatus(unreadable > 0 ? "Nothing to download. " + skipped
+                : $"Nothing to download: there are no files in {(folders.Count == 1 ? "that folder" : "those folders")}");
+            return;
+        }
+        var ask = (picked.Count > 1 || folders.Count > 0) && (files.Count > ConfirmFiles || size > ConfirmBytes);
+        if (ask)
+        {
+            var question = $"Download {files.Count} {(files.Count == 1 ? "file" : "files")} " +
+                $"({FileEntry.FormatSize(size)}) from {_phoneName} to your Downloads folder?";
+            if (skipped != "") question += "\n\n" + skipped;
+            if (MessageBox.Show(this, question, "Download", MessageBoxButton.YesNo, MessageBoxImage.Question) !=
+                MessageBoxResult.Yes)
+            {
+                SetStatus("Download cancelled");
+                return;
+            }
+        }
+
+        // Each folder is named after the one picked, with a counter if Downloads has one already.
+        var roots = new Dictionary<FileEntry, string>();
+        try
+        {
+            foreach (var folder in folders)
+            {
+                var name = FsService.SanitizeFileName(folder.DisplayName.TrimEnd('/', '\\'));
+                var root = FsService.UniquePath(System.IO.Path.Combine(_fs.IncomingDir, name));
+                System.IO.Directory.CreateDirectory(root);
+                roots[folder] = root;
+            }
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Download failed: " + ex.Message);
+            return;
+        }
+        _downloadTotal += files.Count;
+        foreach (var file in files)
+        {
+            var xferId = _fs.NextXferId();
+            var root = file.Top == null ? null : roots[file.Top];
+            _downloadIds.Add(xferId);
+            _fs.QueueDownload(xferId, _phoneId, file.RemotePath, file.Name,
+                root == null ? _fs.IncomingDir : System.IO.Path.Combine(root, file.Folder),
+                path => Dispatcher.BeginInvoke(() => DownloadSaved(xferId, path, root ?? path)),
+                err => Dispatcher.BeginInvoke(() => DownloadEnded(xferId, null, err)));
+        }
+        SetStatus(files.Count == 1 ? $"Downloading {files[0].Name}..." : $"Downloading {files.Count} files...");
+        // The question said so already.
+        if (skipped != "" && !ask) Toast.Show(skipped);
         UpdateCancelButton();
     }
 
-    private void DownloadEnded(uint xferId, string status)
+    /// <summary>Adds every file in a folder of the device, and in its folders, to <paramref name="files"/>.</summary>
+    /// <returns>How many folders couldn't be listed, whose files are left out.</returns>
+    private async Task<int> CountAsync(FileEntry top, string path, List<DownloadItem> files, CancellationToken cancel)
     {
-        // Cancelled meanwhile, which already said so.
+        var unreadable = 0;
+        var folders = new Queue<(string Path, string Local)>();
+        folders.Enqueue((path, ""));
+        while (folders.TryDequeue(out var folder))
+        {
+            var listing = await ListAsync(folder.Path, cancel);
+            if (!string.IsNullOrEmpty(listing["error"]?.GetValue<string>()))
+            {
+                unreadable++;
+                continue;
+            }
+            foreach (var e in listing["entries"]!.AsArray())
+            {
+                var name = e!["name"]!.GetValue<string>();
+                if (e["dir"]?.GetValue<bool>() ?? false)
+                    folders.Enqueue((Join(folder.Path, name),
+                        System.IO.Path.Combine(folder.Local, FsService.SanitizeFileName(name))));
+                else
+                    files.Add(new DownloadItem(Join(folder.Path, name), name, top, folder.Local,
+                        e["size"]?.GetValue<long>() ?? 0));
+            }
+            SetStatus($"Counting files to download: {files.Count} so far, {FileEntry.FormatSize(files.Sum(f => f.Size))}");
+        }
+        return unreadable;
+    }
+
+    /// <summary>Lists a folder without showing it.</summary>
+    private async Task<JsonNode> ListAsync(string path, CancellationToken cancel)
+    {
+        var reqId = "count-" + ++_countReqs;
+        var reply = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _countListings[reqId] = reply;
+        try
+        {
+            _ws.SendJson(new JsonObject { ["type"] = "fs-list", ["to"] = _phoneId, ["path"] = path, ["reqId"] = reqId });
+            return await reply.Task.WaitAsync(TimeSpan.FromSeconds(15), cancel);
+        }
+        finally
+        {
+            _countListings.Remove(reqId);
+        }
+    }
+
+    /// <param name="shown">The file, or the folder in Downloads that it went in.</param>
+    private void DownloadSaved(uint xferId, string path, string shown)
+    {
+        if (_downloadIds.Contains(xferId)) _downloaded(shown);
+        DownloadEnded(xferId, path, null);
+    }
+
+    /// <param name="saved">Where it was saved; null if it failed or was cancelled.</param>
+    /// <param name="error">Why it failed; null if it was saved or cancelled.</param>
+    private void DownloadEnded(uint xferId, string? saved, string? error)
+    {
+        // Already ended: cancelled before its end was posted here.
         if (!_downloadIds.Remove(xferId)) return;
-        SetStatus(status);
+        _downloadsEnded++;
+        if (saved != null) _downloadsSaved++;
+        else if (error != null)
+        {
+            _downloadsFailed++;
+            _downloadError = error;
+        }
         UpdateCancelButton();
+        if (_downloadIds.Count > 0) return;
+        // The last of the batch says how it went; one cancelled has said so already.
+        if (_downloadTotal == 1)
+        {
+            if (saved != null) SetStatus("Saved to " + saved);
+            else if (error != null) SetStatus("Failed: " + error);
+        }
+        else if (_downloadsSaved == _downloadTotal) SetStatus($"Saved {_downloadTotal} files to Downloads");
+        else if (_downloadsSaved > 0)
+            SetStatus($"Saved {_downloadsSaved} of {_downloadTotal} files to Downloads" +
+                (_downloadsFailed > 0 ? $"; {_downloadsFailed} failed: {_downloadError}" : ""));
+        else if (_downloadsFailed > 0) SetStatus($"{_downloadsFailed} of {_downloadTotal} downloads failed: {_downloadError}");
+        else SetStatus("Download cancelled");
+        _downloadTotal = _downloadsEnded = _downloadsSaved = _downloadsFailed = 0;
+        _downloadError = null;
     }
 
     private async void Upload_Click(object sender, RoutedEventArgs e)
