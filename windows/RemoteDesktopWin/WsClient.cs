@@ -59,6 +59,7 @@ public class WsClient : IDisposable
     private long _queuedFileBytes;
     private long _videoFramesDropped;
     private long _videoBytesSent;
+    private int _generation;
 
     // Screen updates are worth queueing only while they are still current. Two
     // frames is enough to keep the socket busy while the next one encodes;
@@ -121,6 +122,11 @@ public class WsClient : IDisposable
     /// <summary>Video bytes handed to the socket, for throughput estimation.</summary>
     public long VideoBytesSent { get { lock (_outLock) return _videoBytesSent; } }
 
+    /// <summary>Moves on whenever a connection opens or closes. Whatever was still
+    /// queued on a closed connection is gone, and the next one joins under a new
+    /// peer id, so a sender that sees this change knows its transfer is broken.</summary>
+    public int Generation { get { lock (_outLock) return _generation; } }
+
     public void Start(string url, string sessionKey, string deviceName, string deviceUid)
     {
         Stop();
@@ -157,6 +163,7 @@ public class WsClient : IDisposable
             });
             _queuedVideoBytes = 0;
             _queuedFileBytes = 0;
+            _generation++;
         }
     }
 
@@ -165,6 +172,7 @@ public class WsClient : IDisposable
         Channel<bool>? wake;
         lock (_outLock)
         {
+            if (_reliable != null) _generation++;
             wake = _wake;
             _wake = null;
             _reliable = null;

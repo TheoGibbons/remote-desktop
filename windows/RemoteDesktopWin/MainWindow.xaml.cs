@@ -411,10 +411,22 @@ public partial class MainWindow : Window
             _auth.ResetConnection(); // peer ids are stale after a drop
             CaptureOfferCard.PeerLeft(null);
             // After the cards, which cancel their own downloads.
-            _fs.PeerLeft(null, "The connection to the relay was lost");
+            _fs.PeerLeft(null, RelayLostError(state));
             RefreshDeviceList();
         }
         UpdateStatusCard();
+    }
+
+    /// <summary>Why transfers failed, with this PC's own reason for the drop when it has
+    /// one: the app keeps no log, and this is the clue to a connection that keeps dropping.</summary>
+    private static string RelayLostError(string state)
+    {
+        const string lost = "The connection to the relay was lost";
+        const string prefix = "disconnected: ";
+        if (!state.StartsWith(prefix)) return lost;
+        var why = state[prefix.Length..];
+        var retry = why.IndexOf(" — retrying", StringComparison.Ordinal);
+        return $"{lost} ({(retry >= 0 ? why[..retry] : why).TrimEnd('.')})";
     }
 
     private void UpdateStatusCard()
@@ -758,6 +770,8 @@ public partial class MainWindow : Window
                 if (from != null && _fileExplorers.TryGetValue(from, out var listed)) listed.OnListResult(msg);
                 break;
             case "fs-saved":
+                // The answer to a file this PC sent, which an upload waits for.
+                _fs.HandleJson(msg, peerAccessAllowed: false);
                 if (from != null && _fileExplorers.TryGetValue(from, out var saved)) saved.OnUploadResult(msg);
                 break;
         }

@@ -72,12 +72,16 @@ public class FsService
     private record PendingGet(string Peer, string Name, Action<string> OnDone, Action<string> OnError,
         string? Dir = null, string? Path = null);
 
-    /// <summary>A file this device is sending, until its fs-end.</summary>
+    /// <summary>A file this device is sending, until its fs-end, or until the
+    /// receiver says it saved it when the sender waits to hear.</summary>
     private class OutgoingTransfer
     {
         public required string Peer;
         public readonly CancellationTokenSource Cancel = new();
         public volatile string? CancelReason; // what fs-end tells the receiver
+        public volatile string? FailReason; // why it can't arrive: refused, or the receiver or relay went away
+        public volatile bool Ended; // fs-end ok has gone, so all that's left is the receiver's word
+        public TaskCompletionSource<string>? Saved; // where the receiver saved it, for a sender that waits
     }
 
     // Straight into Downloads, not a subfolder of it: received files should
@@ -146,6 +150,7 @@ public class FsService
             case "fs-get": if (peerAccessAllowed) HandleGet(msg); else DenyGet(msg); break;
             case "fs-begin": HandleBegin(msg, peerAccessAllowed); break;
             case "fs-end": HandleEnd(msg); break;
+            case "fs-saved": HandleSaved(msg); break;
             // Only the device receiving the file can call it off.
             case "fs-cancel": StopSending(XferId(msg), msg["from"]?.GetValue<string>() ?? "", "Cancelled by the receiver"); break;
         }
@@ -190,12 +195,19 @@ public class FsService
     }
 
     /// <summary>
-    /// Fails every file coming from a device that has left, or from every device
-    /// when <paramref name="peer"/> is null because this PC lost the relay: none of
-    /// them can arrive now, and they would otherwise wait for good.
+    /// Fails every file coming from or going to a device that has left, or every
+    /// device when <paramref name="peer"/> is null because this PC lost the relay:
+    /// none of them can arrive now. A download would otherwise wait for good, and
+    /// an upload would carry on over the next connection to a receiver that has
+    /// already dropped it, and look sent.
     /// </summary>
     public void PeerLeft(string? peer, string error)
     {
+        List<OutgoingTransfer> sends;
+        lock (_outgoing) sends = _outgoing.Values.Where(t => peer == null || t.Peer == peer).ToList();
+        // One that had all gone may well have arrived; it just can't be confirmed now.
+        foreach (var t in sends) Fail(t, t.Ended ? $"{error} before the file was confirmed saved" : error);
+
         var gets = new List<(uint XferId, PendingGet Get)>();
         var incoming = new List<(uint XferId, IncomingTransfer T)>();
         lock (_incoming)
@@ -242,11 +254,30 @@ public class FsService
         return true;
     }
 
-    private OutgoingTransfer Track(uint xferId, string peer)
+    private static void Fail(OutgoingTransfer t, string reason)
+    {
+        t.FailReason ??= reason;
+        t.Cancel.Cancel();
+    }
+
+    /// <summary>The receiver's word on a file this device sent. An error can come
+    /// before the file has all gone, from a receiver refusing it, and stops the send.</summary>
+    private void HandleSaved(JsonNode msg)
+    {
+        OutgoingTransfer? t;
+        lock (_outgoing) _outgoing.TryGetValue(XferId(msg), out t);
+        // Only the device the file went to can say what became of it.
+        if (t?.Saved == null || t.Peer != msg["from"]?.GetValue<string>()) return;
+        if (msg["error"]?.GetValue<string>() is { } error) Fail(t, error);
+        else t.Saved.TrySetResult(msg["path"]?.GetValue<string>() ?? "");
+    }
+
+    private OutgoingTransfer Track(uint xferId, string peer, bool awaitSaved = false)
     {
         lock (_outgoing)
         {
             if (!_outgoing.TryGetValue(xferId, out var t)) _outgoing[xferId] = t = new OutgoingTransfer { Peer = peer };
+            if (awaitSaved) t.Saved ??= new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             return t;
         }
     }
@@ -368,10 +399,20 @@ public class FsService
         _ = Task.Run(() => SendFileAsync(from, path, xferId));
     }
 
-    /// <returns>true if the whole file was sent and fs-end ok was signalled.</returns>
-    public async Task<bool> SendFileAsync(string toPeer, string localPath, uint xferId)
+    private const string RelayLost = "The connection to the relay was lost";
+
+    /// <summary>
+    /// Sends a file, all of it over the connection it starts on. If that connection
+    /// drops, the file fails: chunks still queued went down with it, the receiver
+    /// drops a transfer whose sender leaves, and the next connection has a new peer id.
+    /// </summary>
+    /// <param name="awaitSaved">Wait for the receiver's fs-saved, and fail without it,
+    /// so that a file which never arrived isn't reported as sent.</param>
+    /// <returns>How it ended: done once the whole file was sent and fs-end ok was
+    /// signalled, and with <paramref name="awaitSaved"/>, once the receiver saved it.</returns>
+    public async Task<TransferUpdate> SendFileAsync(string toPeer, string localPath, uint xferId, bool awaitSaved = false)
     {
-        var transfer = Track(xferId, toPeer);
+        var transfer = Track(xferId, toPeer, awaitSaved);
         var cancel = transfer.Cancel.Token;
         var name = Path.GetFileName(localPath);
         long size = -1;
@@ -380,6 +421,8 @@ public class FsService
         try
         {
             cancel.ThrowIfCancellationRequested();
+            var connection = _ws.Generation;
+            if (!_ws.IsConnected) throw new IOException("Not connected to the relay");
             var fi = new FileInfo(localPath);
             size = fi.Length;
             _ws.SendJson(new JsonObject
@@ -411,34 +454,55 @@ public class FsService
                 var payload = new byte[4 + n];
                 Buffer.BlockCopy(idbytes, 0, payload, 0, 4);
                 Buffer.BlockCopy(buf, 0, payload, 4, n);
-                // File data must not be dropped: retry while the socket is backed up.
-                int tries = 0;
-                while (!_ws.SendBinary(2, payload, recipient) && tries++ < 600) await Task.Delay(50, cancel);
+                // File data must not be dropped: retry while the socket is backed up,
+                // and give up rather than leave a hole.
+                for (var tries = 0; ; tries++)
+                {
+                    if (_ws.Generation != connection) throw new IOException(RelayLost);
+                    if (_ws.SendBinary(2, payload, recipient)) break;
+                    if (tries == 600) throw new IOException("Timed out sending the file");
+                    await Task.Delay(50, cancel);
+                }
                 sent += n;
                 TransferChanged?.Invoke(Update(TransferState.Running, (int)(sent * 100 / Math.Max(1, size))));
             }
             // A read already under way finishes despite the token.
             cancel.ThrowIfCancellationRequested();
+            if (_ws.Generation != connection) throw new IOException(RelayLost);
 
-            Untrack(xferId);
+            transfer.Ended = true;
             _ws.SendJson(new JsonObject { ["type"] = "fs-end", ["to"] = toPeer, ["xferId"] = xferId, ["ok"] = true });
-            TransferChanged?.Invoke(Update(TransferState.Done));
-            return true;
+            if (transfer.Saved != null)
+            {
+                // Long enough for what the relay still holds to reach the receiver,
+                // and for it to copy a big file into place.
+                var reply = TimeSpan.FromSeconds(60 + size / (20 << 20));
+                try { await transfer.Saved.Task.WaitAsync(reply, cancel); }
+                catch (TimeoutException) { throw new IOException("The device didn't confirm saving the file"); }
+            }
+            Untrack(xferId);
+            var done = Update(TransferState.Done);
+            TransferChanged?.Invoke(done);
+            return done;
         }
         catch (Exception ex)
         {
             Untrack(xferId);
             var cancelled = transfer.CancelReason;
-            _ws.SendJson(new JsonObject
-            {
-                ["type"] = "fs-end",
-                ["to"] = toPeer,
-                ["xferId"] = xferId,
-                ["ok"] = false,
-                ["error"] = cancelled ?? ex.Message,
-            });
-            TransferChanged?.Invoke(cancelled != null ? Update(TransferState.Cancelled) : Update(TransferState.Failed, error: ex.Message));
-            return false;
+            var error = transfer.FailReason ?? ex.Message;
+            // After fs-end ok the receiver has the whole file, and only its saving was in doubt.
+            if (!transfer.Ended)
+                _ws.SendJson(new JsonObject
+                {
+                    ["type"] = "fs-end",
+                    ["to"] = toPeer,
+                    ["xferId"] = xferId,
+                    ["ok"] = false,
+                    ["error"] = cancelled ?? error,
+                });
+            var ended = cancelled != null ? Update(TransferState.Cancelled) : Update(TransferState.Failed, error: error);
+            TransferChanged?.Invoke(ended);
+            return ended;
         }
     }
 
@@ -513,15 +577,20 @@ public class FsService
         var size = msg["size"]?.GetValue<long>() ?? 0;
         var peer = msg["from"]?.GetValue<string>() ?? "";
 
-        string dir;
+        string? dir;
         lock (_incoming)
         {
             if (_cancelledGets.Remove(xferId)) return;
             // An unsolicited push (no matching fs-get from us) needs consent;
             // without a registered transfer its chunks are dropped on arrival.
             _pendingGets.TryGetValue(xferId, out var get);
-            if (!peerAccessAllowed && get == null) return;
-            dir = get?.Dir ?? IncomingDir;
+            dir = peerAccessAllowed || get != null ? get?.Dir ?? IncomingDir : null;
+        }
+        if (dir == null)
+        {
+            // Said at once, or a sender waiting to hear the file was saved waits it out.
+            _ws.SendJson(new JsonObject { ["type"] = "fs-saved", ["to"] = peer, ["xferId"] = xferId, ["error"] = DeniedError });
+            return;
         }
 
         IncomingTransfer t;

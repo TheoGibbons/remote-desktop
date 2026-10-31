@@ -128,32 +128,41 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock x:Name="StatusText" Style="{StaticResource RdCaption}" TextWrapping="NoWrap"
                        TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="2,0,12,0"/>
+            <!-- Shown when files from the last upload didn't arrive. -->
+            <Button x:Name="RetryButton" Grid.Column="1" Style="{StaticResource RdTextButton}" Margin="0,0,8,0"
+                    Click="Retry_Click" Visibility="Collapsed" ToolTip="Send the files that didn't arrive again">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="&#xE72C;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock Text="Retry"/>
+                </StackPanel>
+            </Button>
             <!-- Shown while a download or upload from this window is running. -->
-            <Button x:Name="CancelButton" Grid.Column="1" Style="{StaticResource RdTextButton}" Margin="0,0,8,0"
+            <Button x:Name="CancelButton" Grid.Column="2" Style="{StaticResource RdTextButton}" Margin="0,0,8,0"
                     Click="Cancel_Click" Visibility="Collapsed" ToolTip="Stop the transfer">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <TextBlock Text="Cancel"/>
                 </StackPanel>
             </Button>
-            <Button Grid.Column="2" Style="{StaticResource RdOutlinedButton}" Margin="0,0,8,0" Click="Transfers_Click"
+            <Button Grid.Column="3" Style="{StaticResource RdOutlinedButton}" Margin="0,0,8,0" Click="Transfers_Click"
                     ToolTip="Uploads and downloads with every device, each with its own cancel">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="&#xE8AB;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <TextBlock Text="Transfers"/>
                 </StackPanel>
             </Button>
-            <Button Grid.Column="3" Style="{StaticResource RdOutlinedButton}" Click="Download_Click"
+            <Button Grid.Column="4" Style="{StaticResource RdOutlinedButton}" Click="Download_Click"
                     ToolTip="Save the selected files and folders in this PC's Downloads folder. Double-click a file to download just that one">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="&#xE896;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <TextBlock Text="Download"/>
                 </StackPanel>
             </Button>
-            <Button Grid.Column="4" Style="{StaticResource RdPrimaryButton}" Margin="8,0,0,0" Click="Upload_Click"
+            <Button Grid.Column="5" Style="{StaticResource RdPrimaryButton}" Margin="8,0,0,0" Click="Upload_Click"
                     ToolTip="Send files to this device's Downloads folder. You can also drag files onto this window">
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="&#xE898;" FontFamily="Segoe MDL2 Assets" VerticalAlignment="Center" Margin="0,0,8,0"/>

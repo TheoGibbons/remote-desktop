@@ -163,8 +163,17 @@ a paste there is expected to come from the PC.
 | `fs-begin`       | `to`, `xferId`, `name`, `size` | Sender announces an incoming file (used for both push-upload and get-response). |
 | `fs-end`         | `to`, `xferId`, `ok`, `error?` | A sender cancels its own transfer by ending it early with `ok: false`. |
 | `fs-cancel`      | `to`, `xferId` | Receiver gives up on a file it asked for with `fs-get`, before or after its `fs-begin`. The sender stops and ends it with `fs-end` `ok: false`; only the device the file is going to can cancel it. The receiver drops what has arrived at once and ignores the rest. Older senders ignore this and send the whole file, so a receiver also refuses an `fs-begin` for a download it cancelled before it began, even while it accepts pushes. |
-| `fs-saved`       | `to`, `xferId`, `path?`, `error?` | Receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Windows replies with `error` if saving fails or a known-size file is incomplete. Older peers may omit this reply; Android share-sheet sends wait for confirmation and show an unconfirmed result on timeout. |
+| `fs-saved`       | `to`, `xferId`, `path?`, `error?` | Receiver reply after saving; `path` is the actual absolute destination, including any duplicate-name suffix. Both apps reply with `error` if saving fails or a known-size file is incomplete, and at once to an `fs-begin` they refuse as a push (file access off, or the sender not approved), so the sender can stop. A sender waiting for this stops on any `error`, even mid-file. Older peers may omit this reply; Android share-sheet sends and Windows uploads wait for confirmation and treat a timeout as unconfirmed. |
 | `fs-offer`       | `to`, `files` `[{path, name, size, kind}]`, `thumb?` | A phone tells a PC about photos, videos, screenshots or screen recordings it has just saved, so the PC can offer to download them with `fs-get` on `path`. `kind` is `photo`, `video`, `screenshot` or `screen-recording`; a PC treats anything else as a plain file. `thumb` is a base64 JPEG preview of the last file, at most 256 px on its longer side, where the phone could make one. See [New captures](#new-captures). |
+
+A transfer lives on the connections it started on. When a device reconnects
+it joins under a new peer id, and the relay tells everyone its old id left, so
+a receiver drops every transfer from that id and ignores the chunks and
+`fs-end` that follow under it. Frames still queued on the old connection are
+gone too. So a sender whose relay connection drops, or whose receiver leaves,
+fails the file instead of finishing it over the next connection; it would
+otherwise look sent while nothing arrived. A Windows upload counts as sent only
+once `fs-saved` arrives, and offers a retry when it fails.
 
 ### New captures
 

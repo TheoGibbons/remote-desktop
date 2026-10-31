@@ -370,7 +370,11 @@ class FsHandler(private val context: Context) {
                 if (cancelledGets.remove(xferId)) return
                 // An unsolicited push (no matching fs-get from us) needs consent;
                 // without a registered transfer its chunks are dropped on arrival.
-                if (!peerAccessAllowed && !pendingGets.containsKey(xferId)) return
+                // Said at once, or a sender waiting to hear the file was saved waits it out.
+                if (!peerAccessAllowed && !pendingGets.containsKey(xferId)) {
+                    sendSaved(msg.optString("from"), xferId, error = deniedError)
+                    return
+                }
                 val temp = File.createTempFile("xfer", ".part", context.cacheDir)
                 val get = pendingGets.remove(xferId)
                 incoming[xferId] = Incoming(temp, FileOutputStream(temp), name, msg.optLong("size", -1L),
@@ -424,10 +428,7 @@ class FsHandler(private val context: Context) {
         if (t.size >= 0 && t.received != t.size) {
             t.temp.delete()
             val err = "Only ${t.received} of ${t.size} bytes arrived. Try again on a faster connection."
-            ConnectionManager.sendJson(
-                JSONObject().put("type", "fs-saved").put("to", msg.optString("from"))
-                    .put("xferId", xferId).put("error", err)
-            )
+            sendSaved(msg.optString("from"), xferId, error = err)
             status("Receive failed: $err")
             t.onError?.invoke(err)
             return
@@ -435,17 +436,25 @@ class FsHandler(private val context: Context) {
         try {
             val (saved, uri) = saveToDownloads(t.temp, t.name)
             t.temp.delete()
-            ConnectionManager.sendJson(
-                JSONObject().put("type", "fs-saved").put("to", msg.optString("from"))
-                    .put("xferId", xferId).put("path", saved)
-            )
+            sendSaved(msg.optString("from"), xferId, path = saved)
             status("Saved $saved")
             t.onDone?.invoke(saved)
             ReceivedFileNotification.show(context, saved, uri, xferId)
         } catch (e: Exception) {
-            status("Save failed: ${e.message}")
-            t.onError?.invoke(e.message ?: "save failed")
+            t.temp.delete()
+            val err = e.message ?: "save failed"
+            sendSaved(msg.optString("from"), xferId, error = err)
+            status("Save failed: $err")
+            t.onError?.invoke(err)
         }
+    }
+
+    /** Tells the sender where its file was saved, or why it wasn't. */
+    private fun sendSaved(to: String, xferId: Int, path: String? = null, error: String? = null) {
+        val reply = JSONObject().put("type", "fs-saved").put("to", to).put("xferId", xferId)
+        if (path != null) reply.put("path", path)
+        if (error != null) reply.put("error", error)
+        ConnectionManager.sendJson(reply)
     }
 
     /** Copies a finished temp file into the public Downloads collection.

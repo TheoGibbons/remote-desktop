@@ -158,7 +158,21 @@ class FsHandlerTest {
         fs.end(7, ok = true)
         assertTrue(saved.isEmpty())
         assertEquals(listOf("Only 3 of 5 bytes arrived. Try again on a faster connection."), errors)
+        assertEquals(errors.single(), sent("fs-saved", 7).single().getString("error"))
         assertTrue(partFiles().isEmpty())
+    }
+
+    @Test
+    fun aRefusedPushTellsItsSenderAtOnce() {
+        val fs = FsHandler(context)
+        // File access off, or a sender this phone hasn't approved.
+        fs.begin(13, size = 1, accessAllowed = false)
+        val reply = sent("fs-saved", 13).single()
+        assertEquals("pc", reply.getString("to"))
+        assertEquals("File access is disabled on the remote device", reply.getString("error"))
+        fs.chunk(13, 1)
+        fs.end(13, ok = true)
+        assertTrue("nothing is kept or answered twice", partFiles().isEmpty() && sent("fs-saved", 13).size == 1)
     }
 
     @Test

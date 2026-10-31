@@ -40,6 +40,9 @@ public partial class FileExplorerWindow : Window
     private uint _lastUploadId;
     private string? _uploadStatus;
     private string? _uploadPath;
+    // The last batch's files that didn't arrive, which Retry sends again, and why the first didn't.
+    private readonly List<string> _failedUploads = new();
+    private string? _uploadError;
     private string? _downloadsPath;
     private string _requestedPath = "";
     private bool _uploading;
@@ -682,6 +685,10 @@ public partial class FileExplorerWindow : Window
         if (_uploading) return;
         _uploading = true;
         _uploadCancelled = false;
+        // A new batch takes over from the last one's failures.
+        _failedUploads.Clear();
+        _uploadError = null;
+        RetryButton.Visibility = Visibility.Collapsed;
         UpdateCancelButton();
         var sent = 0;
         string? sentName = null;
@@ -698,7 +705,9 @@ public partial class FileExplorerWindow : Window
                 _uploadStatus = $"Sent {name}{UploadProgress}";
                 _uploadPath = null;
                 SetStatus($"Uploading {name}{UploadProgress} to Downloads...");
-                if (await _fs.SendFileAsync(_phoneId, file, xferId))
+                // Sent only once the device says it saved it: a file can go in full and still be lost.
+                var result = await _fs.SendFileAsync(_phoneId, file, xferId, awaitSaved: true);
+                if (result.State == TransferState.Done)
                 {
                     sent++;
                     sentName = name;
@@ -706,11 +715,21 @@ public partial class FileExplorerWindow : Window
                 else
                 {
                     _uploadIds.Remove(xferId);
+                    // A file cancelled in the transfers window isn't one to retry.
+                    if (result.State == TransferState.Failed)
+                    {
+                        _failedUploads.Add(file);
+                        _uploadError ??= result.Error;
+                    }
                 }
             }
             if (_uploadCancelled)
             {
                 SetStatus(sent > 0 ? $"Upload cancelled after sending {sent} of {_uploadTotal} files" : "Upload cancelled");
+            }
+            else if (_failedUploads.Count > 0)
+            {
+                ShowUploadFailure(sent);
             }
             else if (_uploadTotal == 1)
             {
@@ -727,7 +746,10 @@ public partial class FileExplorerWindow : Window
         {
             _navigateToDownloads = false;
             _downloadsNavigation = null;
-            SetStatus("Upload failed: " + ex.Message);
+            // Only finding Downloads throws, before any file has gone.
+            _failedUploads.AddRange(_uploadQueue);
+            _uploadError = ex is TimeoutException ? $"{_phoneName} didn't answer" : ex.Message;
+            ShowUploadFailure(sent);
         }
         finally
         {
@@ -737,4 +759,21 @@ public partial class FileExplorerWindow : Window
             UpdateCancelButton();
         }
     }
+
+    /// <summary>Says which files didn't arrive and why, and offers to send them again.</summary>
+    private void ShowUploadFailure(int sent)
+    {
+        var what = _failedUploads.Count == 1
+            ? $"“{System.IO.Path.GetFileName(_failedUploads[0])}”"
+            : $"{_failedUploads.Count} files";
+        var text = sent > 0
+            ? $"Sent {sent} of {_uploadTotal} files. Couldn't upload {_failedUploads.Count}: {_uploadError}"
+            : $"Couldn't upload {what}: {_uploadError}";
+        SetStatus(text);
+        StatusText.ToolTip = text; // the reason may not fit
+        RetryButton.Visibility = Visibility.Visible;
+        Toast.Show($"Couldn't upload {what} to {_phoneName}: {_uploadError}", 6000);
+    }
+
+    private async void Retry_Click(object sender, RoutedEventArgs e) => await UploadFilesAsync(_failedUploads.ToList());
 }

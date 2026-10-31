@@ -65,12 +65,15 @@ internal static class Program
             Check(!Directory.EnumerateFiles(dir, "*.part").Any(), "Failed transfers clean up temporary files");
 
             Begin(108, "denied.jpg", 1, false);
+            Check(Reply(108)["error"]?.GetValue<string>() == "File access is disabled on the remote device",
+                "A refused push tells the phone at once, so it doesn't wait to hear");
             Chunk(108, new byte[] { 1 });
             End(108);
             Check(!File.Exists(Path.Combine(dir, "denied.jpg")), "Denied file access never writes a file");
             Console.WriteLine("PASS: complete, duplicate, incomplete, cancelled, unknown-size, empty, denied and failed-save transfers");
 
             CheckCancelling(ws, fs, dir, Begin, Chunk, End);
+            CheckUploadsThatBreak(dir);
             CheckCaptureOffers(dir);
             CheckTransfersPerDevice(dir);
             CheckQueuedDownloads(dir);
@@ -99,9 +102,10 @@ internal static class Program
         // second starts while the first is under way.
         var source = Path.Combine(dir, "both.bin");
         File.WriteAllBytes(source, new byte[3 * 256 * 1024]);
-        Task<bool>? second = null;
+        Task<TransferUpdate>? second = null;
         ws.OnChunk = n => { if (n == 1) second = fs.SendFileAsync("s26", source, 401); };
-        Check(fs.SendFileAsync("s20", source, 400).GetAwaiter().GetResult() && second!.GetAwaiter().GetResult(),
+        Check(fs.SendFileAsync("s20", source, 400).GetAwaiter().GetResult().State == TransferState.Done &&
+              second!.GetAwaiter().GetResult().State == TransferState.Done,
             "Two phones can each be sent a file at once");
         ws.OnChunk = null;
         Check(ws.ChunkRecipients.Count(r => r == "s20") == 3 && ws.ChunkRecipients.Count(r => r == "s26") == 3,
@@ -145,7 +149,7 @@ internal static class Program
                 "Clearing keeps the file still on its way");
             list.Cancel(list.Rows[0]);
         };
-        Check(!fs.SendFileAsync("s26", source, 403).GetAwaiter().GetResult() &&
+        Check(fs.SendFileAsync("s26", source, 403).GetAwaiter().GetResult().State == TransferState.Cancelled &&
               Last("fs-end", 403)["error"]?.GetValue<string>() == "Cancelled by the sender", "An upload can be cancelled there too");
         ws.OnChunk = null;
         Check(list.Rows.Single().Detail == "To Galaxy S26 · Cancelled", "And it says so");
@@ -471,7 +475,8 @@ internal static class Program
         var source = Path.Combine(dir, "source.bin");
         File.WriteAllBytes(source, new byte[3 * 256 * 1024]);
         ws.OnChunk = n => Cancel(n == 1 ? "someone-else" : "phone", 301);
-        Check(!fs.SendFileAsync("phone", source, 301).GetAwaiter().GetResult(), "The phone's fs-cancel stops an upload");
+        Check(fs.SendFileAsync("phone", source, 301).GetAwaiter().GetResult().State == TransferState.Cancelled,
+            "The phone's fs-cancel stops an upload");
         Check(ws.Chunks == 2, "Only the device receiving the file can cancel it");
         Check(ws.ChunkRecipients.Count > 0 && ws.ChunkRecipients.All(r => r == "phone"),
             "File chunks are addressed to the receiving device alone");
@@ -481,7 +486,8 @@ internal static class Program
 
         ws.Chunks = 0;
         ws.OnChunk = _ => fs.Cancel(302);
-        Check(!fs.SendFileAsync("phone", source, 302).GetAwaiter().GetResult() && ws.Chunks == 1, "This PC can cancel its own upload");
+        Check(fs.SendFileAsync("phone", source, 302).GetAwaiter().GetResult().State == TransferState.Cancelled && ws.Chunks == 1,
+            "This PC can cancel its own upload");
         Check(Last("fs-end", 302)["error"]?.GetValue<string>() == "Cancelled by the sender", "The phone learns the PC cancelled");
 
         // fs-cancel right behind the request: the send starts on a worker, which
@@ -503,6 +509,105 @@ internal static class Program
         ws.OnChunk = null;
         ws.OnJson = null;
         Console.WriteLine("PASS: cancelled uploads, from either end, only by the receiving device");
+    }
+
+    // 2026-10-29: the PC reconnected halfway through a file to two phones. Both
+    // dropped the file when its old peer id left, and the PC sent the rest over
+    // the new connection and said it was uploaded.
+    private static void CheckUploadsThatBreak(string dir)
+    {
+        var ws = new WsClient();
+        var fs = new FsService(ws) { IncomingDir = dir };
+        var list = new TransferList(fs, _ => "Galaxy S20");
+        fs.TransferChanged += u => list.Apply(u);
+        var source = Path.Combine(dir, "upload.bin");
+        File.WriteAllBytes(source, new byte[3 * 256 * 1024]);
+        JsonObject Last(string type, uint id) => ws.Messages.Last(m => m["type"]?.GetValue<string>() == type &&
+            m["xferId"]?.GetValue<uint>() == id);
+        int Count(string type, uint id) => ws.Messages.Count(m => m["type"]?.GetValue<string>() == type &&
+            m["xferId"]?.GetValue<uint>() == id);
+        void Saved(uint id, string from, string? path = null, string? error = null) => fs.HandleJson(new JsonObject
+        {
+            ["type"] = "fs-saved", ["from"] = from, ["xferId"] = (long)id, ["path"] = path, ["error"] = error,
+        }, false);
+        TransferUpdate Send(uint id, bool awaitSaved = true) =>
+            fs.SendFileAsync("phone", source, id, awaitSaved).GetAwaiter().GetResult();
+
+        ws.OnChunk = n => { if (n == 1) ws.Generation++; };
+        var reconnected = Send(501);
+        Check(reconnected.State == TransferState.Failed && reconnected.Error == "The connection to the relay was lost" &&
+              ws.Chunks == 1, "An upload fails when the relay connection drops under it, rather than carrying on over the next one");
+        Check(list.Rows[0].Detail == "To Galaxy S20 · Failed: The connection to the relay was lost" && !fs.IsActive(501),
+            "And it is listed as failed");
+
+        // The socket refuses chunks while it reconnects. They used to be counted
+        // as sent after 30 s of that.
+        ws.Chunks = 0;
+        ws.OnChunk = null;
+        var refused = 0;
+        // Two chunks go, then the third is refused until the connection is replaced.
+        ws.Accept = () => ++refused < 3 || (refused > 5 && ws.Generation++ < 0);
+        Check(Send(502).Error == "The connection to the relay was lost" && ws.Chunks == 2 && refused == 6,
+            "A chunk that can't be sent is never counted as sent");
+        ws.Accept = null;
+
+        ws.Chunks = 0;
+        ws.OnChunk = n => { if (n == 1) fs.PeerLeft("phone", "Galaxy S20 went offline"); };
+        Check(Send(503).Error == "Galaxy S20 went offline" && ws.Chunks == 1, "An upload fails when its phone leaves");
+        ws.OnChunk = null;
+
+        ws.IsConnected = false;
+        Check(Send(504).Error == "Not connected to the relay", "An upload can't start while the relay is away");
+        ws.IsConnected = true;
+
+        // The phone saves it: only then is it sent. Another device can't say so for it.
+        ws.OnJson = m =>
+        {
+            if (m["type"]?.GetValue<string>() != "fs-end" || m["xferId"]?.GetValue<uint>() != 505) return;
+            Check(fs.IsActive(505) && list.Rows[0].State == TransferState.Running, "Sent in full isn't done yet");
+            Saved(505, "someone-else", path: "/elsewhere");
+            Check(fs.IsActive(505), "Only the device the file went to can confirm it");
+            Saved(505, "phone", path: "/storage/emulated/0/Download/upload.bin");
+        };
+        Check(Send(505).State == TransferState.Done && list.Rows[0].Detail == "To Galaxy S20 · Sent, 768.0 KB",
+            "An upload is sent once its phone says it saved it");
+
+        // The PC drops after the last byte, before the phone's answer.
+        ws.OnJson = m =>
+        {
+            if (m["type"]?.GetValue<string>() == "fs-end" && m["xferId"]?.GetValue<uint>() == 506)
+                fs.PeerLeft(null, "The connection to the relay was lost");
+        };
+        var unconfirmed = Send(506);
+        Check(unconfirmed.State == TransferState.Failed &&
+              unconfirmed.Error == "The connection to the relay was lost before the file was confirmed saved" &&
+              Count("fs-end", 506) == 1 && Last("fs-end", 506)["ok"]?.GetValue<bool>() == true,
+            "Losing the answer fails the upload without taking back the fs-end");
+
+        // A phone that refuses a push says so as it begins.
+        ws.Chunks = 0;
+        ws.OnJson = m =>
+        {
+            if (m["type"]?.GetValue<string>() == "fs-begin" && m["xferId"]?.GetValue<uint>() == 507)
+                Saved(507, "phone", error: "File access is disabled on the remote device");
+        };
+        var denied = Send(507);
+        Check(denied.Error == "File access is disabled on the remote device" && ws.Chunks == 0 &&
+              Last("fs-end", 507)["ok"]?.GetValue<bool>() == false, "A refused upload stops at once and says why");
+
+        // The phone couldn't save it.
+        ws.OnJson = m =>
+        {
+            if (m["type"]?.GetValue<string>() == "fs-end" && m["xferId"]?.GetValue<uint>() == 508)
+                Saved(508, "phone", error: "Only 3 of 5 bytes arrived. Try again on a faster connection.");
+        };
+        Check(Send(508).Error == "Only 3 of 5 bytes arrived. Try again on a faster connection.",
+            "The phone's reason for not saving an upload is what the PC shows");
+        ws.OnJson = null;
+
+        // fs-get replies don't wait: the device that asked for the file decides what became of it.
+        Check(Send(509, awaitSaved: false).State == TransferState.Done && !fs.IsActive(509), "A file asked for is done once sent");
+        Console.WriteLine("PASS: uploads fail when the relay or phone goes, and are only sent once the phone saves them");
     }
 
     // Same listing and expectations as the Android FileExplorerActivityTest.
@@ -580,6 +685,9 @@ public sealed class WsClient
     public int Chunks;
     public Action<int>? OnChunk; // with the number of chunks sent so far
     public Action<JsonObject>? OnJson;
+    public Func<bool>? Accept; // whether the socket has room for the next chunk
+    public int Generation;
+    public bool IsConnected = true;
 
     public void SendJson(JsonObject message)
     {
@@ -591,8 +699,11 @@ public sealed class WsClient
 
     public bool SendBinary(byte channel, byte[] payload, IReadOnlyCollection<string>? to = null)
     {
+        if (Accept?.Invoke() == false) return false;
         lock (ChunkRecipients) ChunkRecipients.Add(to == null ? "everyone" : string.Join(",", to));
-        OnChunk?.Invoke(Interlocked.Increment(ref Chunks));
+        // Counted before the callback, which `?.` would skip along with its argument.
+        var sent = Interlocked.Increment(ref Chunks);
+        OnChunk?.Invoke(sent);
         return true;
     }
 }
