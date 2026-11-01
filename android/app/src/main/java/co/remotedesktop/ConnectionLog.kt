@@ -2,16 +2,18 @@ package co.remotedesktop
 
 import android.content.Context
 import android.net.NetworkCapabilities
-import android.util.AtomicFile
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.EOFException
 import java.io.File
+import java.io.FileOutputStream
 import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -60,7 +62,7 @@ object ConnectionLog {
     private const val FILE_NAME = "connection-log.json"
 
     private val entries = ArrayList<Entry>() // oldest first
-    private var file: AtomicFile? = null
+    private var file: File? = null
 
     /** Invoked on the main thread after each change. */
     val listeners = CopyOnWriteArrayList<() -> Unit>()
@@ -71,8 +73,8 @@ object ConnectionLog {
     fun init(context: Context, post: (() -> Unit) -> Unit = { it() }) {
         postToMain = post
         val path = File(context.filesDir, FILE_NAME)
-        if (file?.baseFile == path) return
-        file = AtomicFile(path)
+        if (file == path) return
+        file = path
         entries.clear()
         entries.addAll(load())
     }
@@ -198,21 +200,23 @@ object ConnectionLog {
                 if (e.count != 1) { put("count", e.count); put("until", e.untilMs) }
             })
         }
-        var out: java.io.FileOutputStream? = null
+        val next = File(f.path + ".new")
         try {
-            out = f.startWrite()
-            out.write(arr.toString().toByteArray())
-            f.finishWrite(out)
+            FileOutputStream(next).use { out ->
+                out.write(arr.toString().toByteArray())
+                out.fd.sync()
+            }
+            // One step, so a crash mid-save never leaves half a history.
+            Files.move(next.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         } catch (e: Exception) {
-            out?.let { f.failWrite(it) }
             Log.w("ConnectionLog", "Couldn't save the connection history", e)
         }
     }
 
     private fun load(): List<Entry> {
-        val f = file ?: return emptyList()
+        val f = file?.takeIf { it.exists() } ?: return emptyList()
         return try {
-            val arr = JSONArray(String(f.readFully()))
+            val arr = JSONArray(f.readText())
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.getJSONObject(i)
                 val kind = Kind.entries.firstOrNull { it.name == o.optString("kind") } ?: return@mapNotNull null
@@ -221,8 +225,6 @@ object ConnectionLog {
                     o.optString("network").ifEmpty { null }, o.optLong("duration"),
                     o.optInt("count", 1), o.optLong("until", at))
             }
-        } catch (_: java.io.FileNotFoundException) {
-            emptyList()
         } catch (e: Exception) {
             Log.w("ConnectionLog", "Couldn't read the connection history", e)
             emptyList()

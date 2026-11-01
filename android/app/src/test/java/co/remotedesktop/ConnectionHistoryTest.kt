@@ -85,14 +85,16 @@ class ConnectionHistoryTest {
                 again.read()
                 again.sendText(welcome)
                 waitFor { ConnectionManager.state == "connected" }
+                // Checked while the socket is open: closing it is the next drop.
+                val back = ConnectionLog.entries().first()
+                assertEquals(ConnectionLog.Kind.CONNECTED, back.kind)
+                // The retry waited out the first 2 s backoff.
+                assertTrue("${back.durationMs}", back.durationMs >= 2_000)
+                assertTrue(ConnectionLog.title(back).startsWith("Connected after "))
+                assertNull(ConnectionLog.currentProblem())
+                assertEquals(lost, ConnectionLog.lastDrop())
+                ConnectionManager.stop()
             }
-            val back = ConnectionLog.entries().first()
-            assertEquals(ConnectionLog.Kind.CONNECTED, back.kind)
-            // The retry waited out the first 2 s backoff.
-            assertTrue("${back.durationMs}", back.durationMs >= 2_000)
-            assertTrue(ConnectionLog.title(back).startsWith("Connected after "))
-            assertNull(ConnectionLog.currentProblem())
-            assertEquals(lost, ConnectionLog.lastDrop())
         }
     }
 
@@ -171,7 +173,8 @@ class ConnectionHistoryTest {
         ConnectionLog::class.java.getDeclaredField("file").apply { isAccessible = true }.set(ConnectionLog, null)
         ConnectionLog.init(context)
         val loaded = ConnectionLog.entries()
-        assertEquals(ConnectionLog.MAX_ENTRIES, loaded.size)
+        val saved = context.filesDir.listFiles()?.joinToString { "${it.name} (${it.length()} bytes)" }
+        assertEquals("files: $saved", ConnectionLog.MAX_ENTRIES, loaded.size)
         assertEquals(ConnectionLog.Entry(ConnectionLog.Kind.FAILED, 1_000, "Couldn't reach the relay",
             "ConnectException: refused again", "Wi-Fi", count = 2, untilMs = 2_000), loaded.first())
         // The oldest fell off the end.
