@@ -133,6 +133,28 @@ jobs:
           Move-Item android/app/build/outputs/apk/release/app-release.apk dist/RemoteDesktop-Android.apk
           Move-Item android/app/build/outputs/bundle/release/app-release.aab dist/RemoteDesktop-Android.aab
 
+      - name: Name failed Android tests
+        if: failure()
+        shell: pwsh
+        run: |
+          # Job logs need a GitHub login; annotations can be read without one.
+          Get-ChildItem android/app/build/test-results -Recurse -Filter 'TEST-*.xml' -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              [xml]$suite = Get-Content -Raw -LiteralPath $_.FullName
+              foreach ($case in $suite.testsuite.testcase) {
+                $problem = if ($case.failure) { $case.failure } else { $case.error }
+                if (-not $problem) { continue }
+                $file = ($case.classname -split '\.')[-1] + '.kt'
+                # Every line of the test file in the trace: a helper's and its caller's.
+                $where = ([regex]::Matches($problem.InnerText, "\($([regex]::Escape($file)):\d+\)") |
+                  ForEach-Object Value) -join ' '
+                $text = "$($problem.message) $where" -replace '\s+', ' '
+                if ($text.Length -gt 400) { $text = $text.Substring(0, 400) }
+                $text = $text -replace '%', '%25'
+                "::error title=$($case.classname).$($case.name)::$text"
+              }
+            }
+
       - name: Verify Android signature
         shell: pwsh
         run: |
