@@ -106,4 +106,12 @@
     <string name="offer_captures">Offer new photos to PCs</string>
     <string name="offer_captures_description">Photos, videos and screenshots you take pop up on your PCs, ready to download</string>
     <string name="offer_captures_needs_files">Needs Browse and transfer files</string>
+    <string name="connection_history">Connection history</string>
+    <string name="connection_history_intro">Each time this phone connected to the relay, lost the connection or changed network, newest first, in this phone\'s time. Copy it to share when the connection keeps dropping.</string>
+    <string name="connection_history_empty">Nothing recorded yet</string>
+    <string name="connection_history_copy">Copy</string>
+    <string name="connection_history_copied">Connection history copied</string>
+    <string name="connection_history_no_drops">No drops recorded</string>
+    <string name="connection_history_last_drop">Last drop %1$s: %2$s</string>
+    <string name="viewer_reconnecting">Connection lost. Reconnecting…</string>
 </resources>

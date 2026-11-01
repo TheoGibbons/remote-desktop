@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
+import android.text.format.DateUtils
 import android.view.View
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -15,6 +16,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var deviceNameValue: TextView
     private lateinit var serverUrlValue: TextView
     private lateinit var autoPrivacyValue: TextView
+    private lateinit var connectionHistoryValue: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,6 +52,11 @@ class SettingsActivity : AppCompatActivity() {
             }
         }
 
+        connectionHistoryValue = findViewById(R.id.connectionHistoryValue)
+        findViewById<View>(R.id.connectionHistoryRow).setOnClickListener {
+            startActivity(Intent(this, ConnectionHistoryActivity::class.java))
+        }
+
         findViewById<View>(R.id.pairedDevicesRow).setOnClickListener {
             startActivity(Intent(this, DevicesActivity::class.java))
         }
@@ -73,6 +80,11 @@ class SettingsActivity : AppCompatActivity() {
     private fun refresh() {
         deviceNameValue.text = prefs.deviceName
         serverUrlValue.text = prefs.serverUrl
+        connectionHistoryValue.text = ConnectionLog.lastDrop()?.let {
+            val day = if (DateUtils.isToday(it.atMs)) 0 else DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_ABBREV_MONTH
+            getString(R.string.connection_history_last_drop,
+                DateUtils.formatDateTime(this, it.atMs, DateUtils.FORMAT_SHOW_TIME or day), it.reason)
+        } ?: getString(R.string.connection_history_no_drops)
         autoPrivacyValue.text = getString(when {
             prefs.rememberPrivacy -> R.string.auto_privacy_remembered
             prefs.autoPrivacy && prefs.autoUnprivacy -> R.string.auto_privacy_both

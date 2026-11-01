@@ -1,6 +1,9 @@
 package co.remotedesktop
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -35,8 +38,12 @@ object ConnectionManager {
         val failures: Long,
     )
 
+    /** OkHttp pings the relay this often and gives up when the previous ping
+     *  is still unanswered, so a silently dead link costs 20-40 s. */
+    const val PING_INTERVAL_S = 20L
+
     private val client = OkHttpClient.Builder()
-        .pingInterval(20, TimeUnit.SECONDS)
+        .pingInterval(PING_INTERVAL_S, TimeUnit.SECONDS)
         .build()
 
     private val main = Handler(Looper.getMainLooper())
@@ -53,6 +60,17 @@ object ConnectionManager {
     private val connectionFailures = AtomicLong()
     @Volatile private var connectedAtMs = 0L
     @Volatile private var lastReceiveAtMs = 0L
+
+    // For the connection history (ConnectionLog).
+    /** The socket the relay admitted (welcome), so its end counts as a drop, not a failed try. */
+    @Volatile private var admittedSocket: WebSocket? = null
+    /** When the phone went offline (elapsed realtime), until it is admitted again. */
+    @Volatile private var offlineSinceMs = 0L
+    /** The relay's reason for refusing the socket it is about to close. */
+    @Volatile private var refusal: String? = null
+    private var loggedProcessStart = false
+    private var networkWatch: ConnectivityManager? = null
+    private var networkName: String? = null
 
     // Derived from the session key; the raw key never leaves the device.
     private var encKey: ByteArray = ByteArray(0)
@@ -90,6 +108,7 @@ object ConnectionManager {
     fun init(context: Context) {
         if (!::appContext.isInitialized) {
             appContext = context.applicationContext
+            ConnectionLog.init(appContext) { main.post(it) }
             fs = FsHandler(appContext)
             PeerAuth.init(appContext)
             PhoneScreenCapture.init(appContext)
@@ -112,11 +131,21 @@ object ConnectionManager {
         PeerAuth.onSessionStart(pid) // wipes the trust store if the key changed
         enabled = true
         backoffMs = 2000L
+        // A gap before this line in the history means Android stopped the app.
+        if (!loggedProcessStart) {
+            loggedProcessStart = true
+            record(ConnectionLog.Kind.STARTED)
+        }
+        watchNetwork()
         CaptureOffers.start(appContext)
         connect()
     }
 
     fun stop() {
+        if (enabled) record(ConnectionLog.Kind.STOPPED)
+        unwatchNetwork()
+        offlineSinceMs = 0L
+        admittedSocket = null
         PhoneScreenCapture.onViewStopped()
         CaptureOffers.stop()
         enabled = false
@@ -163,6 +192,7 @@ object ConnectionManager {
         retryScheduled = false
         if (!enabled) return
         connectionAttempts.incrementAndGet()
+        refusal = null
         val prefs = Prefs(appContext)
         var url = prefs.serverUrl.trim()
 
@@ -186,8 +216,17 @@ object ConnectionManager {
         }
     }
 
-    private fun scheduleReconnect(socket: WebSocket) {
+    private fun scheduleReconnect(socket: WebSocket, reason: String, detail: String?) {
         if (!enabled || socket !== ws) return
+        val now = SystemClock.elapsedRealtime()
+        if (admittedSocket === socket) {
+            admittedSocket = null
+            record(ConnectionLog.Kind.LOST, reason, detail, durationMs = now - connectedAtMs)
+            offlineSinceMs = now
+        } else {
+            record(ConnectionLog.Kind.FAILED, reason, detail)
+            if (offlineSinceMs == 0L) offlineSinceMs = now
+        }
         PhoneScreenCapture.onViewStopped()
         peers.clear()
         PeerAuth.resetConnection()
@@ -203,6 +242,75 @@ object ConnectionManager {
     private fun setState(s: String) {
         state = s
         main.post { stateListeners.forEach { it(s) } }
+    }
+
+    private fun record(kind: ConnectionLog.Kind, reason: String? = null, detail: String? = null, durationMs: Long = 0) =
+        ConnectionLog.add(ConnectionLog.Entry(kind, System.currentTimeMillis(), reason, detail,
+            currentNetwork(), durationMs))
+
+    private fun currentNetwork(): String? {
+        if (!::appContext.isInitialized) return null
+        return try {
+            val cm = appContext.getSystemService(ConnectivityManager::class.java) ?: return null
+            cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }?.let(ConnectionLog::describe) ?: "No network"
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // Callbacks arrive on the main thread, like the scheduled retry.
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            val caps = try { networkWatch?.getNetworkCapabilities(network) } catch (e: Exception) { null }
+            noteNetwork(caps?.let(ConnectionLog::describe))
+            retrySoon()
+        }
+
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            // Also called as the signal changes; only a different network counts,
+            // e.g. a VPN moving from Wi-Fi to mobile data.
+            if (noteNetwork(ConnectionLog.describe(caps))) retrySoon()
+        }
+
+        override fun onLost(network: Network) {
+            noteNetwork("No network")
+        }
+    }
+
+    private fun watchNetwork() {
+        if (networkWatch != null) return
+        val cm = appContext.getSystemService(ConnectivityManager::class.java) ?: return
+        try {
+            cm.registerDefaultNetworkCallback(networkCallback, main)
+            networkWatch = cm
+        } catch (e: Exception) {
+            Log.w("ConnectionManager", "Can't watch the network", e)
+        }
+    }
+
+    private fun unwatchNetwork() {
+        try { networkWatch?.unregisterNetworkCallback(networkCallback) } catch (_: Exception) {}
+        networkWatch = null
+        networkName = null
+    }
+
+    /** Records a change of network in the history. True if the phone moved
+     *  to a different one; the first report is just where it already is. */
+    private fun noteNetwork(name: String?): Boolean {
+        if (name == null || name == networkName) return false
+        val previous = networkName
+        networkName = name
+        if (previous == null) return false
+        ConnectionLog.add(ConnectionLog.Entry(ConnectionLog.Kind.NETWORK, System.currentTimeMillis(),
+            reason = name, detail = "was $previous"))
+        return true
+    }
+
+    /** A network came up: retry now instead of waiting out a backoff of up to 30 s. */
+    private fun retrySoon() {
+        if (!enabled) return
+        backoffMs = 2000L
+        reconnectNow()
     }
 
     /** Send a control message, encrypted end-to-end (the relay sees only the
@@ -278,6 +386,7 @@ object ConnectionManager {
                 inner.put("from", msg.optString("from"))
                 handleJson(inner)
             } else {
+                if (msg.optString("type") == "welcome") admittedSocket = webSocket
                 handleJson(msg) // cleartext server messages (welcome / peer-* / error)
             }
         }
@@ -307,7 +416,7 @@ object ConnectionManager {
             response?.let {
                 Log.e("ConnectionManager", "Response code: ${it.code}, message: ${it.message}")
             }
-            scheduleReconnect(webSocket)
+            scheduleReconnect(webSocket, ConnectionLog.reasonFor(t, response?.code), ConnectionLog.detailFor(t))
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -319,7 +428,9 @@ object ConnectionManager {
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             Log.d("ConnectionManager", "WebSocket closed: $code / $reason")
-            scheduleReconnect(webSocket)
+            scheduleReconnect(webSocket,
+                refusal?.let { "Refused by the relay: $it" } ?: "The relay closed the connection",
+                "Close code $code" + if (reason.isNotEmpty()) " ($reason)" else "")
         }
     }
 
@@ -331,6 +442,9 @@ object ConnectionManager {
                 myId = msg.optString("id")
                 relayAddressesBinary = msg.optBoolean("binaryTo", false)
                 connectedAtMs = SystemClock.elapsedRealtime()
+                record(ConnectionLog.Kind.CONNECTED,
+                    durationMs = if (offlineSinceMs > 0) connectedAtMs - offlineSinceMs else 0)
+                offlineSinceMs = 0L
                 backoffMs = 2000L
                 peers.clear()
                 PeerAuth.resetConnection() // new connection, stale peer ids
@@ -370,6 +484,7 @@ object ConnectionManager {
                 // The relay is refusing this connection and closes it next. A ban
                 // says how long it lasts (retryAfter, in seconds).
                 val retryAfterS = msg.optLong("retryAfter")
+                refusal = msg.optString("message").ifEmpty { msg.optString("code") }
                 if (retryAfterS > 0) {
                     blockedUntilMs = System.currentTimeMillis() + retryAfterS * 1000
                     setState("blocked")

@@ -30,7 +30,7 @@ import java.util.Date
 
 /** Just enough of a WebSocket server (RFC 6455) to answer the app the way
  *  server.js does, e.g. refusing it with an `error` message and a close frame. */
-private class FakeRelay : Closeable {
+internal class FakeRelay : Closeable {
     private val server = ServerSocket(0, 10, InetAddress.getLoopbackAddress())
     val url = "ws://127.0.0.1:${server.localPort}/ws"
 

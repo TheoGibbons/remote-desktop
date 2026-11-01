@@ -104,11 +104,24 @@ downloads, chat apps and archives kept deeper in `DCIM` never pop up. A capture
 taken while no PC is online is not offered later.
 
 **Reconnecting.** The app reconnects on its own, waiting longer after each
-failure (up to 30 seconds). While it isn't connected, the refresh button on the
-connection-status card tries again immediately. If the relay refuses the
-connection, the card shows its reason. After too many session keys are tried
-from one network, the relay blocks that network for an hour, and the card says
-**Blocked until** and the time.
+failure (up to 30 seconds), and tries again at once when a network comes up or
+the phone moves to a different one (Wi-Fi, mobile data, or a VPN switching
+between them). While it isn't connected, the connection-status card says why
+(for example "No reply to a ping within 20 s"), and its refresh button tries
+again immediately. If the relay refuses the connection, the card shows the
+relay's reason. After too many session keys are tried from one network, the
+relay blocks that network for an hour, and the card says **Blocked until** and
+the time. A viewer that loses the connection shows **Reconnecting…** over the
+last picture and resumes once the PC approves the new connection; if the PC is
+gone when the phone gets back, the viewer closes.
+
+**Connection history.** **⋮ → Settings → Connection history** lists, newest
+first, each time this phone connected, lost the connection, failed to connect
+or changed network, with its own reason, how long the connection had lasted
+and the network it was on. "App started" after a gap means Android stopped the
+app. The history survives restarts (the last 200 entries). **Copy** puts it on
+the clipboard with UTC times, to line up with the relay's log (`[leave]`
+reasons, see `server/README.md`).
 
 **Approving devices.** The first time a device connects it must be approved on
 the **Devices** screen (tap the connection-status card; a dialog appears, or a

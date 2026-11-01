@@ -34,6 +34,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -56,6 +57,9 @@ class ViewerActivity : AppCompatActivity() {
     private lateinit var screen: RemoteScreenView
     // Over the empty screen while the PC hasn't approved this phone.
     private lateinit var approvalNotice: TextView
+    // Over the frozen picture while this phone is off the relay.
+    private lateinit var reconnectNotice: View
+    private lateinit var reconnectReason: TextView
     private lateinit var keyboard: KeyboardPanel
     private lateinit var imeCatcher: EditText
     private lateinit var root: FrameLayout
@@ -87,6 +91,7 @@ class ViewerActivity : AppCompatActivity() {
                 Toast.makeText(this, R.string.clip_connection_lost, Toast.LENGTH_LONG).show()
             }
         }
+        updateReconnectNotice()
     }
     private lateinit var copyButton: Button
     private lateinit var pasteButton: Button
@@ -494,10 +499,7 @@ class ViewerActivity : AppCompatActivity() {
     }
 
     private val jsonListener: (JSONObject) -> Unit = { msg ->
-        if (msg.optString("type") == "peer-left" && msg.optString("id") == winId) {
-            Toast.makeText(this, "Desktop disconnected", Toast.LENGTH_SHORT).show()
-            finish()
-        }
+        if (msg.optString("type") == "peer-left" && msg.optString("id") == winId) desktopGone()
         if (msg.optString("type") == "auth-result" && msg.optString("from") == winId) {
             updateApprovalNotice()
             when (msg.optString("status")) {
@@ -659,6 +661,11 @@ class ViewerActivity : AppCompatActivity() {
         }
         root.addView(approvalNotice, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+
+        // Also not clickable: the toolbar above it keeps working, so Close does.
+        reconnectNotice = buildReconnectNotice()
+        root.addView(reconnectNotice, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         // Keyboard panel (hidden until toggled).
         keyboard = KeyboardPanel(this).apply {
@@ -1369,8 +1376,63 @@ class ViewerActivity : AppCompatActivity() {
         ConnectionManager.jsonListeners.add(jsonListener)
         ConnectionManager.stateListeners.add(stateListener)
         updateApprovalNotice()
+        updateReconnectNotice()
         startViewer()
         send(JSONObject().put("type", "get-privacy-state"))
+    }
+
+    private fun buildReconnectNotice(): View {
+        val density = resources.displayMetrics.density
+        reconnectReason = TextView(this).apply {
+            gravity = Gravity.CENTER
+            setTextColor(0xCCFFFFFF.toInt())
+            textSize = 14f
+            setPadding(0, (6 * density).toInt(), 0, 0)
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            setBackgroundColor(0x99000000.toInt())
+            val pad = (24 * density).toInt()
+            setPadding(pad, pad, pad, pad)
+            addView(ProgressBar(this@ViewerActivity).apply {
+                indeterminateTintList = ColorStateList.valueOf(Color.WHITE)
+            }, LinearLayout.LayoutParams((36 * density).toInt(), (36 * density).toInt()))
+            addView(TextView(this@ViewerActivity).apply {
+                gravity = Gravity.CENTER
+                setText(R.string.viewer_reconnecting)
+                setTextColor(Color.WHITE)
+                textSize = 16f
+                setPadding(0, (12 * density).toInt(), 0, 0)
+                accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            })
+            addView(reconnectReason)
+        }
+    }
+
+    /** Shown while this phone is off the relay, instead of a picture that just
+     *  stops. The stream resumes by itself: the PC approves the new connection
+     *  and its auth-result restarts the viewer. */
+    private fun updateReconnectNotice() {
+        if (!::reconnectNotice.isInitialized || isFinishing) return
+        val connected = ConnectionManager.state == "connected"
+        // Back on the relay without the PC: it dropped too, so it will never
+        // stream to this viewer again.
+        if (connected && ConnectionManager.peers.none { it.id == winId }) {
+            desktopGone()
+            return
+        }
+        reconnectNotice.visibility = if (connected) View.GONE else View.VISIBLE
+        val reason = if (connected) null else ConnectionLog.currentProblem()?.reason
+        reconnectReason.text = reason
+        reconnectReason.visibility = if (reason == null) View.GONE else View.VISIBLE
+    }
+
+    private fun desktopGone() {
+        if (isFinishing) return
+        Toast.makeText(this, "Desktop disconnected", Toast.LENGTH_SHORT).show()
+        finish()
     }
 
     /** The PC ignores start-view until it approves this phone, which then

@@ -142,10 +142,14 @@ class MainActivity : AppCompatActivity() {
             android.view.View.VISIBLE else android.view.View.GONE
 
         val peers = ConnectionManager.peers
+        val problem = ConnectionLog.currentProblem()?.reason
         val subtitle = when {
             // Why the relay refused, e.g. "session key must be at least 16 characters".
             state == "blocked" -> "Too many join attempts from this network. Retrying automatically."
             state.startsWith("error: ") -> state.removePrefix("error: ").replaceFirstChar { it.uppercase() }
+            // This phone's own reason, e.g. "No reply to a ping within 20 s".
+            problem != null && (state == "connecting" || state.startsWith("disconnected: retrying")) ->
+                "$problem. Retrying automatically."
             peers.isEmpty() -> "No paired devices online"
             // Each device online gets its own row instead.
             else -> null
