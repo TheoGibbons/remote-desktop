@@ -57,7 +57,8 @@ class RemoteScreenView @JvmOverloads constructor(
     var onMouseButton: ((button: String, action: String, Double, Double) -> Unit)? = null
     var onWheel: ((Double, Double) -> Unit)? = null
 
-    private var bitmap: Bitmap? = null
+    // Volatile: keepStale reads it from the network thread.
+    @Volatile private var bitmap: Bitmap? = null
     // Which desktop rectangle `bitmap` covers. Replaced wholesale rather than
     // mutated: it is written on the network thread and read while drawing.
     @Volatile private var frameRect: Rect = Rect()
@@ -77,6 +78,22 @@ class RemoteScreenView @JvmOverloads constructor(
     private val videoMatrix = Matrix()
     private val videoValues = FloatArray(9)
     private val lastVideoValues = FloatArray(9)
+    // Counts frames placed on the surface, so a region request with nothing
+    // new on screen since the last one does not read the surface back again.
+    private var videoFrameSerial = 0L
+    private var capturedVideoSerial = -1L
+
+    // The desktop as last seen, drawn dimmed wherever the live frame is not.
+    // Under video it needs its own layer beneath the surface; see onDraw.
+    private val backdrop = StaleBackdrop(onChanged = {
+        invalidate()
+        backdropLayer?.invalidate()
+    })
+    private var backdropLayer: StaleBackdropLayer? = null
+    private var backdropEnabled = true
+    private var backdropLayerShowing = false
+    private val backdropValues = FloatArray(9)
+    private val lastBackdropValues = FloatArray(9)
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private var fitScale = 1f
     private var matrixInitialized = false
@@ -123,6 +140,8 @@ class RemoteScreenView @JvmOverloads constructor(
         val prevH = deskH
         deskW = w
         deskH = h
+        // Even a pure rescale moves everything the old pixels showed.
+        resetBackdrop()
         if (cursorX < 0) {
             cursorX = deskW / 2f
             cursorY = deskH / 2f
@@ -199,6 +218,48 @@ class RemoteScreenView @JvmOverloads constructor(
     }
 
     /**
+     * The "Show last-seen areas" setting. Off frees everything the backdrop
+     * holds and stops it copying frames, so it costs nothing at all; on starts
+     * from an empty backdrop rather than from what was seen before it was off.
+     */
+    fun setStaleBackdropEnabled(enabled: Boolean) {
+        if (enabled == backdropEnabled) return
+        backdropEnabled = enabled
+        resetBackdrop()
+        invalidate()
+    }
+
+    // A 0x0 desktop is how the backdrop is told to hold nothing.
+    private fun resetBackdrop() =
+        if (backdropEnabled) backdrop.reset(deskW, deskH) else backdrop.reset(0, 0)
+
+    /** A layer beneath the video surface, where this view draws the stale backdrop in video mode. */
+    fun attachBackdropLayer(layer: StaleBackdropLayer?) {
+        backdropLayer?.show(null, null)
+        backdropLayer = layer
+        backdropLayerShowing = false
+        invalidate()
+    }
+
+    /**
+     * The tile canvas [bmp] is about to start describing somewhere other than
+     * [rect]: keep what it shows there now, for when the user pans back.
+     * Called on the thread that composes it, before it changes, so the pixels
+     * and the rectangle agree. Ignored unless [bmp] is what is on screen — after
+     * a switch from video, the tile canvas is older than the video was.
+     */
+    fun keepStale(bmp: Bitmap, rect: Rect) {
+        if (bmp !== bitmap || bmp.isRecycled || !backdrop.wantsFrame()) return
+        val copy = try {
+            bmp.copy(Bitmap.Config.ARGB_8888, false)
+        } catch (_: OutOfMemoryError) {
+            null
+        } ?: return
+        val r = Rect(rect)
+        post { backdrop.merge(copy, r) }
+    }
+
+    /**
      * A decoded video frame is on the surface, covering [srcRect] of the
      * desktop. No pixels pass through here — only the geometry needed to place
      * the surface and to keep input mapped to the right desktop coordinates.
@@ -209,6 +270,7 @@ class RemoteScreenView @JvmOverloads constructor(
         videoH = frameH
         bitmap = null // the tile path is not what is on screen any more
         frameRect = Rect(srcRect)
+        videoFrameSerial++
         if (deskW == 0 || deskH == 0) setDesktopSize(srcRect.right, srcRect.bottom)
         if (cursorX < 0) {
             cursorX = deskW / 2f
@@ -421,12 +483,44 @@ class RemoteScreenView @JvmOverloads constructor(
         // One image pixel per screen pixel is the most this display can use.
         val outW = (r.width() * scale).toInt().coerceIn(16, r.width().toInt().coerceAtLeast(16))
         val outH = (r.height() * scale).toInt().coerceIn(16, r.height().toInt().coerceAtLeast(16))
+        captureVideoBackdrop()
         cb(
             r.left / deskW.toDouble(), r.top / deskH.toDouble(),
             r.width() / deskW.toDouble(), r.height() / deskH.toDouble(),
             outW, outH,
         )
         lastRequestScale = scale
+    }
+
+    /**
+     * About to ask the host for a different region: keep what the video shows
+     * of the current one, so it comes back dimmed rather than black when the
+     * user pans back. The frame only exists on the GPU, so this reads it back —
+     * once per region request, never per frame, and nothing on the stream
+     * changes. The tile path keeps its own frames as it composes them
+     * (see [keepStale]).
+     */
+    private fun captureVideoBackdrop() {
+        val tv = videoView ?: return
+        if (videoW <= 0 || videoFrameSerial == capturedVideoSerial || !backdrop.wantsFrame()) return
+        if (!tv.isAvailable) return
+        val before = frameRect
+        val frame = try {
+            tv.getBitmap(videoW, videoH)
+        } catch (_: RuntimeException) {
+            null
+        } catch (_: OutOfMemoryError) {
+            null
+        } ?: return
+        // Reading the surface back can latch a newer frame, and that may be the
+        // first one of a region asked for earlier: the pixels would then not be
+        // of the rectangle we are about to file them under.
+        if (frameRect != before || videoW != frame.width || videoH != frame.height) {
+            frame.recycle()
+            return
+        }
+        capturedVideoSerial = videoFrameSerial
+        backdrop.merge(frame, before)
     }
 
     private fun currentScale(): Float {
@@ -558,14 +652,19 @@ class RemoteScreenView @JvmOverloads constructor(
         if (videoW > 0 && tv != null) {
             // The frame is on the surface below; this view only overlays. The
             // letterbox around it is the parent's background, so painting
-            // black here would hide the video entirely.
+            // black here would hide the video entirely. The stale backdrop has
+            // to go under the surface too, so it is drawn by a layer there,
+            // placed in step with the surface.
             syncVideoTransform(tv, src)
+            syncBackdropLayer(active = true)
             drawDirtyHighlights(canvas)
             drawCursor(canvas)
             return
         }
 
+        syncBackdropLayer(active = false)
         canvas.drawColor(Color.BLACK)
+        backdrop.draw(canvas, matrix, width, height)
         val bmp = bitmap
         if (bmp != null && !bmp.isRecycled && src.width() > 0 && src.height() > 0) {
             // matrix is desktop -> view, so compose the frame's own
@@ -596,6 +695,28 @@ class RemoteScreenView @JvmOverloads constructor(
         videoValues.copyInto(lastVideoValues)
         tv.setTransform(videoMatrix)
         tv.invalidate()
+    }
+
+    /**
+     * Point the layer under the video at the current pan/zoom. Done from
+     * onDraw like [syncVideoTransform], so the backdrop and the video move on
+     * the same frame and their shared edge stays put. Tile mode draws the
+     * backdrop here instead, and the layer would only be painted over.
+     */
+    private fun syncBackdropLayer(active: Boolean) {
+        val layer = backdropLayer ?: return
+        if (!active) {
+            if (backdropLayerShowing) {
+                backdropLayerShowing = false
+                layer.show(null, null)
+            }
+            return
+        }
+        matrix.getValues(backdropValues)
+        if (backdropLayerShowing && backdropValues.contentEquals(lastBackdropValues)) return
+        backdropValues.copyInto(lastBackdropValues)
+        backdropLayerShowing = true
+        layer.show(backdrop, matrix)
     }
 
     private fun addDirtyHighlights(rects: List<Rect>) {

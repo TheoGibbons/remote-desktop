@@ -9,6 +9,7 @@ import android.view.View
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
+import com.google.android.material.materialswitch.MaterialSwitch
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -50,6 +51,12 @@ class SettingsActivity : AppCompatActivity() {
                 refresh()
                 if (prefs.sessionKey.isNotEmpty()) Ui.reconnect(this)
             }
+        }
+
+        findViewById<MaterialSwitch>(R.id.showLastSeenAreasSwitch).apply {
+            isChecked = prefs.showLastSeenAreas
+            // An open viewer picks this up when it resumes.
+            setOnCheckedChangeListener { _, v -> prefs.showLastSeenAreas = v }
         }
 
         connectionHistoryValue = findViewById(R.id.connectionHistoryValue)

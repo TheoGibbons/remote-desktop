@@ -130,6 +130,9 @@ class ViewerActivity : AppCompatActivity() {
     private var compose: Bitmap? = null
     private var composeCanvas: android.graphics.Canvas? = null
     private var composeRegion: Rect? = null
+    // Whether what `compose` shows of composeRegion has gone to the stale
+    // backdrop yet; a region change can take several frames to complete.
+    private var composeKeptStale = false
     private var lastSeq = -1L
     private var haveKeyframe = false
     @Volatile private var lastKeyframeRequestAt = 0L
@@ -349,6 +352,12 @@ class ViewerActivity : AppCompatActivity() {
             var retired: Bitmap? = null
             val prevRegion = composeRegion
             if (region != prevRegion) {
+                // The canvas is about to describe somewhere else; what it shows
+                // now becomes the dimmed backdrop for the place it is leaving.
+                if (!composeKeptStale && prevRegion != null && bmp != null && haveKeyframe) {
+                    composeKeptStale = true
+                    screen.keepStale(bmp, prevRegion)
+                }
                 if (scrolled && haveKeyframe && prevRegion != null && bmp != null &&
                     bmp.width == w && bmp.height == h && canCarry(prevRegion, region, w, h)
                 ) {
@@ -385,6 +394,7 @@ class ViewerActivity : AppCompatActivity() {
                     haveKeyframe = false
                 }
                 composeRegion = region
+                composeKeptStale = false
             }
             if (bmp == null || bmp.width != w || bmp.height != h) {
                 if (!keyframe) { requestKeyframe(); return } // can't composite yet
@@ -582,6 +592,14 @@ class ViewerActivity : AppCompatActivity() {
         root = FrameLayout(this)
         root.setBackgroundColor(Color.BLACK)
 
+        // Bottom of the stack: the desktop as last seen, dimmed, showing
+        // wherever the video does not cover (see StaleBackdrop).
+        val backdropLayer = StaleBackdropLayer(this)
+        root.addView(backdropLayer, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT,
+        ))
+
         // The decoder renders here. It sits under the overlay and is
         // positioned entirely by RemoteScreenView's transform, so pan and zoom
         // apply to video and to the pointer through the same matrix.
@@ -643,6 +661,7 @@ class ViewerActivity : AppCompatActivity() {
         screen = RemoteScreenView(this)
         screen.restoreViewportState(savedInstanceState?.getBundle(STATE_VIEWPORT))
         screen.attachVideo(videoView)
+        screen.attachBackdropLayer(backdropLayer)
         val debugPrefs = getSharedPreferences(DEBUG_PREFS, Context.MODE_PRIVATE)
         screen.setDirtyRectHighlightsEnabled(debugPrefs.getBoolean(PREF_HIGHLIGHT_DIRTY, false))
         root.addView(screen, FrameLayout.LayoutParams(
@@ -1372,6 +1391,8 @@ class ViewerActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         viewerResumed = true
+        // Before any frame arrives; also picks up a change made in Settings.
+        if (::screen.isInitialized) screen.setStaleBackdropEnabled(Prefs(this).showLastSeenAreas)
         ConnectionManager.binaryListeners.add(binaryListener)
         ConnectionManager.jsonListeners.add(jsonListener)
         ConnectionManager.stateListeners.add(stateListener)

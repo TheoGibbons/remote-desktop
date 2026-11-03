@@ -106,6 +106,9 @@
     <string name="offer_captures">Offer new photos to PCs</string>
     <string name="offer_captures_description">Photos, videos and screenshots you take pop up on your PCs, ready to download</string>
     <string name="offer_captures_needs_files">Needs Browse and transfer files</string>
+    <string name="viewer_section">Viewer</string>
+    <string name="show_last_seen_areas">Show last-seen areas</string>
+    <string name="show_last_seen_areas_description">While zoomed in, parts of the PC screen you\'ve already seen stay in grey instead of going black. Uses some extra memory on this phone.</string>
     <string name="connection_history">Connection history</string>
     <string name="connection_history_intro">Each time this phone connected to the relay, lost the connection or changed network, newest first, in this phone\'s time. Copy it to share when the connection keeps dropping.</string>
     <string name="connection_history_empty">Nothing recorded yet</string>

@@ -86,6 +86,13 @@ class Prefs(context: Context) {
             CaptureOffers.refresh()
         }
 
+    /** While zoomed in on a PC, parts of its screen seen earlier stay visible,
+     *  greyed, instead of going black when the stream moves elsewhere (see
+     *  [StaleBackdrop]). Costs phone memory, never stream bandwidth. */
+    var showLastSeenAreas: Boolean
+        get() = sp.getBoolean("showLastSeenAreas", true)
+        set(v) = sp.edit().putBoolean("showLastSeenAreas", v).apply()
+
     /** Stable per-install id so the relay replaces this device's stale
      *  connection on reconnect instead of listing it twice. A phone restored
      *  from this one's backup must not share it, or the relay would take the
