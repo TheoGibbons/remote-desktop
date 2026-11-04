@@ -9,21 +9,22 @@ import android.os.Build
 import android.os.Looper
 import android.os.SystemClock
 import android.util.DisplayMetrics
+import android.util.TypedValue
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import androidx.annotation.RequiresApi
 import org.json.JSONObject
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
- * Injects input sent by the paired computer. Enabled once in
+ * Injects input sent by a paired PC or phone. Enabled once in
  * Settings → Accessibility; survives reboots.
  *
  * Supports one-shot taps/swipes, a streamed `touch` pointer (down/move/up,
- * dispatched as continued gesture strokes so the desktop mouse can click,
- * long-press and drag in real time), a two-finger `pinch` for zoom, and the
- * desktop keyboard's `text` and `key` (see [PhoneKeyboard]).
+ * dispatched as continued gesture strokes so a mouse or finger can click,
+ * long-press and drag in real time), a two-finger `pinch` for zoom, and
+ * typed `text` and `key` (see [PhoneKeyboard]). [GestureSequencer] keeps
+ * them in order.
  *
  * Note: Android does not allow apps to unlock a secure lockscreen (PIN /
  * pattern / biometric). Taps work on the lockscreen surface itself, so a
@@ -93,33 +94,45 @@ class InputAccessibilityService : AccessibilityService() {
         when (msg.optString("type")) {
             "tap" -> {
                 val (w, h) = screenSize()
-                tap(msg.getDouble("x") * w, msg.getDouble("y") * h)
+                val gesture = tap(msg.getDouble("x") * w, msg.getDouble("y") * h)
+                main.post { gestures.whole(gesture) }
             }
             "swipe" -> {
                 val (w, h) = screenSize()
-                swipe(
+                val gesture = swipe(
                     msg.getDouble("x1") * w, msg.getDouble("y1") * h,
                     msg.getDouble("x2") * w, msg.getDouble("y2") * h,
                     msg.optLong("ms", 250).coerceIn(50, 3000)
                 )
+                main.post { gestures.whole(gesture) }
             }
             "touch" -> {
                 val (w, h) = screenSize()
                 val x = (msg.optDouble("x", 0.0) * w).toFloat()
                 val y = (msg.optDouble("y", 0.0) * h).toFloat()
                 val action = msg.optString("action")
-                main.post { onTouch(action, x, y) }
+                main.post {
+                    when (action) {
+                        "down" -> gestures.down(x, y)
+                        "move" -> gestures.move(x, y)
+                        // The finger lifts where the last move left it.
+                        "up" -> gestures.up()
+                    }
+                }
             }
             "pinch" -> {
                 val (w, h) = screenSize()
                 val cx = (msg.optDouble("x", 0.5) * w).toFloat()
                 val cy = (msg.optDouble("y", 0.5) * h).toFloat()
                 val zoomIn = msg.optString("dir") != "out"
-                main.post { pinch(cx, cy, zoomIn) }
+                val scale = if (msg.has("scale")) msg.optDouble("scale") else null
+                val gesture = pinch(w, h, cx, cy, zoomIn, scale)
+                main.post { gestures.whole(gesture) }
             }
             "back" -> performGlobalAction(GLOBAL_ACTION_BACK)
             "homebtn" -> performGlobalAction(GLOBAL_ACTION_HOME)
             "recents" -> performGlobalAction(GLOBAL_ACTION_RECENTS)
+            "notifications" -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
             "text", "key" -> main.post { type(msg) }
         }
     }
@@ -171,136 +184,85 @@ class InputAccessibilityService : AccessibilityService() {
         PhoneKeyboard.press(keyCode, ctrl, shift, SystemClock.uptimeMillis()).forEach(field::sendKeyEvent)
     }
 
-    private fun tap(x: Double, y: Double) {
+    private fun tap(x: Double, y: Double): GestureDescription {
         val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
-        val gesture = GestureDescription.Builder()
+        return GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 30))
             .build()
-        dispatchGesture(gesture, null, null)
     }
 
-    private fun swipe(x1: Double, y1: Double, x2: Double, y2: Double, ms: Long) {
+    private fun swipe(x1: Double, y1: Double, x2: Double, y2: Double, ms: Long): GestureDescription {
         val path = Path().apply {
             moveTo(x1.toFloat(), y1.toFloat())
             lineTo(x2.toFloat(), y2.toFloat())
         }
-        val gesture = GestureDescription.Builder()
+        return GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, ms))
             .build()
-        dispatchGesture(gesture, null, null)
     }
 
     // ---------- streamed touch pointer (continued strokes) ----------
-    // All state below is touched only on the main thread.
+    // Main thread only, like the sequencer and its callbacks.
 
+    /** The stroke the next segment continues; null once its finger has lifted. */
     private var activeStroke: GestureDescription.StrokeDescription? = null
-    private var strokeX = 0f
-    private var strokeY = 0f
-    private var dispatching = false
-    private val pendingMoves = ArrayList<Pair<Float, Float>>()
-    private var upRequested = false
 
-    private fun onTouch(action: String, x: Float, y: Float) {
-        when (action) {
-            "down" -> {
-                // Abandon any half-finished stroke from a lost "up".
-                activeStroke = null
-                pendingMoves.clear()
-                upRequested = false
-                strokeX = x
-                strokeY = y
-                val path = Path().apply { moveTo(x, y) }
-                // willContinue=true keeps the finger "down" until the up arrives.
-                val stroke = GestureDescription.StrokeDescription(path, 0, 40, true)
-                activeStroke = stroke
-                dispatchStroke(stroke)
-            }
-            "move" -> {
-                if (activeStroke == null) return
-                pendingMoves.add(Pair(x, y))
-                pump()
-            }
-            "up" -> {
-                if (activeStroke == null) return
-                upRequested = true
-                pump()
-            }
+    private val gestures = GestureSequencer(object : GestureSequencer.Player<GestureDescription> {
+        override fun begin(generation: Int, x: Float, y: Float): Boolean {
+            val path = Path().apply { moveTo(x, y) }
+            // willContinue=true keeps the finger "down" until the up arrives.
+            val stroke = GestureDescription.StrokeDescription(path, 0, 40, true)
+            activeStroke = stroke
+            return dispatch(GestureDescription.Builder().addStroke(stroke).build(), generation)
         }
-    }
 
-    /** Dispatch the next continuation once the previous segment finished. */
-    private fun pump() {
-        if (dispatching) return
-        val stroke = activeStroke ?: return
-        if (pendingMoves.isEmpty() && !upRequested) return
-
-        val path = Path().apply {
-            moveTo(strokeX, strokeY)
-            for ((px, py) in pendingMoves) lineTo(px, py)
+        override fun extend(generation: Int, fromX: Float, fromY: Float, points: List<Pair<Float, Float>>,
+                            durationMs: Long, lift: Boolean): Boolean {
+            val stroke = activeStroke ?: return false
+            val path = Path().apply {
+                moveTo(fromX, fromY)
+                for ((px, py) in points) lineTo(px, py)
+            }
+            val next = stroke.continueStroke(path, 0, durationMs, !lift)
+            activeStroke = if (lift) null else next
+            return dispatch(GestureDescription.Builder().addStroke(next).build(), generation)
         }
-        pendingMoves.lastOrNull()?.let { strokeX = it.first; strokeY = it.second }
-        val segments = pendingMoves.size
-        pendingMoves.clear()
 
-        val finishing = upRequested
-        upRequested = false
-        val duration = (16L * segments).coerceIn(20L, 300L)
-        val next = stroke.continueStroke(path, 0, duration, !finishing)
-        activeStroke = if (finishing) null else next
-        dispatchStroke(next)
-    }
-
-    private fun dispatchStroke(stroke: GestureDescription.StrokeDescription) {
-        dispatching = true
-        val ok = dispatchGesture(
-            GestureDescription.Builder().addStroke(stroke).build(),
-            object : GestureResultCallback() {
-                override fun onCompleted(g: GestureDescription?) {
-                    dispatching = false
-                    pump()
-                }
-
-                override fun onCancelled(g: GestureDescription?) {
-                    dispatching = false
-                    activeStroke = null
-                    pendingMoves.clear()
-                    upRequested = false
-                }
-            }, main
-        )
-        if (!ok) {
-            dispatching = false
+        override fun play(generation: Int, gesture: GestureDescription): Boolean {
             activeStroke = null
-            pendingMoves.clear()
-            upRequested = false
+            return dispatch(gesture, generation)
         }
-    }
+    })
+
+    private fun dispatch(gesture: GestureDescription, generation: Int): Boolean =
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) = gestures.completed(generation)
+            override fun onCancelled(g: GestureDescription?) = gestures.cancelled(generation)
+        }, main)
 
     // ---------- pinch zoom ----------
 
-    private fun pinch(centerX: Float, centerY: Float, zoomIn: Boolean) {
-        val (w, h) = screenSize()
-        // Two fingers move apart (zoom in) or together (zoom out) through the
-        // center, along a 45° diagonal.
-        val near = 60f
-        val far = 260f
-        val (from, to) = if (zoomIn) Pair(near, far) else Pair(far, near)
-        val dirX = cos(Math.toRadians(45.0)).toFloat()
-        val dirY = sin(Math.toRadians(45.0)).toFloat()
-
-        fun fingerPath(sign: Float): Path {
-            fun clampX(v: Float) = v.coerceIn(10f, w - 10f)
-            fun clampY(v: Float) = v.coerceIn(10f, h - 10f)
-            return Path().apply {
-                moveTo(clampX(centerX + sign * dirX * from), clampY(centerY + sign * dirY * from))
-                lineTo(clampX(centerX + sign * dirX * to), clampY(centerY + sign * dirY * to))
-            }
+    /** Fingers closer than this don't zoom (see [PinchGeometry]). */
+    private fun minScalingSpan(): Float {
+        if (Build.VERSION.SDK_INT >= 29) try {
+            return ViewConfiguration.get(this).scaledMinimumScalingSpan.toFloat()
+        } catch (_: RuntimeException) {
+            // Below is the platform's own default.
         }
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_MM, 27f, resources.displayMetrics)
+    }
 
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(fingerPath(1f), 0, 250))
-            .addStroke(GestureDescription.StrokeDescription(fingerPath(-1f), 0, 250))
+    private fun pinch(w: Int, h: Int, centerX: Float, centerY: Float, zoomIn: Boolean, scale: Double?): GestureDescription {
+        val (one, two) = PinchGeometry.fingers(w, h, centerX, centerY, zoomIn, scale, minScalingSpan())
+        fun path(f: PinchGeometry.Finger) = Path().apply {
+            moveTo(f.startX, f.startY)
+            lineTo(f.endX, f.endY)
+        }
+        // A pinch from another phone moves further, so it gets longer.
+        val ms = if (scale == null) 250L else 400L
+        return GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path(one), 0, ms))
+            .addStroke(GestureDescription.StrokeDescription(path(two), 0, ms))
             .build()
-        dispatchGesture(gesture, null, null)
     }
 }

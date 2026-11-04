@@ -36,10 +36,10 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * Browses the paired desktop's filesystem, starting in its Downloads folder.
- * Tap a folder to open it, tap a file to download it into the phone's
- * Downloads folder, or use Upload to push files from the phone to the
- * desktop's Downloads folder, which the browser then shows.
+ * Browses a paired PC's or phone's files, starting in its Downloads folder.
+ * Tap a folder to open it, tap a file to download it into this phone's
+ * Downloads folder, or use Upload to push files from this phone to the
+ * other device's Downloads folder, which the browser then shows.
  */
 class FileExplorerActivity : AppCompatActivity() {
 
@@ -58,6 +58,13 @@ class FileExplorerActivity : AppCompatActivity() {
     @Volatile private var fileAccessAllowed = false
     private var pendingUploadUris: List<Uri> = emptyList()
     private var winId: String? = null
+    private var peerName = ""
+    private var isPhone = false
+    // On a phone: folders an Up request was redirected to, because apps can't
+    // list what is above them (see FsHandler.handleList). Up stops there.
+    private val tops = mutableSetOf<String>()
+    // The folder Up asked for, until its reply arrives.
+    private var upRequest: String? = null
     private var path = ""
     private var requestedPath = ""
     // Where uploads land on the desktop. Older desktops don't advertise it.
@@ -83,8 +90,13 @@ class FileExplorerActivity : AppCompatActivity() {
                 uris.forEach { uploadUri(it) }
             }
             "fs-list-result" -> if (msg.optString("reqId") == lastReqId) showResult(msg)
-            // Show each uploaded file once the desktop has saved it.
-            "fs-saved" -> if (msg.optString("from") == winId && isDownloads(shownPath)) requestList(shownPath, quiet = true)
+            // Show each uploaded file once the other device has saved it, or why it couldn't.
+            "fs-saved" -> if (msg.optString("from") == winId) {
+                (msg.opt("error") as? String)?.takeIf { it.isNotEmpty() }?.let {
+                    setStatus(getString(R.string.files_save_failed, peerName, it))
+                }
+                if (isDownloads(shownPath)) requestList(shownPath, quiet = true)
+            }
             "peer-left" -> if (msg.optString("id") == winId) { finish() }
         }
     }
@@ -107,11 +119,15 @@ class FileExplorerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ConnectionManager.init(this)
-        winId = ConnectionManager.desktop(intent.getStringExtra(ConnectionManager.EXTRA_PEER_ID))?.id
-        if (winId == null) {
-            Toast.makeText(this, "No desktop is online in this session", Toast.LENGTH_LONG).show()
+        val peer = ConnectionManager.peer(intent.getStringExtra(ConnectionManager.EXTRA_PEER_ID))
+        if (peer == null) {
+            Toast.makeText(this, R.string.files_not_online, Toast.LENGTH_LONG).show()
             finish(); return
         }
+        winId = peer.id
+        peerName = peer.name
+        isPhone = peer.device == "android"
+        savedInstanceState?.getStringArray("tops")?.let { tops.addAll(it) }
 
         path = savedInstanceState?.getString("path") ?: ""
         openDownloads = savedInstanceState?.getBoolean("openDownloads") ?: true
@@ -124,6 +140,7 @@ class FileExplorerActivity : AppCompatActivity() {
         setContentView(R.layout.activity_file_explorer)
         Ui.applySystemBarInsets(this)
         findViewById<MaterialToolbar>(R.id.filesToolbar).apply {
+            title = getString(R.string.files_title_on, peerName)
             setNavigationOnClickListener { finish() }
             menu.add(getString(R.string.files_refresh)).apply {
                 setIcon(R.drawable.ic_refresh)
@@ -151,7 +168,8 @@ class FileExplorerActivity : AppCompatActivity() {
             setOnItemClickListener { _, _, pos, _ -> onEntryTap(pos) }
         }
         uploadButton = findViewById<Button>(R.id.filesUpload).apply {
-            tooltipText = getString(R.string.files_upload_description)
+            contentDescription = getString(R.string.files_upload_to, peerName)
+            tooltipText = contentDescription
             setOnClickListener { uploadPicker.launch("*/*") }
         }
         // Leave room for the title when the screen is narrow or text is enlarged.
@@ -179,6 +197,7 @@ class FileExplorerActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("path", if (listing) requestedPath else path)
         outState.putBoolean("openDownloads", openDownloads)
+        outState.putStringArray("tops", tops.toTypedArray())
         outState.putBundle("scroll", captureScroll())
         outState.putIntArray("transfers", transfers.filter { ConnectionManager.fs.isActive(it) }.toIntArray())
         super.onSaveInstanceState(outState)
@@ -217,10 +236,12 @@ class FileExplorerActivity : AppCompatActivity() {
         ConnectionManager.fs.transferStatus.remove(transferListener)
     }
 
-    /** @param quiet keeps the status line, e.g. upload progress, while the folder reloads. */
-    private fun requestList(p: String, quiet: Boolean = false) {
+    /** @param quiet keeps the status line, e.g. upload progress, while the folder reloads.
+     *  @param up whether this is the folder above the current one. */
+    private fun requestList(p: String, quiet: Boolean = false, up: Boolean = false) {
         pendingScroll = if (p == path) captureScroll() else null
         requestedPath = p
+        upRequest = if (up) p else null
         setListing(true)
         emptyText.setText(R.string.files_loading)
         if (!quiet) setStatus(getString(R.string.files_loading))
@@ -243,6 +264,9 @@ class FileExplorerActivity : AppCompatActivity() {
             setStatus("Error: $err")
             return
         }
+        // A phone answered Up with a folder it can list instead: nothing above that one can be opened.
+        upRequest?.let { if (isPhone && it != msg.optString("path")) tops.add(msg.optString("path")) }
+        upRequest = null
         if (openDownloads) {
             openDownloads = false
             // Skip drawing the drives the desktop listed on the way there.
@@ -256,7 +280,8 @@ class FileExplorerActivity : AppCompatActivity() {
         val arr = msg.optJSONArray("entries")
         if (arr != null) for (i in 0 until arr.length()) {
             val e = arr.getJSONObject(i)
-            entries.add(DesktopFileEntry(e.getString("name"), e.optBoolean("dir"), e.optLong("size"), e.optLong("mtime")))
+            entries.add(DesktopFileEntry(e.getString("name"), e.optBoolean("dir"), e.optLong("size"), e.optLong("mtime"),
+                (e.opt("label") as? String)?.takeIf { it.isNotEmpty() }))
         }
         applySort(scroll)
         emptyText.setText(R.string.files_empty)
@@ -282,14 +307,19 @@ class FileExplorerActivity : AppCompatActivity() {
         loading.visibility = if (active) View.VISIBLE else View.INVISIBLE
         listView.isEnabled = !active
         listView.alpha = if (active) 0.5f else 1f
-        upButton.isEnabled = !active && path.isNotEmpty()
-        upButton.alpha = if (upButton.isEnabled) 1f else 0.38f
+        updateUpButton()
     }
 
     private fun updatePath() {
-        pathText.text = path.ifEmpty { getString(R.string.files_this_pc) }
+        pathText.text = path.ifEmpty { if (isPhone) peerName else getString(R.string.files_this_pc) }
         pathText.tooltipText = pathText.text
-        upButton.isEnabled = !listing && path.isNotEmpty()
+        updateUpButton()
+    }
+
+    private fun updateUpButton() {
+        // A phone's volume list sits at /storage, the top of what it serves.
+        val top = isPhone && (path in tops || path == "/storage")
+        upButton.isEnabled = !listing && path.isNotEmpty() && !top
         upButton.alpha = if (upButton.isEnabled) 1f else 0.38f
     }
 
@@ -359,7 +389,7 @@ class FileExplorerActivity : AppCompatActivity() {
             val entry = getItem(position)
             row.findViewById<ImageView>(R.id.fileIcon).setImageResource(
                 if (entry.dir) R.drawable.ic_folder else R.drawable.ic_document)
-            row.findViewById<TextView>(R.id.fileName).text = entry.name
+            row.findViewById<TextView>(R.id.fileName).text = entry.title
             val kind = if (entry.dir) getString(R.string.files_folder) else fmtSize(entry.size)
             row.findViewById<TextView>(R.id.fileMetadata).apply {
                 text = if (entry.mtime > 0) getString(R.string.files_metadata, kind, formatDate(entry.mtime)) else kind
@@ -367,7 +397,7 @@ class FileExplorerActivity : AppCompatActivity() {
                     getString(R.string.files_modified_metadata, formatDate(entry.mtime))) else kind
             }
             row.findViewById<ImageButton>(R.id.fileDetails).apply {
-                contentDescription = getString(R.string.files_details_description, entry.name)
+                contentDescription = getString(R.string.files_details_description, entry.title)
                 tooltipText = getString(R.string.files_details)
                 setOnClickListener { if (!listing) showDetails(entry) }
             }
@@ -394,7 +424,7 @@ class FileExplorerActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this, R.style.ThemeOverlay_RemoteDesktop_FileDialog)
             .setTitle(R.string.files_details)
             .setView(detailContent(listOf(
-                getString(R.string.files_detail_name) to entry.name,
+                getString(R.string.files_detail_name) to entry.title,
                 getString(R.string.files_detail_type) to type,
                 getString(R.string.files_detail_size) to size,
                 getString(R.string.files_detail_modified) to formatDate(entry.mtime, includeTime = true),
@@ -496,7 +526,7 @@ class FileExplorerActivity : AppCompatActivity() {
 
     private fun uploadUri(uri: Uri) {
         if (!fileAccessAllowed) {
-            setStatus("File access is disabled on the desktop.")
+            setStatus(getString(R.string.files_access_off, peerName))
             return
         }
         val peerId = winId ?: return
@@ -508,10 +538,9 @@ class FileExplorerActivity : AppCompatActivity() {
             { progress -> runOnUiThread { if (xferId in transfers) setStatus(progress) } },
             { ok, result -> runOnUiThread {
                 if (!transfers.remove(xferId)) return@runOnUiThread
-                if (ok) Toast.makeText(
-                    this, "“$result” sent to the desktop's Downloads folder" +
-                        if (isDownloads(shownPath)) "" else " (not the folder you are browsing)", Toast.LENGTH_LONG
-                ).show()
+                if (ok) Toast.makeText(this, getString(
+                    if (isDownloads(shownPath)) R.string.files_uploaded else R.string.files_uploaded_elsewhere,
+                    result, peerName), Toast.LENGTH_LONG).show()
                 else setStatus(result ?: "Could not send the selected file")
                 updateCancelButton()
             } })
@@ -523,9 +552,9 @@ class FileExplorerActivity : AppCompatActivity() {
         val trimmed = path.trimEnd('\\', '/')
         // Windows paths use backslashes; a drive root like "C:\" goes to roots.
         val idx = maxOf(trimmed.lastIndexOf('\\'), trimmed.lastIndexOf('/'))
-        if (idx <= 0 || trimmed.endsWith(":")) { requestList(""); return }
+        if (idx <= 0 || trimmed.endsWith(":")) { requestList("", up = true); return }
         val parent = trimmed.substring(0, idx)
-        requestList(if (parent.endsWith(":")) "$parent\\" else parent)
+        requestList(if (parent.endsWith(":")) "$parent\\" else parent, up = true)
     }
 
     private fun join(dir: String, name: String): String {

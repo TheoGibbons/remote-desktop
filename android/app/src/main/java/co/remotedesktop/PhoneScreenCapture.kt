@@ -27,14 +27,15 @@ object PhoneScreenCapture {
 
     fun onViewRequested(context: Context, peerId: String) {
         init(context)
-        if (!Prefs(context).allowControl || !PeerAuth.isTrusted(peerId)) return
+        if (!Prefs(context).allowControl || !mayView(context, peerId)) return
         viewers.add(peerId)
         main.post {
             if (!viewers.contains(peerId)) return@post
             val setupHint = if (Build.VERSION.SDK_INT >= 30)
                 "Enable Screen view and control (Accessibility) in Permissions & Access"
             else "Enable screen sharing in Permissions & Access to view this phone"
-            val message = if (isAvailable) "The desktop started viewing this phone" else setupHint
+            val viewer = ConnectionManager.peers.firstOrNull { it.id == peerId }?.name ?: "A paired device"
+            val message = if (isAvailable) "$viewer started viewing this phone" else setupHint
             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             // An additional viewer needs dimensions even if the source is already streaming.
             ScreenCaptureService.resendScreenInfo()
@@ -46,8 +47,15 @@ object PhoneScreenCapture {
     /** Whether this peer has asked to view this phone and not stopped since. */
     fun isViewing(peerId: String): Boolean = viewers.contains(peerId)
 
+    /** An approved PC, or an approved phone while Allow other phones is on. */
+    private fun mayView(context: Context, peerId: String): Boolean =
+        PeerAuth.isTrusted(peerId) && Prefs(context).allowsDevice(ConnectionManager.deviceOf(peerId))
+
     /** Who frames are addressed to, so a device watching another host never gets them. */
-    fun recipients(): List<String> = viewers.filter { PeerAuth.isTrusted(it) }
+    fun recipients(): List<String> {
+        val context = appContext ?: return emptyList()
+        return viewers.filter { mayView(context, it) }
+    }
 
     /** Clear requests on disconnect/revocation so a later session never resumes an old view. */
     fun onViewStopped(peerId: String? = null) {
@@ -58,12 +66,12 @@ object PhoneScreenCapture {
     /** Rechecked before capture and before sending, including after asynchronous screenshots. */
     fun maySendFrames(context: Context): Boolean =
         ConnectionManager.state == "connected" && Prefs(context).allowControl &&
-            PeerAuth.allPeersTrusted && viewers.any { PeerAuth.isTrusted(it) }
+            PeerAuth.allPeersTrusted && viewers.any { mayView(context, it) }
 
     fun refresh() {
         main.post {
             val context = appContext ?: return@post
-            viewers.removeAll { !PeerAuth.isTrusted(it) }
+            viewers.removeAll { !mayView(context, it) }
             val active = maySendFrames(context)
             val smooth = ScreenCaptureService.isRunning
             // Stop the old source before starting the new one.

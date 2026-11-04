@@ -871,23 +871,7 @@ class ViewerActivity : AppCompatActivity() {
         }
     }
 
-    private fun diffAndSend(prev: String, cur: String) {
-        var p = 0
-        val min = minOf(prev.length, cur.length)
-        while (p < min && prev[p] == cur[p]) p++
-        repeat(prev.length - p) {
-            send(JSONObject().put("type", "key").put("code", "BACKSPACE").put("action", "press"))
-        }
-        val added = cur.substring(p)
-        val buf = StringBuilder()
-        for (ch in added) {
-            if (ch == '\n') {
-                if (buf.isNotEmpty()) { send(JSONObject().put("type", "text").put("text", buf.toString())); buf.clear() }
-                send(JSONObject().put("type", "key").put("code", "ENTER").put("action", "press"))
-            } else buf.append(ch)
-        }
-        if (buf.isNotEmpty()) send(JSONObject().put("type", "text").put("text", buf.toString()))
-    }
+    private fun diffAndSend(prev: String, cur: String) = TypingDiff.messages(prev, cur).forEach(::send)
 
     private fun toggleIme() {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager

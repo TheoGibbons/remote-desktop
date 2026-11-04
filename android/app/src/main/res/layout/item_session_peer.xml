@@ -44,7 +44,7 @@
         android:textColor="?attr/colorOnSurfaceVariant"
         android:visibility="gone" />
 
-    <!-- Only PCs can be viewed and browsed from this phone. -->
+    <!-- View and Browse, for PCs and for phones that allow it. -->
     <LinearLayout
         android:id="@+id/peerActions"
         android:layout_width="match_parent"

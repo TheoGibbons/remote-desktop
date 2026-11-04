@@ -140,7 +140,7 @@ class MultipleFileUploadTest {
         executor.submit {}.get(5, TimeUnit.SECONDS)
         shadowOf(Looper.getMainLooper()).idle()
         // Finished before the Downloads listing arrived, which is still where the browser is heading.
-        assertEquals("“shared-file” sent to the desktop's Downloads folder", ShadowToast.getTextOfLatestToast())
+        assertEquals("“shared-file” sent to Test PC's Downloads folder", ShadowToast.getTextOfLatestToast())
         listed(downloads, downloads)
         assertEquals(downloads, field("path"))
         val status = activity.findViewById<TextView>(R.id.filesStatus)

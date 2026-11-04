@@ -83,6 +83,17 @@
         <item name="rippleColor">#33FFFFFF</item>
     </style>
 
+    <!-- One of the phone viewer's Back, Home, Recents and Notifications buttons. -->
+    <style name="RdPhoneNavButton">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">match_parent</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
+        <item name="android:padding">14dp</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="tint">?attr/colorOnSurface</item>
+    </style>
+
     <!-- Icon at the start of a list row (tint is set per-layout with app:tint). -->
     <style name="RdRowIcon">
         <item name="android:layout_width">24dp</item>

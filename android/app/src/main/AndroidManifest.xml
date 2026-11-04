@@ -53,6 +53,13 @@
             android:name=".FileExplorerActivity"
             android:exported="false" />
 
+        <!-- Turns with this phone; rotating must not restart the stream. -->
+        <activity
+            android:name=".PhoneViewerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="false" />
+
         <activity
             android:name=".ShareFilesActivity"
             android:label="@string/app_name"

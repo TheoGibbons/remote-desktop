@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.text.format.DateFormat
 import android.view.View
 import android.widget.ImageButton
@@ -16,6 +17,7 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.journeyapps.barcodescanner.ScanContract
+import org.json.JSONObject
 import java.util.Date
 
 class MainActivity : AppCompatActivity() {
@@ -34,6 +36,19 @@ class MainActivity : AppCompatActivity() {
     private val trustListener: () -> Unit = { refreshStatus() }
     private val captureStateListener: () -> Unit = { refreshStatus() }
     private val approvalListener: (PeerAuth.PendingRequest) -> Unit = { Ui.showApprovalDialog(this, it) }
+
+    // Another phone can be opened only once it says Allow other phones is on
+    // there (`phones` in its file-access reply). Phones on older apps never reply.
+    private val phonesAllowed = mutableMapOf<String, Boolean>()
+    private val askedAt = mutableMapOf<String, Long>()
+    private val jsonListener: (JSONObject) -> Unit = { msg ->
+        if (msg.optString("type") == "file-access" && msg.has("phones")) {
+            phonesAllowed[msg.optString("from")] = msg.optBoolean("phones")
+            refreshStatus()
+        }
+    }
+    // Turns a phone that hasn't answered into "update the app there".
+    private val replyTimeout = Runnable { refreshStatus() }
 
     private val qrScanner = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let {
@@ -106,6 +121,9 @@ class MainActivity : AppCompatActivity() {
         PeerAuth.changeListeners.add(trustListener)
         PeerAuth.approvalListeners.add(approvalListener)
         PhoneScreenCapture.stateListeners.add(captureStateListener)
+        ConnectionManager.jsonListeners.add(jsonListener)
+        // Ask again: Allow other phones may have changed while this was away.
+        askedAt.clear()
         refreshStatus()
     }
 
@@ -115,6 +133,8 @@ class MainActivity : AppCompatActivity() {
         PeerAuth.changeListeners.remove(trustListener)
         PeerAuth.approvalListeners.remove(approvalListener)
         PhoneScreenCapture.stateListeners.remove(captureStateListener)
+        ConnectionManager.jsonListeners.remove(jsonListener)
+        peerRows.removeCallbacks(replyTimeout)
     }
 
     @SuppressLint("SetTextI18n")
@@ -184,9 +204,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun showPeers(peers: List<ConnectionManager.Peer>) {
         peerRows.removeAllViews()
+        val online = peers.map { it.id }.toSet()
+        phonesAllowed.keys.retainAll(online)
+        askedAt.keys.retainAll(online)
         for (peer in peers) {
             val row = layoutInflater.inflate(R.layout.item_session_peer, peerRows, false)
-            val status = peerStatus(peer)
+            val status = phoneStatus(peer, peerStatus(peer))
             val kind = when (peer.device) {
                 "windows" -> getString(R.string.peer_kind_pc)
                 "android" -> getString(R.string.peer_kind_phone)
@@ -201,12 +224,16 @@ class MainActivity : AppCompatActivity() {
                 text = status.detail
                 visibility = if (status.detail == null) View.GONE else View.VISIBLE
             }
-            if (peer.device == "windows") {
+            val phone = peer.device == "android"
+            if (peer.device == "windows" || phone) {
                 row.findViewById<View>(R.id.peerActions).visibility = View.VISIBLE
                 row.findViewById<MaterialButton>(R.id.peerView).apply {
                     isEnabled = status.ready
                     contentDescription = getString(R.string.peer_view_description, peer.name)
-                    setOnClickListener { open(ViewerActivity::class.java, peer) }
+                    if (phone) setIconResource(R.drawable.ic_smartphone)
+                    setOnClickListener {
+                        open(if (phone) PhoneViewerActivity::class.java else ViewerActivity::class.java, peer)
+                    }
                 }
                 row.findViewById<MaterialButton>(R.id.peerBrowse).apply {
                     isEnabled = status.ready
@@ -216,6 +243,27 @@ class MainActivity : AppCompatActivity() {
             }
             peerRows.addView(row)
         }
+    }
+
+    /** A phone approved both ways still needs Allow other phones on there,
+     *  and an app new enough to have it. Asks it, then says which is missing. */
+    private fun phoneStatus(peer: ConnectionManager.Peer, status: PeerStatus): PeerStatus {
+        if (peer.device != "android" || !status.ready) return status
+        val now = SystemClock.elapsedRealtime()
+        val asked = askedAt[peer.id]
+        if (asked == null) {
+            askedAt[peer.id] = now
+            ConnectionManager.sendJson(JSONObject().put("type", "get-file-access").put("to", peer.id))
+            peerRows.postDelayed(replyTimeout, PHONE_REPLY_TIMEOUT_MS)
+        }
+        val allowed = phonesAllowed[peer.id]
+        if (allowed == true) return status
+        val detail = when {
+            allowed == false -> getString(R.string.peer_phone_off, peer.name)
+            asked != null && now - asked >= PHONE_REPLY_TIMEOUT_MS -> getString(R.string.peer_phone_outdated, peer.name)
+            else -> null
+        }
+        return PeerStatus(status.label, status.color, detail)
     }
 
     private fun open(activity: Class<*>, peer: ConnectionManager.Peer) =
@@ -243,5 +291,10 @@ class MainActivity : AppCompatActivity() {
                     .getColor(peerRows, com.google.android.material.R.attr.colorOnSurfaceVariant))
             }
         }
+    }
+
+    private companion object {
+        /** How long another phone has to answer before it counts as an older app. */
+        const val PHONE_REPLY_TIMEOUT_MS = 3_000L
     }
 }

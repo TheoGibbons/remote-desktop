@@ -89,12 +89,26 @@ object ConnectionManager {
     @Volatile private var relayAddressesBinary = false
     val peers = CopyOnWriteArrayList<Peer>()
 
-    /** Intent extra: the peer id of the desktop a viewer or file browser opens. */
+    /** Intent extra: the peer id of the device a viewer or file browser opens. */
     const val EXTRA_PEER_ID = "co.remotedesktop.PEER_ID"
 
     /** The desktop with this peer id, or the first one online when none is named. */
     fun desktop(peerId: String?): Peer? =
         peers.firstOrNull { it.device == "windows" && (peerId == null || it.id == peerId) }
+
+    /** The device with this peer id, PC or phone, or the first PC online when none is named. */
+    fun peer(peerId: String?): Peer? =
+        if (peerId == null) desktop(null) else peers.firstOrNull { it.id == peerId }
+
+    /** What a peer announced itself as ("windows", "android"), or null if it isn't online. */
+    fun deviceOf(peerId: String?): String? = peers.firstOrNull { it.id == peerId }?.device
+
+    /** Above this many queued bytes a video frame is skipped rather than sent,
+     *  so a slow uplink shows a recent picture instead of seconds-old ones. */
+    const val VIDEO_QUEUE_LIMIT = 300_000L
+
+    /** Whether a video frame sent now would go out rather than be skipped. */
+    fun hasRoomForVideo(): Boolean = (ws?.queueSize() ?: 0L) <= VIDEO_QUEUE_LIMIT
 
     // UI listeners, invoked on the main thread.
     val stateListeners = CopyOnWriteArrayList<(String) -> Unit>()
@@ -329,7 +343,8 @@ object ConnectionManager {
     fun sendBinary(frameType: Byte, payload: ByteArray, to: Collection<String>? = null): Boolean {
         val socket = ws ?: return false
         // Don't queue unboundedly if the link is slower than the frame rate.
-        if (socket.queueSize() > 6_000_000) return false
+        // Video is skipped much sooner: a newer picture replaces it anyway.
+        if (socket.queueSize() > if (frameType == Crypto.CH_VIDEO) VIDEO_QUEUE_LIMIT else 6_000_000L) return false
         val blob = Crypto.encrypt(encKey, payload, frameType)
         val route = if (!to.isNullOrEmpty() && relayAddressesBinary) addressHeader(to) else null
         val wire = ByteArray(1 + (route?.size ?: 0) + blob.size)
@@ -497,26 +512,46 @@ object ConnectionManager {
             "auth-challenge", "auth-response" -> PeerAuth.handleJson(msg)
             "auth-result" -> onAuthResult(from, msg.optString("status"))
 
-            // Desktop controlling this phone — only with the user's consent
-            // (the toggles in MainActivity) AND from a device this phone has
-            // approved. The session key alone must not grant control.
-            "tap", "swipe", "touch", "pinch", "back", "homebtn", "recents", "text", "key" ->
-                if (Prefs(appContext).allowControl && PeerAuth.isTrusted(from))
-                    InputAccessibilityService.instance?.handle(msg)
+            // A PC or phone controlling this phone — only with the user's consent
+            // (Permissions & Access) AND from a device this phone has approved.
+            // The session key alone must not grant control.
+            "tap", "swipe", "touch", "pinch", "back", "homebtn", "recents", "notifications", "text", "key" ->
+                if (mayControl(from)) InputAccessibilityService.instance?.handle(msg)
 
             "start-view" ->
-                if (Prefs(appContext).allowControl && PeerAuth.isTrusted(from))
-                    PhoneScreenCapture.onViewRequested(appContext, from)
+                if (mayControl(from)) PhoneScreenCapture.onViewRequested(appContext, from)
             "stop-view" ->
                 if (PeerAuth.isTrusted(from)) PhoneScreenCapture.onViewStopped(from)
 
             // File system requests/responses. Older relays broadcast chunks like
             // video, so serving also requires that no unapproved peer is present.
-            "fs-list", "fs-get", "fs-begin", "fs-end", "fs-cancel" ->
-                fs.handleJson(msg, peerAccessAllowed = Prefs(appContext).allowFileAccess &&
-                    PeerAuth.isTrusted(from) && PeerAuth.allPeersTrusted)
+            "fs-list", "fs-get", "fs-begin", "fs-end", "fs-cancel" -> {
+                val prefs = Prefs(appContext)
+                val shutOut = !prefs.allowsDevice(deviceOf(from))
+                fs.handleJson(msg, peerAccessAllowed = prefs.allowFileAccess && !shutOut &&
+                    PeerAuth.isTrusted(from) && PeerAuth.allPeersTrusted,
+                    deniedReason = if (shutOut) phonesOffReason(prefs) else null)
+            }
+            "get-file-access" -> if (PeerAuth.isTrusted(from)) sendFileAccess(from)
         }
         main.post { jsonListeners.forEach { it(msg) } }
+    }
+
+    private fun mayControl(from: String): Boolean {
+        val prefs = Prefs(appContext)
+        return prefs.allowControl && PeerAuth.isTrusted(from) && prefs.allowsDevice(deviceOf(from))
+    }
+
+    /** Why another phone can't browse this one. */
+    private fun phonesOffReason(prefs: Prefs) = "Allow other phones is off on ${prefs.deviceName}"
+
+    /** Answers get-file-access as a PC does, so the asker knows whether it may
+     *  upload here. `phones` tells another phone whether it may open this one. */
+    private fun sendFileAccess(to: String) {
+        val prefs = Prefs(appContext)
+        sendJson(JSONObject().put("type", "file-access").put("to", to)
+            .put("allowed", prefs.allowFileAccess && prefs.allowsDevice(deviceOf(to)) && PeerAuth.allPeersTrusted)
+            .put("phones", prefs.allowPhones))
     }
 
     /** A peer told us where we stand with it (this phone is the viewer here).

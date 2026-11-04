@@ -150,8 +150,8 @@ class PairingStatusTest {
             val activity = controller.get()
             assertEquals(listOf(
                 Row("Test PC · PC", "Paired", offered = true),
-                // This app can't open phones, so they get no buttons.
-                Row("Tablet · phone", "Checking…"),
+                // A phone gets buttons too, usable once it approves this one and allows phones.
+                Row("Tablet · phone", "Checking…", offered = false),
                 Row("Office PC · PC", "Waiting for approval", "Approve this phone on Office PC. Code: $code", offered = false),
             ), rows(activity))
 
@@ -180,6 +180,75 @@ class PairingStatusTest {
             pending.clear()
             pcSays("trusted")
             assertEquals(Row("Test PC · PC", "Denied on this phone", offered = false), rows(activity)[0])
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    /** A phone online in the session that both phones have approved. */
+    private fun pairedPhone() {
+        ConnectionManager.peers.add(ConnectionManager.Peer("tablet", "android", "Tablet"))
+        trustedPeers.add("tablet")
+        resultFrom["tablet"] = "trusted"
+    }
+
+    private fun tabletSays(phones: Boolean) {
+        val reply = JSONObject().put("type", "file-access").put("from", "tablet").put("allowed", phones).put("phones", phones)
+        ConnectionManager.jsonListeners.forEach { it(reply) }
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+
+    @Test
+    fun aPhoneIsOfferedOnlyOnceItSaysPhonesMayOpenIt() {
+        pairedPhone()
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            // Asked once, as soon as the row shows a phone approved both ways.
+            assertEquals(1, socket.messages.count { it.getString("type") == "get-file-access" && it.getString("to") == "tablet" })
+            assertEquals(Row("Tablet · phone", "Paired", offered = false), rows(activity)[1])
+
+            tabletSays(phones = false)
+            assertEquals(Row("Tablet · phone", "Paired", "Turn on Allow other phones on Tablet", offered = false),
+                rows(activity)[1])
+
+            tabletSays(phones = true)
+            assertEquals(Row("Tablet · phone", "Paired", offered = true), rows(activity)[1])
+            // Still true three seconds later: it answered.
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofSeconds(4))
+            assertEquals(Row("Tablet · phone", "Paired", offered = true), rows(activity)[1])
+
+            val row = activity.findViewById<LinearLayout>(R.id.peerRows).getChildAt(1)
+            row.findViewById<MaterialButton>(R.id.peerView).performClick()
+            shadowOf(activity).nextStartedActivity.let {
+                assertEquals(PhoneViewerActivity::class.java.name, it.component!!.className)
+                assertEquals("tablet", it.getStringExtra(ConnectionManager.EXTRA_PEER_ID))
+            }
+            row.findViewById<MaterialButton>(R.id.peerBrowse).performClick()
+            shadowOf(activity).nextStartedActivity.let {
+                assertEquals(FileExplorerActivity::class.java.name, it.component!!.className)
+                assertEquals("tablet", it.getStringExtra(ConnectionManager.EXTRA_PEER_ID))
+            }
+
+            // Coming back asks again, since the switch may have changed meanwhile.
+            controller.pause().resume()
+            assertEquals(2, socket.messages.count { it.getString("type") == "get-file-access" && it.getString("to") == "tablet" })
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun aPhoneThatNeverAnswersIsOnAnOlderApp() {
+        pairedPhone()
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(2_900))
+            assertEquals(Row("Tablet · phone", "Paired", offered = false), rows(activity)[1])
+            shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(200))
+            assertEquals(Row("Tablet · phone", "Paired", "Update Remote Desktop on Tablet to open it from this phone",
+                offered = false), rows(activity)[1])
         } finally {
             controller.pause().stop().destroy()
         }

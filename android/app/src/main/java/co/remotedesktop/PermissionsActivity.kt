@@ -19,7 +19,7 @@ import com.google.android.material.card.MaterialCardView
 import com.google.android.material.materialswitch.MaterialSwitch
 
 /**
- * "Permissions & Access": the two ongoing consent switches for paired devices,
+ * "Permissions & Access": the ongoing consent switches for paired devices,
  * plus Accessibility/file grants and optional, per-session smooth screen sharing.
  */
 class PermissionsActivity : AppCompatActivity() {
@@ -78,6 +78,10 @@ class PermissionsActivity : AppCompatActivity() {
         findViewById<MaterialSwitch>(R.id.allowFilesSwitch).apply {
             isChecked = prefs.allowFileAccess
             setOnCheckedChangeListener { _, v -> prefs.allowFileAccess = v; refresh() }
+        }
+        findViewById<MaterialSwitch>(R.id.allowPhonesSwitch).apply {
+            isChecked = prefs.allowPhones
+            setOnCheckedChangeListener { _, v -> prefs.allowPhones = v }
         }
         offerCapturesSub = findViewById(R.id.offerCapturesSub)
         offerCapturesSwitch = findViewById<MaterialSwitch>(R.id.offerCapturesSwitch).apply {

@@ -82,8 +82,13 @@ fingerprint, and:
 
 **Enforcement.** Messages that view, control, or touch files or the clipboard
 (`start-view`, `request-keyframe`, `privacy-mode`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
-`touch`, `pinch`, `back`, `homebtn`, `recents`, `fs-*`, `clip-get`, `clip-set`) are dropped unless the
-sending peer is trusted. Because every key holder can decrypt binary frames,
+`touch`, `pinch`, `back`, `homebtn`, `recents`, `notifications`, `fs-*`, `clip-get`, `clip-set`) are dropped unless the
+sending peer is trusted. A phone also drops input, `start-view` and `fs-*` from
+another phone (a peer whose `device` is `android`) unless its *Allow other
+phones* switch is on, which it is by default; an `fs-list` or `fs-get` it refuses
+that way says so in its `error`. The switch goes by the type each device
+declares to the relay: it is a consent step, not a defence against a modified
+app on an approved phone. Because every key holder can decrypt binary frames,
 and older relays **broadcast them** to the whole session, a host additionally
 sends no video frames and serves no file transfers while *any* unapproved peer
 is present in the session (the stream resumes automatically once the peer is
@@ -135,20 +140,22 @@ the viewer simply decodes the type-3 stream (below) and sends these.
 | `text`   | `text` | Type a unicode string (used for normal typing without modifiers). |
 | `cad`    | – | Request Ctrl+Alt+Del. The real secure attention sequence can't be injected by normal apps, so the host calls `SendSAS` where policy allows it and opens Task Manager otherwise. |
 
-**Input — controlling Android** (coordinates normalized 0..1 over the phone screen)
+**Input — controlling Android** (coordinates normalized 0..1 over the phone screen).
+The controller may be a PC or another phone.
 
 | type    | fields | notes |
 |---------|--------|-------|
 | `tap`   | `x`, `y` | |
 | `swipe` | `x1`, `y1`, `x2`, `y2`, `ms` | Drag gesture over `ms` milliseconds. |
 | `touch` | `action` (`down`\|`move`\|`up`), `x`, `y` | Streamed pointer for real-time press / long-press / drag. The phone plays it as one continued accessibility stroke: the finger stays down from `down` until `up`. Senders should throttle `move` to ~30 ms. |
-| `pinch` | `x`, `y`, `dir` (`in`\|`out`) | Two-finger pinch step centered at `x`,`y` (e.g. one mouse-wheel notch). |
+| `pinch` | `x`, `y`, `dir` (`in`\|`out`), `scale`? | Two-finger pinch centered at `x`,`y`. Without `scale`, a fixed step (one mouse-wheel notch). With it, the end finger spread divided by the start spread, from another phone's own pinch; the phone starts the fingers at least the system's minimum scaling span apart (about 27 mm), since a pinch that starts closer barely zooms, and fits the gesture to the screen. |
 | `back` / `homebtn` / `recents` | – | Global navigation actions. |
+| `notifications` | – | Opens the notification shade; `back` closes it. |
 | `text`  | `text` | Type a unicode string into the focused text field, line breaks as `\n`. The sender composes characters with its own keyboard layout. |
 | `key`   | `code`, `ctrl`?, `shift`? | Press one key, with Ctrl and Shift held if set. `code` is `ENTER`, `BACKSPACE`, `DELETE`, `TAB`, `HOME`, `END`, `PGUP`, `PGDN`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, or a letter `A`-`Z` for a Ctrl shortcut. Plain `ENTER` performs the field's own action (Search, Send, Next...) the way the on-screen keyboard's Enter does. `ESC` is Back. With no text field focused, the arrows and `ENTER` move between and press controls. |
 
 The phone types through its accessibility service's own input method, which
-Android 13 added, so on older versions only `ESC` works. A desktop that sees
+Android 13 added, so on older versions only `ESC` works. A viewer that sees
 `screen-info` without `typing` should say so rather than type into nothing.
 The desktop keeps Ctrl+V for itself and sends its clipboard as `text`, since
 a paste there is expected to come from the PC.
@@ -290,8 +297,10 @@ the device the file is going to. A relay that doesn't understand the format
 would broadcast it unchanged, which no receiver can read, so a sender
 addresses frames only on a connection whose `welcome` carried `binaryTo: true`,
 and broadcasts otherwise. A viewing app should still ignore frame types its
-host never sends (a desktop viewer ignores type `1`), since an older relay or
-sender broadcasts everything.
+host never sends (a desktop viewer ignores type `1`; a phone viewing a phone
+draws type `1` and ignores `3` and `4`), since an older relay or sender
+broadcasts everything. A type `1` frame names no sender, so behind an older
+relay a phone viewer can't tell two streaming phones apart.
 
 ## Viewport streaming
 
@@ -418,6 +427,12 @@ be dropped without silently corrupting a transfer and keep an 8 MiB ceiling.
 The frame-type byte is cleartext precisely so the relay can tell these apart
 without decrypting anything.
 
+**Android sender.** A phone has one queue (OkHttp's). It skips a video frame
+while more than about 300 KB is queued, and holds back file chunks only above
+6 MB. A screen picture skipped that way, or for the 10 fps cap, is kept and
+replaced by any newer one, and the newest goes out once there is room, so the
+last change on screen always arrives.
+
 ## End-to-end encryption
 
 Everything except the `hello` and the server's own control messages
@@ -491,11 +506,15 @@ session key never expires, and the device-authentication handshake re-runs
 silently on every reconnect — an approved device never sees a prompt again
 unless it is revoked or the session key changes.
 
-### Desktop file-access status
+### File-access status
 
-An authenticated viewer sends `get-file-access` with `to` to query the desktop.
-The desktop replies with `file-access`, `to`, and `allowed` (boolean), and sends
-the same status when file consent or peer trust changes. `allowed` is true only
-when file access is enabled and all session peers are trusted. Android disables
+An authenticated viewer sends `get-file-access` with `to` to query a desktop or
+a phone. It replies with `file-access`, `to`, and `allowed` (boolean). `allowed`
+is true only when file access is enabled and all session peers are trusted; a
+phone asked by another phone also requires its *Allow other phones* switch. A
+desktop sends the same status unasked when file consent or peer trust changes; a
+phone answers only when asked. A phone adds `phones` (boolean), the state of
+that switch, and another phone offers View and Browse for it only after a reply
+with `phones: true`; a phone on an older app never replies. Android disables
 uploads until it receives an affirmative status, including on returning from
-the file picker. The desktop still enforces consent on every file request.
+the file picker. The device still enforces consent on every file request.

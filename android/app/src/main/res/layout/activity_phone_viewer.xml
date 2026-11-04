@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Another phone: its screen, and below it the navigation buttons this
+     phone's own edge gestures can't send. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/phoneViewerRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/phoneViewerToolbar"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="@android:color/transparent"
+        app:navigationContentDescription="@string/viewer_close"
+        app:navigationIcon="@drawable/ic_close"
+        app:navigationIconTint="?attr/colorOnSurface"
+        app:titleTextAppearance="?attr/textAppearanceTitleMedium" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@android:color/black">
+
+        <co.remotedesktop.PhoneScreenView
+            android:id="@+id/phoneScreen"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Not clickable, so touches still reach the screen beneath. -->
+        <TextView
+            android:id="@+id/phoneViewerNotice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:padding="24dp"
+            android:textColor="@android:color/white"
+            android:textSize="16sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/phoneViewerReconnect"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#99000000"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="24dp"
+            android:visibility="gone">
+
+            <ProgressBar
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:indeterminateTint="@android:color/white" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:accessibilityLiveRegion="polite"
+                android:gravity="center"
+                android:paddingTop="12dp"
+                android:text="@string/viewer_reconnecting"
+                android:textColor="@android:color/white"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/phoneViewerReconnectReason"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:paddingTop="6dp"
+                android:textColor="#CCFFFFFF"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <!-- Receives this phone's keyboard; what is typed goes to the other phone. -->
+        <EditText
+            android:id="@+id/phoneViewerIme"
+            android:layout_width="1dp"
+            android:layout_height="1dp"
+            android:alpha="0"
+            android:importantForAutofill="no" />
+    </FrameLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:gravity="center"
+        android:orientation="horizontal">
+
+        <ImageButton
+            android:id="@+id/phoneNavBack"
+            style="@style/RdPhoneNavButton"
+            android:contentDescription="@string/nav_back"
+            android:src="@drawable/ic_nav_back" />
+
+        <ImageButton
+            android:id="@+id/phoneNavHome"
+            style="@style/RdPhoneNavButton"
+            android:contentDescription="@string/nav_home"
+            android:src="@drawable/ic_nav_home" />
+
+        <ImageButton
+            android:id="@+id/phoneNavRecents"
+            style="@style/RdPhoneNavButton"
+            android:contentDescription="@string/nav_recents"
+            android:src="@drawable/ic_nav_recents" />
+
+        <ImageButton
+            android:id="@+id/phoneNavNotifications"
+            style="@style/RdPhoneNavButton"
+            android:contentDescription="@string/nav_notifications"
+            android:src="@drawable/ic_notifications" />
+    </LinearLayout>
+</LinearLayout>

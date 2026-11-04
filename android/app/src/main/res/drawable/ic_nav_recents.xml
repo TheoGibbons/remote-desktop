@@ -1,0 +1,8 @@
+<!-- Android's Recents button: an outlined rounded square. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:strokeColor="#FF000000" android:strokeWidth="2"
+        android:fillColor="#00000000"
+        android:pathData="M8,6H16A2,2 0,0 1,18 8V16A2,2 0,0 1,16 18H8A2,2 0,0 1,6 16V8A2,2 0,0 1,8 6Z"/>
+</vector>

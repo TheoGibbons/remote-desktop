@@ -1,8 +1,15 @@
 <resources>
-    <string name="files_title">Desktop files</string>
+    <string name="files_title">Files</string>
+    <string name="files_title_on">Files on %1$s</string>
     <string name="files_back">Back</string>
     <string name="files_upload">Upload</string>
-    <string name="files_upload_description">Upload files to desktop Downloads</string>
+    <string name="files_upload_description">Upload files to Downloads</string>
+    <string name="files_upload_to">Upload files to Downloads on %1$s</string>
+    <string name="files_not_online">That device is no longer online</string>
+    <string name="files_uploaded">“%1$s” sent to %2$s\'s Downloads folder</string>
+    <string name="files_uploaded_elsewhere">“%1$s” sent to %2$s\'s Downloads folder (not the folder you are browsing)</string>
+    <string name="files_access_off">File access is off on %1$s.</string>
+    <string name="files_save_failed">%1$s couldn\'t save the file: %2$s</string>
     <string name="files_cancel">Cancel</string>
     <string name="files_cancel_description">Cancel transfer</string>
     <string name="files_cancelled">Transfer cancelled</string>

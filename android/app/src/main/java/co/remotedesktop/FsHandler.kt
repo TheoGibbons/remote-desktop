@@ -72,12 +72,14 @@ class FsHandler(private val context: Context) {
 
     /** @param peerAccessAllowed whether the user consents to peers reading this
      *  phone's files or pushing files to it. Replies to transfers this device
-     *  initiated itself (fs-get downloads) are always processed. */
-    fun handleJson(msg: JSONObject, peerAccessAllowed: Boolean) {
+     *  initiated itself (fs-get downloads) are always processed.
+     *  @param deniedReason what a refusal tells the peer, when not the usual. */
+    fun handleJson(msg: JSONObject, peerAccessAllowed: Boolean, deniedReason: String? = null) {
+        val denied = deniedReason ?: deniedError
         when (msg.optString("type")) {
-            "fs-list" -> if (peerAccessAllowed) handleList(msg) else denyList(msg)
-            "fs-get" -> if (peerAccessAllowed) handleGet(msg) else denyGet(msg)
-            "fs-begin" -> handleBegin(msg, peerAccessAllowed)
+            "fs-list" -> if (peerAccessAllowed) handleList(msg) else denyList(msg, denied)
+            "fs-get" -> if (peerAccessAllowed) handleGet(msg) else denyGet(msg, denied)
+            "fs-begin" -> handleBegin(msg, peerAccessAllowed, denied)
             "fs-end" -> handleEnd(msg)
             // Only the device receiving the file can call it off.
             "fs-cancel" -> outgoing[msg.optInt("xferId")]?.takeIf { it.peer == msg.optString("from") }
@@ -113,7 +115,7 @@ class FsHandler(private val context: Context) {
 
     private val deniedError = "File access is disabled on the remote device"
 
-    private fun denyList(msg: JSONObject) {
+    private fun denyList(msg: JSONObject, error: String) {
         ConnectionManager.sendJson(
             JSONObject()
                 .put("type", "fs-list-result")
@@ -121,14 +123,14 @@ class FsHandler(private val context: Context) {
                 .put("reqId", msg.optString("reqId"))
                 .put("path", msg.optString("path"))
                 .put("entries", JSONArray())
-                .put("error", deniedError)
+                .put("error", error)
         )
     }
 
-    private fun denyGet(msg: JSONObject) {
+    private fun denyGet(msg: JSONObject, error: String) {
         ConnectionManager.sendJson(
             JSONObject().put("type", "fs-end").put("to", msg.optString("from"))
-                .put("xferId", msg.optInt("xferId")).put("ok", false).put("error", deniedError)
+                .put("xferId", msg.optInt("xferId")).put("ok", false).put("error", error)
         )
     }
 
@@ -326,7 +328,7 @@ class FsHandler(private val context: Context) {
                     ?: throw IOException("Cannot open the shared file")
                 onProgress("Sending $name...")
                 val ok = sendFile(toPeer, input, name, size, xferId, canContinue, onProgress)
-                onDone(ok, if (ok) name else "Could not send $name. Check the connection and desktop file access.")
+                onDone(ok, if (ok) name else "Could not send $name. Check the connection, and that file access is on there.")
             } catch (e: Exception) {
                 outgoing.remove(xferId)
                 onDone(false, "Cannot read the shared file: ${e.message ?: "access expired"}. Share it again from the source app.")
@@ -361,7 +363,7 @@ class FsHandler(private val context: Context) {
         }
     }
 
-    private fun handleBegin(msg: JSONObject, peerAccessAllowed: Boolean) {
+    private fun handleBegin(msg: JSONObject, peerAccessAllowed: Boolean, deniedError: String) {
         val xferId = msg.optInt("xferId")
         val name = msg.optString("name").replace(Regex("[/\\\\:*?\"<>|]"), "_").ifBlank { "file.bin" }
         try {

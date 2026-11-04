@@ -2,7 +2,12 @@ package co.remotedesktop
 
 import java.util.Locale
 
-internal data class DesktopFileEntry(val name: String, val dir: Boolean, val size: Long, val mtime: Long)
+/** @param label what a phone calls a storage volume ("SD card"), whose [name] is its path. */
+internal data class DesktopFileEntry(val name: String, val dir: Boolean, val size: Long, val mtime: Long,
+                                     val label: String? = null) {
+    /** What the browser shows for it. */
+    val title: String get() = label ?: name
+}
 
 internal enum class DesktopFileSort(val label: Int, val summary: Int, private val descending: Boolean) {
     NAME_ASC(R.string.files_sort_name_asc, R.string.files_sort_name_up, false),
@@ -14,14 +19,14 @@ internal enum class DesktopFileSort(val label: Int, val summary: Int, private va
 
     fun comparator(foldersFirst: Boolean): Comparator<DesktopFileEntry> {
         val valueOrder = when (this) {
-            NAME_ASC, NAME_DESC -> compareBy<DesktopFileEntry> { it.name.lowercase(Locale.ROOT) }
+            NAME_ASC, NAME_DESC -> compareBy<DesktopFileEntry> { it.title.lowercase(Locale.ROOT) }
             // Folder sizes aren't calculated, so they rank below empty files.
             SIZE_ASC, SIZE_DESC -> compareBy { if (it.dir) -1L else it.size }
             MODIFIED_ASC, MODIFIED_DESC -> compareBy { it.mtime }
         }
         val ordered = if (descending) valueOrder.reversed() else valueOrder
         return (if (foldersFirst) compareByDescending<DesktopFileEntry> { it.dir }.then(ordered) else ordered)
-            .thenBy { it.name.lowercase(Locale.ROOT) }
+            .thenBy { it.title.lowercase(Locale.ROOT) }
             .thenBy { it.name }
     }
 }

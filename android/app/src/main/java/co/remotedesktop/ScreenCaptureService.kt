@@ -13,6 +13,7 @@ import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
@@ -20,6 +21,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.WindowManager
 import org.json.JSONObject
@@ -72,10 +74,19 @@ class ScreenCaptureService : Service() {
     private var captureThread: HandlerThread? = null
     @Volatile private var streaming = false
     @Volatile private var streamGeneration = 0L
-    @Volatile private var lastFrameAt = 0L
     private var reusableBitmap: Bitmap? = null
 
     private val maxFps = 10
+    // Capture thread only. The screen produces a picture only when it changes,
+    // so one skipped for the frame rate or a full send queue is kept and sent
+    // later; otherwise the last change of an animation could be lost.
+    private val pacer = FramePacer<Image>(1000L / maxFps, retryMs = 100L) { it.close() }
+    private var captureHandler: Handler? = null
+    private val catchUp = Runnable {
+        if (!streaming) pacer.clear()
+        else pacer.retry(SystemClock.uptimeMillis(), ConnectionManager.hasRoomForVideo())?.let(::encodeAndSend)
+        scheduleCatchUp()
+    }
     private val jpegQuality = 55
     private val maxWidth = 1080
 
@@ -153,43 +164,23 @@ class ScreenCaptureService : Service() {
 
         captureThread = HandlerThread("capture").also { it.start() }
         val handler = Handler(captureThread!!.looper)
+        captureHandler = handler
 
+        // Three buffers: one kept by the pacer, two for acquireLatestImage.
         imageReader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3)
         imageReader!!.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
-            try {
-                if (!streaming) return@setOnImageAvailableListener
-                val token = streamGeneration
-                // Any key holder can decrypt frames, and older relays broadcast
-                // them to the whole session — never send while an unapproved
-                // device is present. Resumes automatically once it is approved or leaves.
-                if (!PhoneScreenCapture.maySendFrames(this)) return@setOnImageAvailableListener
-                val now = System.currentTimeMillis()
-                if (now - lastFrameAt < 1000L / maxFps) return@setOnImageAvailableListener
-                lastFrameAt = now
-
-                val plane = image.planes[0]
-                val rowPadding = plane.rowStride - plane.pixelStride * image.width
-                val bmpW = image.width + rowPadding / plane.pixelStride
-                var bmp = reusableBitmap
-                if (bmp == null || bmp.width != bmpW || bmp.height != image.height) {
-                    bmp = Bitmap.createBitmap(bmpW, image.height, Bitmap.Config.ARGB_8888)
-                    reusableBitmap = bmp
-                }
-                bmp.copyPixelsFromBuffer(plane.buffer)
-                val cropped = if (bmpW != image.width)
-                    Bitmap.createBitmap(bmp, 0, 0, image.width, image.height) else bmp
-
-                val out = ByteArrayOutputStream(200_000)
-                cropped.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out)
-                if (cropped !== bmp) cropped.recycle()
-                // ConnectionManager adds the frame-type byte and encrypts the JPEG.
-                if (streaming && token == streamGeneration && PhoneScreenCapture.maySendFrames(this))
-                    ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray(), PhoneScreenCapture.recipients())
-            } catch (_: Exception) {
-            } finally {
+            val image = try { reader.acquireLatestImage() } catch (_: IllegalStateException) { null }
+                ?: return@setOnImageAvailableListener
+            // Any key holder can decrypt frames, and older relays broadcast
+            // them to the whole session — never send while an unapproved
+            // device is present. Resumes automatically once it is approved or leaves.
+            if (!streaming || !PhoneScreenCapture.maySendFrames(this)) {
                 image.close()
+                pacer.clear()
+                return@setOnImageAvailableListener
             }
+            pacer.offer(image, SystemClock.uptimeMillis(), ConnectionManager.hasRoomForVideo())?.let(::encodeAndSend)
+            scheduleCatchUp()
         }, handler)
 
         virtualDisplay = projection!!.createVirtualDisplay(
@@ -199,6 +190,42 @@ class ScreenCaptureService : Service() {
             imageReader!!.surface,
             null, handler
         )
+    }
+
+    private fun scheduleCatchUp() {
+        val handler = captureHandler ?: return
+        handler.removeCallbacks(catchUp)
+        pacer.retryDelay(SystemClock.uptimeMillis(), ConnectionManager.hasRoomForVideo())
+            ?.let { handler.postDelayed(catchUp, it) }
+    }
+
+    /** Sends one picture as a JPEG frame, then closes it. Capture thread only. */
+    private fun encodeAndSend(image: Image) {
+        try {
+            val token = streamGeneration
+            if (!streaming || !PhoneScreenCapture.maySendFrames(this)) return
+            val plane = image.planes[0]
+            val rowPadding = plane.rowStride - plane.pixelStride * image.width
+            val bmpW = image.width + rowPadding / plane.pixelStride
+            var bmp = reusableBitmap
+            if (bmp == null || bmp.width != bmpW || bmp.height != image.height) {
+                bmp = Bitmap.createBitmap(bmpW, image.height, Bitmap.Config.ARGB_8888)
+                reusableBitmap = bmp
+            }
+            bmp.copyPixelsFromBuffer(plane.buffer)
+            val cropped = if (bmpW != image.width)
+                Bitmap.createBitmap(bmp, 0, 0, image.width, image.height) else bmp
+
+            val out = ByteArrayOutputStream(200_000)
+            cropped.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out)
+            if (cropped !== bmp) cropped.recycle()
+            // ConnectionManager adds the frame-type byte and encrypts the JPEG.
+            if (streaming && token == streamGeneration && PhoneScreenCapture.maySendFrames(this))
+                ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray(), PhoneScreenCapture.recipients())
+        } catch (_: Exception) {
+        } finally {
+            image.close()
+        }
     }
 
     private fun startForegroundWithNotif() {

@@ -77,6 +77,22 @@ class Prefs(context: Context) {
             CaptureOffers.refresh()
         }
 
+    /** Consent: approved phones, not just PCs, may use the two switches above
+     *  to view, control and browse this phone. Off lets someone keep a PC
+     *  working while shutting other phones out. */
+    var allowPhones: Boolean
+        get() = sp.getBoolean("allowPhones", true)
+        set(v) {
+            sp.edit().putBoolean("allowPhones", v).apply()
+            // Ends another phone's view at once (PhoneScreenCapture drops it).
+            PhoneScreenCapture.refresh()
+        }
+
+    /** Whether a device of this type (as it announced itself to the relay)
+     *  may view, control and browse this phone: PCs always, other phones only
+     *  with [allowPhones]. Viewing and files still need their own switches. */
+    fun allowsDevice(device: String?): Boolean = device != "android" || allowPhones
+
     /** Photos, videos and screenshots taken on this phone pop up on paired
      *  PCs, ready to download. Needs [allowFileAccess] too. */
     var offerCaptures: Boolean
