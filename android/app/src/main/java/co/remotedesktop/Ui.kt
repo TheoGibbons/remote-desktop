@@ -2,6 +2,8 @@ package co.remotedesktop
 
 import android.app.Activity
 import android.content.Context
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.os.Build
 import android.text.InputType
 import android.view.View
@@ -17,6 +19,17 @@ import java.util.Base64
 
 /** Small dialogs and helpers shared by the settings-style screens. */
 object Ui {
+
+    /** Turns a viewer between portrait and landscape. */
+    fun rotateScreen(activity: Activity) {
+        // Keep the chosen orientation even when the phone's auto-rotate is off.
+        // Sensor variants allow either side of the phone within that orientation.
+        activity.requestedOrientation = if (activity.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        }
+    }
 
     fun applySystemBarInsets(activity: Activity) {
         val content = activity.findViewById<ViewGroup>(android.R.id.content)

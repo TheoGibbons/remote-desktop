@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ic_screen_rotation fills its whole 24dp. At 20dp it matches the icons beside
+     it on the phone viewer's bar, where a menu item draws its icon at full size. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:width="20dp"
+        android:height="20dp"
+        android:drawable="@drawable/ic_screen_rotation"
+        android:gravity="center" />
+</layer-list>

@@ -101,12 +101,8 @@ class PhoneViewerActivity : AppCompatActivity() {
 
         findViewById<MaterialToolbar>(R.id.phoneViewerToolbar).apply {
             setNavigationOnClickListener { finish() }
-            menu.add(R.string.viewer_keyboard).apply {
-                setIcon(R.drawable.ic_keyboard)
-                iconTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.rd_on_surface))
-                setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-                setOnMenuItemClickListener { toggleKeyboard(); true }
-            }
+            addAction(R.string.viewer_keyboard, R.drawable.ic_keyboard) { toggleKeyboard() }
+            addAction(R.string.rotate_screen, R.drawable.ic_screen_rotation_small) { Ui.rotateScreen(this@PhoneViewerActivity) }
         }
         screen = findViewById<PhoneScreenView>(R.id.phoneScreen).apply { onInput = ::sendInput }
         notice = findViewById(R.id.phoneViewerNotice)
@@ -138,6 +134,15 @@ class PhoneViewerActivity : AppCompatActivity() {
                     }
                 }
             })
+        }
+    }
+
+    private fun MaterialToolbar.addAction(title: Int, icon: Int, onClick: () -> Unit) {
+        menu.add(title).apply {
+            setIcon(icon)
+            iconTintList = android.content.res.ColorStateList.valueOf(getColor(R.color.rd_on_surface))
+            setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+            setOnMenuItemClickListener { onClick(); true }
         }
     }
 

@@ -757,7 +757,7 @@ class ViewerActivity : AppCompatActivity() {
             setOnLongClickListener { copyFromPc(press = false); true }
         }
         pasteButton = button(R.id.viewerPaste) { pasteToPc() }
-        button(R.id.viewerRotate) { rotateScreen() }
+        button(R.id.viewerRotate) { Ui.rotateScreen(this@ViewerActivity) }
         privacyButton = button(R.id.viewerPrivacy) {
             val enabled = !privacyEnabled
             val prefs = Prefs(this@ViewerActivity)
@@ -785,16 +785,6 @@ class ViewerActivity : AppCompatActivity() {
             menu.add(R.string.viewer_stats).setOnMenuItemClickListener { showDiagnostics(); true }
             menu.add(R.string.viewer_help).setOnMenuItemClickListener { showGestureHelp(); true }
             show()
-        }
-    }
-
-    private fun rotateScreen() {
-        // Keep the chosen orientation even when the phone's auto-rotate is off.
-        // Sensor variants allow either side of the phone within that orientation.
-        requestedOrientation = if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         }
     }
 

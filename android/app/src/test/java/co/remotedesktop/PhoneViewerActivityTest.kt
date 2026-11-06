@@ -2,6 +2,8 @@ package co.remotedesktop
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
@@ -180,6 +182,30 @@ class PhoneViewerActivityTest {
         }
         assertTrue("The buttons run into the keyboard button",
             previousRight <= IntArray(2).also(keyboard::getLocationInWindow)[0])
+    }
+
+    @Test
+    fun rotateTurnsThisPhoneWithoutRestartingTheStream() {
+        open()
+        val toolbar = activity.findViewById<MaterialToolbar>(R.id.phoneViewerToolbar)
+        val actions = (0 until toolbar.childCount).map(toolbar::getChildAt).filterIsInstance<ActionMenuView>().single()
+        assertEquals("Keyboard and rotate both belong on the bar", 2, actions.childCount)
+        val rotate = actions.getChildAt(1)
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, activity.requestedOrientation)
+        socket.messages.clear()
+
+        rotate.performClick()
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, activity.requestedOrientation)
+
+        controller!!.configurationChange(Configuration(activity.resources.configuration).apply {
+            orientation = Configuration.ORIENTATION_LANDSCAPE
+        })
+        idle()
+        rotate.performClick()
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT, activity.requestedOrientation)
+
+        assertFalse(activity.isDestroyed)
+        assertEquals(emptyList<String>(), sent("start-view", "stop-view").map { it.getString("type") })
     }
 
     @Test

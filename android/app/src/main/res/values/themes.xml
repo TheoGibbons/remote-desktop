@@ -89,7 +89,9 @@
         <item name="android:layout_height">match_parent</item>
         <item name="android:layout_weight">1</item>
         <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
-        <item name="android:padding">12dp</item>
+        <!-- Little at the sides, so a narrow phone doesn't shrink the icons. -->
+        <item name="android:paddingHorizontal">4dp</item>
+        <item name="android:paddingVertical">12dp</item>
         <item name="android:scaleType">fitCenter</item>
         <item name="tint">?attr/colorOnSurface</item>
     </style>
