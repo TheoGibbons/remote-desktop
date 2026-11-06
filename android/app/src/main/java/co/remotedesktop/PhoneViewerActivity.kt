@@ -100,7 +100,6 @@ class PhoneViewerActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         findViewById<MaterialToolbar>(R.id.phoneViewerToolbar).apply {
-            title = peerName
             setNavigationOnClickListener { finish() }
             menu.add(R.string.viewer_keyboard).apply {
                 setIcon(R.drawable.ic_keyboard)

@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.EditText
 import android.widget.TextView
+import androidx.appcompat.widget.ActionMenuView
 import com.google.android.material.appbar.MaterialToolbar
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -113,7 +114,6 @@ class PhoneViewerActivityTest {
     @Test
     fun itViewsThePhoneWhileOnScreenAndLiftsAFingerLeftDownWhenItGoes() {
         open()
-        assertEquals("Pixel", activity.findViewById<MaterialToolbar>(R.id.phoneViewerToolbar).title.toString())
         assertEquals(listOf("phone"), sent("start-view").map { it.getString("to") })
         frame(Crypto.CH_VIDEO)
         assertTrue(screen.hasFrame)
@@ -160,6 +160,26 @@ class PhoneViewerActivityTest {
             activity.findViewById<MaterialToolbar>(R.id.phoneViewerToolbar).menu.performIdentifierAction(it.itemId, 0)
         }
         assertEquals("Pixel needs Android 13 or later to type into it", ShadowToast.getTextOfLatestToast())
+    }
+
+    @Test
+    fun theTopBarHoldsTheButtonsBesideTheKeyboardAndNoName() {
+        open()
+        val toolbar = activity.findViewById<MaterialToolbar>(R.id.phoneViewerToolbar)
+        assertTrue(toolbar.title.isNullOrEmpty())
+        val keyboard = (0 until toolbar.childCount).map(toolbar::getChildAt).filterIsInstance<ActionMenuView>().single()
+        val top = IntArray(2).also(toolbar::getLocationInWindow)[1]
+        var previousRight = 0
+        listOf(R.id.phoneNavBack, R.id.phoneNavHome, R.id.phoneNavRecents, R.id.phoneNavNotifications).forEach { id ->
+            val button = activity.findViewById<View>(id)
+            val at = IntArray(2).also(button::getLocationInWindow)
+            assertTrue("Button $id has no width", button.width > 0)
+            assertEquals(top, at[1])
+            assertTrue("Button $id overlaps the one before it", at[0] >= previousRight)
+            previousRight = at[0] + button.width
+        }
+        assertTrue("The buttons run into the keyboard button",
+            previousRight <= IntArray(2).also(keyboard::getLocationInWindow)[0])
     }
 
     @Test
