@@ -24,6 +24,7 @@ import android.graphics.Typeface
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.LayoutInflater
+import android.view.PixelCopy
 import android.view.Surface
 import android.view.TextureView
 import android.view.View
@@ -296,6 +297,50 @@ class ViewerActivity : AppCompatActivity() {
         latchedFrameH = h
         latchedRegion = shown
         videoOutputProgressAtMs = SystemClock.elapsedRealtime()
+    }
+
+    /**
+     * Copy the picture on the video surface, for the screen's stale backdrop.
+     *
+     * Not TextureView.getBitmap: since Android 13 that returns the decoder's
+     * whole buffer, padding rows and all, squeezed into the size asked for.
+     * Decoders pad to whole 16-pixel macroblocks, so unless the frame size
+     * happened to be a multiple of 16 the copy came out a few percent short and
+     * sat visibly askew against the live picture beside it. PixelCopy applies
+     * the buffer's crop, as drawing it on screen does.
+     *
+     * It copies the frame most recently handed to the surface, which can be
+     * ahead of the one on screen, so the copy only counts if that frame was of
+     * [region] both before and after.
+     */
+    private fun readVideoFrame(w: Int, h: Int, region: Rect, done: (Bitmap?) -> Unit) {
+        val surface = synchronized(videoLock) { videoSurface?.takeIf { latchedRegion == region } }
+        val frame = surface?.let {
+            try {
+                Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            } catch (_: OutOfMemoryError) {
+                null
+            }
+        }
+        if (surface == null || frame == null) {
+            done(null)
+            return
+        }
+        try {
+            PixelCopy.request(surface, frame, { result ->
+                val stillThere = synchronized(videoLock) { latchedRegion == region }
+                if (result == PixelCopy.SUCCESS && stillThere) {
+                    done(frame)
+                } else {
+                    frame.recycle()
+                    done(null)
+                }
+            }, videoHandler)
+        } catch (_: RuntimeException) {
+            // The surface went away between the check and the request.
+            frame.recycle()
+            done(null)
+        }
     }
 
     private fun recoverVideo() {
@@ -661,6 +706,7 @@ class ViewerActivity : AppCompatActivity() {
         screen = RemoteScreenView(this)
         screen.restoreViewportState(savedInstanceState?.getBundle(STATE_VIEWPORT))
         screen.attachVideo(videoView)
+        screen.videoFrameReader = ::readVideoFrame
         screen.attachBackdropLayer(backdropLayer)
         val debugPrefs = getSharedPreferences(DEBUG_PREFS, Context.MODE_PRIVATE)
         screen.setDirtyRectHighlightsEnabled(debugPrefs.getBoolean(PREF_HIGHLIGHT_DIRTY, false))

@@ -82,6 +82,7 @@ class RemoteScreenView @JvmOverloads constructor(
     // new on screen since the last one does not read the surface back again.
     private var videoFrameSerial = 0L
     private var capturedVideoSerial = -1L
+    private var videoReadPending = false
 
     // The desktop as last seen, drawn dimmed wherever the live frame is not.
     // Under video it needs its own layer beneath the surface; see onDraw.
@@ -216,6 +217,14 @@ class RemoteScreenView @JvmOverloads constructor(
         videoView = view
         invalidate()
     }
+
+    /**
+     * Copies the picture on the video surface into a `w`x`h` bitmap for the
+     * stale backdrop, and hands it to `done` on the main thread — or null
+     * when it cannot, including when the surface's newest frame might not be
+     * of `region`. Must always call `done`, once.
+     */
+    var videoFrameReader: ((w: Int, h: Int, region: Rect, done: (Bitmap?) -> Unit) -> Unit)? = null
 
     /**
      * The "Show last-seen areas" setting. Off frees everything the backdrop
@@ -495,32 +504,32 @@ class RemoteScreenView @JvmOverloads constructor(
     /**
      * About to ask the host for a different region: keep what the video shows
      * of the current one, so it comes back dimmed rather than black when the
-     * user pans back. The frame only exists on the GPU, so this reads it back —
-     * once per region request, never per frame, and nothing on the stream
-     * changes. The tile path keeps its own frames as it composes them
-     * (see [keepStale]).
+     * user pans back. The frame only exists on the GPU, so this reads it back
+     * (see [videoFrameReader]) — once per region request, never per frame, and
+     * nothing on the stream changes. The tile path keeps its own frames as it
+     * composes them (see [keepStale]).
      */
     private fun captureVideoBackdrop() {
-        val tv = videoView ?: return
-        if (videoW <= 0 || videoFrameSerial == capturedVideoSerial || !backdrop.wantsFrame()) return
-        if (!tv.isAvailable) return
+        val read = videoFrameReader ?: return
+        if (videoW <= 0 || videoReadPending || videoFrameSerial == capturedVideoSerial ||
+            !backdrop.wantsFrame()
+        ) return
         val before = frameRect
-        val frame = try {
-            tv.getBitmap(videoW, videoH)
-        } catch (_: RuntimeException) {
-            null
-        } catch (_: OutOfMemoryError) {
-            null
-        } ?: return
-        // Reading the surface back can latch a newer frame, and that may be the
-        // first one of a region asked for earlier: the pixels would then not be
-        // of the rectangle we are about to file them under.
-        if (frameRect != before || videoW != frame.width || videoH != frame.height) {
-            frame.recycle()
-            return
+        val serial = videoFrameSerial
+        videoReadPending = true
+        read(videoW, videoH, Rect(before)) { frame ->
+            videoReadPending = false
+            if (frame == null) return@read
+            // The copy finishes after the region request has gone out. If the
+            // surface has been placed somewhere else since, the pixels may be
+            // of either place.
+            if (frameRect != before) {
+                frame.recycle()
+                return@read
+            }
+            capturedVideoSerial = serial
+            backdrop.merge(frame, before)
         }
-        capturedVideoSerial = videoFrameSerial
-        backdrop.merge(frame, before)
     }
 
     private fun currentScale(): Float {

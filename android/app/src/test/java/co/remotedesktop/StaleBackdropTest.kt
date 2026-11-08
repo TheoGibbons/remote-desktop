@@ -307,4 +307,70 @@ class StaleBackdropTest {
         render(view)
         assertEquals(0, Color.alpha(render(layer).getPixel(250, 400)))
     }
+
+    private class VideoRead(val w: Int, val h: Int, val region: Rect, val done: (Bitmap?) -> Unit)
+
+    /** Video mode showing the left half of the desktop, with copies of the surface held for the test to answer. */
+    private fun videoOnLeftHalf(view: RemoteScreenView, reads: MutableList<VideoRead>): StaleBackdropLayer {
+        val activity = view.context as Activity
+        val layer = StaleBackdropLayer(activity)
+        layer.layout(0, 0, view.width, view.height)
+        view.attachBackdropLayer(layer)
+        view.attachVideo(TextureView(activity))
+        view.videoFrameReader = { w, h, region, done -> reads.add(VideoRead(w, h, region, done)) }
+        view.onViewportChanged = { _, _, _, _, _, _ -> }
+        view.setVideoFrame(500, 800, Rect(0, 0, 1000, 1600))
+        idleMain()
+        return layer
+    }
+
+    @Test
+    fun videoModeKeepsWhatTheSurfaceShowedBeforeAskingForAnotherRegion() {
+        val view = screen()
+        val reads = ArrayList<VideoRead>()
+        val layer = videoOnLeftHalf(view, reads)
+
+        view.resendViewport(immediate = true)
+        val read = reads.single()
+        assertEquals(500, read.w)
+        assertEquals(800, read.h)
+        assertEquals(Rect(0, 0, 1000, 1600), read.region)
+        read.done(solid(Color.WHITE, 500, 800))
+        view.resendViewport(immediate = true)
+        assertEquals("nothing new on the surface, nothing to copy", 1, reads.size)
+
+        view.setVideoFrame(500, 800, Rect(1000, 0, 2000, 1600))
+        idleMain()
+        render(view) // points the layer at the backdrop
+        awaitStale(layer, 250, 400)
+        assertGrey(128, render(layer).getPixel(250, 400))
+        assertBlack(render(layer).getPixel(750, 400))
+
+        view.resendViewport(immediate = true)
+        assertEquals(Rect(1000, 0, 2000, 1600), reads[1].region)
+        reads[1].done(null)
+        view.resendViewport(immediate = true)
+        assertEquals("a failed copy may be tried again", 3, reads.size)
+    }
+
+    @Test
+    fun aVideoCopyOvertakenByAnotherRegionIsDropped() {
+        val view = screen()
+        val reads = ArrayList<VideoRead>()
+        val layer = videoOnLeftHalf(view, reads)
+
+        view.resendViewport(immediate = true)
+        view.resendViewport(immediate = true)
+        assertEquals("one copy at a time", 1, reads.size)
+
+        // The surface moves on before the copy comes back.
+        view.setVideoFrame(500, 800, Rect(1000, 0, 2000, 1600))
+        idleMain()
+        val late = solid(Color.WHITE, 500, 800)
+        reads[0].done(late)
+        assertTrue(late.isRecycled)
+        settle()
+        render(view)
+        assertBlack(render(layer).getPixel(250, 400))
+    }
 }
