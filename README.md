@@ -232,6 +232,7 @@ publish alongside the relay.
 - ✅ **Copy to PC** in the phone's text-selection menu puts the selection on the
   PC's clipboard after you confirm, whether you are holding the phone or driving
   it from the PC; text and links shared to Remote Desktop go there too
+- ✅ A sleeping phone turns its screen on when you start viewing it
 - ⚠️ Unlocking a *secure* lockscreen (PIN/pattern/biometric) is **not possible** — Android forbids apps from doing it. A phone with no secure lock (swipe-only) can be unlocked, since the tap lands on the lockscreen surface.
 
 **PC ↔ PC (computer-to-computer)**

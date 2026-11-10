@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Looper
+import android.os.PowerManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.TextView
 import org.json.JSONObject
@@ -21,6 +22,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.Implementation
 import org.robolectric.annotation.Implements
+import org.robolectric.shadows.ShadowPowerManager
 import java.time.Duration
 import java.util.concurrent.Executor
 
@@ -112,6 +114,20 @@ class PhoneScreenCaptureTest {
         main.idle()
         ShadowPhoneCaptureAuth.trusted.add("pc")
         assertFalse(PhoneScreenCapture.maySendFrames(context))
+    }
+
+    @Test fun anApprovedViewerWakesASleepingScreenAndNobodyElseDoes() {
+        val power = shadowOf(context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+        ShadowPowerManager.clearWakeLocks()
+        power.setIsInteractive(false)
+        PhoneScreenCapture.onViewRequested(context, "stranger")
+        assertNull(ShadowPowerManager.getLatestWakeLock())
+        PhoneScreenCapture.onViewRequested(context, "pc")
+        assertNotNull(ShadowPowerManager.getLatestWakeLock())
+        ShadowPowerManager.clearWakeLocks()
+        power.setIsInteractive(true) // Already on: nothing to do.
+        PhoneScreenCapture.onViewRequested(context, "other-pc")
+        assertNull(ShadowPowerManager.getLatestWakeLock())
     }
 
     @Test fun stoppingOneViewerKeepsTheOtherAndDisablingControlClearsAllRequests() {

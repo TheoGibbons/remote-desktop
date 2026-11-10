@@ -91,6 +91,9 @@ class InputAccessibilityService : AccessibilityService() {
     }
 
     fun handle(msg: JSONObject) {
+        // The phone may have gone back to sleep while being viewed. Pointer
+        // moves are skipped: they are frequent and always follow a down.
+        if (msg.optString("action") != "move") ScreenWaker.wake(this)
         when (msg.optString("type")) {
             "tap" -> {
                 val (w, h) = screenSize()

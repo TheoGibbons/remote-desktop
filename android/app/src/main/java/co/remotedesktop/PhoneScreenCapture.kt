@@ -29,6 +29,7 @@ object PhoneScreenCapture {
         init(context)
         if (!Prefs(context).allowControl || !mayView(context, peerId)) return
         viewers.add(peerId)
+        ScreenWaker.wake(context)
         main.post {
             if (!viewers.contains(peerId)) return@post
             val setupHint = if (Build.VERSION.SDK_INT >= 30)

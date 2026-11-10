@@ -228,6 +228,12 @@ repeat quickly while held, after a short initial delay. The
   alongside the user's own keyboard. It types only what an approved device
   sends while remote control is allowed, and reads no text.
 
+## Waking a sleeping phone
+
+When an approved device starts viewing, or sends a tap or key while the screen
+is off, the phone turns its screen on. The lock screen stays in place and the
+phone sleeps again on its usual timeout.
+
 ## Why the PC can't unlock the phone
 
 Android does not let any app dismiss a **secure** lockscreen (PIN/pattern/
