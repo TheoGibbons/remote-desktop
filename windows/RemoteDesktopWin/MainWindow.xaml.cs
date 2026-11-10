@@ -1019,7 +1019,7 @@ public partial class MainWindow : Window
     {
         if (_phoneView == null || !_phoneView.IsLoaded)
         {
-            _phoneView = new PhoneViewWindow(_ws, phone.Id);
+            _phoneView = new PhoneViewWindow(_ws, phone.Id, phone.Name);
             _phoneView.Closed += (_, _) => _phoneView = null;
             _phoneView.Show();
         }

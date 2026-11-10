@@ -47,11 +47,12 @@ public partial class PhoneViewWindow : Window
     private static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
     private static readonly TimeSpan MoveInterval = TimeSpan.FromMilliseconds(30);
 
-    public PhoneViewWindow(WsClient ws, string phoneId)
+    public PhoneViewWindow(WsClient ws, string phoneId, string name)
     {
         InitializeComponent();
         _ws = ws;
         _phoneId = phoneId;
+        Title = name;
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
         Closed += (_, _) => _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _phoneId });
 
