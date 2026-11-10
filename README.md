@@ -245,6 +245,9 @@ publish alongside the relay.
 **Both directions**
 - ✅ File explorer (separate screen from the remote view) to browse the other device's filesystem and **send files back and forth** (phone *or* PC)
 - ✅ Per-IP **rate limiting** on the session-key check so a leaked key can't be brute-forced/spammed
+- ✅ **Staying up to date**: the relay announces each new release. A PC
+  installs it once nobody is using it, a phone posts a notification with the
+  download, and a phone can tell a PC that is behind to update now
 
 ### Roadmap
 

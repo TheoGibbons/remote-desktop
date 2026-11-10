@@ -2,6 +2,7 @@
 // exercises the protocol, then tears everything down. Run with `npm test`.
 import { spawn } from "child_process";
 import { once } from "events";
+import http from "http";
 import net from "net";
 import WebSocket from "ws";
 
@@ -9,8 +10,26 @@ const PORT = 8099 + Math.floor(Math.random() * 300);
 const URL = `ws://127.0.0.1:${PORT}/ws`;
 const KEY = "test-session-key-1234567890";
 
+// Stands in for GitHub's "latest release" API, which the relay polls.
+const asset = (name, state = "uploaded") => ({ name, state });
+let release = {
+  tag_name: "v1.2.3",
+  assets: [asset("RemoteDesktop-Windows-x64.exe"), asset("RemoteDesktop-Android.apk"), asset("SHA256SUMS.txt")],
+};
+const github = http.createServer((req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(JSON.stringify(release));
+});
+github.listen(0, "127.0.0.1");
+await once(github, "listening");
+
 const server = spawn(process.execPath, ["server.js"], {
-  env: { ...process.env, PORT: String(PORT) },
+  env: {
+    ...process.env,
+    PORT: String(PORT),
+    RELEASES_URL: `http://127.0.0.1:${github.address().port}/releases/latest`,
+    RELEASE_CHECK_MS: "200",
+  },
   stdio: ["ignore", "pipe", "inherit"],
 });
 let relayLog = "";
@@ -21,12 +40,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const ok = (name, cond) => results.push([name, !!cond]);
 
-function connect(device, name, key = KEY, uid = undefined) {
+function connect(device, name, key = KEY, uid = undefined, version = undefined) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(URL);
     const client = { ws, msgs: [], bins: [], welcome: null, closed: false };
     ws.on("close", () => (client.closed = true));
-    ws.on("open", () => ws.send(JSON.stringify({ type: "hello", session: key, device, name, uid })));
+    ws.on("open", () => ws.send(JSON.stringify({ type: "hello", session: key, device, name, uid, version })));
     ws.on("message", (data, isBinary) => {
       if (isBinary) return void client.bins.push(data);
       const m = JSON.parse(data.toString());
@@ -152,6 +171,41 @@ async function main() {
   soloPhone.ws.close();
   await sleep(150);
 
+  // 4b. Versions: each device's app version reaches the others, and the
+  // newest release reaches everyone.
+  const versionKey = "version-session-1234567890";
+  for (let i = 0; i < 50 && !relayLog.includes("[release] latest apps are v1.2.3"); i++) await sleep(50);
+  const oldPc = await connect("windows", "old-pc", versionKey, "uid-old-pc", "1.0.50");
+  const newPhone = await connect("android", "new-phone", versionKey, "uid-new-phone", "1.2.3");
+  const legacy = await connect("android", "legacy-phone", versionKey, "uid-legacy", "../../evil");
+  await sleep(150);
+  ok("welcome names the latest release", oldPc.welcome.latest === "1.2.3");
+  ok("welcome lists each peer's version",
+    newPhone.welcome.peers.find((p) => p.id === oldPc.welcome.id)?.version === "1.0.50");
+  ok("peer-joined carries the version",
+    oldPc.msgs.some((m) => m.type === "peer-joined" && m.peer.id === newPhone.welcome.id && m.peer.version === "1.2.3"));
+  ok("a malformed version is left out",
+    legacy.welcome.peers.length === 2 &&
+    oldPc.msgs.some((m) => m.type === "peer-joined" && m.peer.id === legacy.welcome.id && !("version" in m.peer)));
+  ok("join log names the version", relayLog.includes("[join] old-pc (windows v1.0.50)"));
+
+  // A release whose files are still uploading isn't announced yet.
+  release = { tag_name: "v1.2.4", assets: [asset("RemoteDesktop-Windows-x64.exe"), asset("RemoteDesktop-Android.apk", "new")] };
+  await sleep(600);
+  ok("a half-uploaded release is not announced", !oldPc.msgs.some((m) => m.type === "latest"));
+  release = { tag_name: "v1.2.5-beta", prerelease: true, assets: release.assets.map((a) => asset(a.name)) };
+  await sleep(600);
+  ok("a prerelease is not announced", !oldPc.msgs.some((m) => m.type === "latest"));
+  release = { tag_name: "v1.2.4", assets: release.assets };
+  for (let i = 0; i < 20 && !oldPc.msgs.some((m) => m.type === "latest"); i++) await sleep(100);
+  ok("connected devices hear of a new release",
+    oldPc.msgs.filter((m) => m.type === "latest").map((m) => m.version).join() === "1.2.4" &&
+    newPhone.msgs.some((m) => m.type === "latest" && m.version === "1.2.4"));
+  const status = await (await fetch(`http://127.0.0.1:${PORT}/`)).text();
+  ok("status page shows both versions", /relay v\d+\.\d+\.\d+\nlatest apps v1\.2\.4\n/.test(status));
+  for (const c of [oldPc, newPhone, legacy]) c.ws.close();
+  await sleep(150);
+
   // 5. Session isolation
   const other = await connect("android", "x", "a-totally-different-key-9999");
   ok("different key is isolated", other.welcome.peers.length === 0);
@@ -230,7 +284,7 @@ async function main() {
   // Run on its own relay with a short keepalive so the test needn't wait 60 s.
   const pingPort = PORT + 400;
   const pingRelay = spawn(process.execPath, ["server.js"], {
-    env: { ...process.env, PORT: String(pingPort), KEEPALIVE_MS: "200" },
+    env: { ...process.env, PORT: String(pingPort), KEEPALIVE_MS: "200", RELEASES_URL: "" },
     stdio: ["ignore", "pipe", "inherit"],
   });
   let pingLog = "";
@@ -252,5 +306,5 @@ async function main() {
 }
 
 main()
-  .then((allPass) => { server.kill(); process.exit(allPass ? 0 : 1); })
-  .catch((e) => { console.error(e); server.kill(); process.exit(1); });
+  .then((allPass) => { server.kill(); github.close(); process.exit(allPass ? 0 : 1); })
+  .catch((e) => { console.error(e); server.kill(); github.close(); process.exit(1); });

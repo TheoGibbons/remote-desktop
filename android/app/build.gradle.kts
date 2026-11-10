@@ -25,6 +25,9 @@ android {
         versionCode = releaseVersionCode
         versionName = releaseVersionName
         buildConfigField("String", "DEFAULT_RELAY_SERVER_URL", "\"$escapedDefaultRelayServerUrl\"")
+        // Only tagged releases say when a newer one is out: a local build's
+        // default version is always behind.
+        buildConfigField("boolean", "UPDATE_CHECKS", (System.getenv("RELEASE_VERSION_NAME") != null).toString())
     }
 
     signingConfigs {

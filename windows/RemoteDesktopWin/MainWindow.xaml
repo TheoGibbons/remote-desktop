@@ -240,10 +240,20 @@
             </Grid>
 
             <Border x:Name="VersionCard" Style="{StaticResource RdCard}" Margin="0,12,0,0">
-                <StackPanel>
-                    <TextBlock Text="Installed version" Style="{StaticResource RdOverline}"/>
-                    <TextBlock x:Name="VersionText" Style="{StaticResource RdCaption}" Margin="0,4,0,0"/>
-                </StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Margin="0,0,10,0">
+                        <TextBlock Text="Installed version" Style="{StaticResource RdOverline}"/>
+                        <TextBlock x:Name="VersionText" Style="{StaticResource RdCaption}" Margin="0,4,0,0"/>
+                        <TextBlock x:Name="UpdateText" Style="{StaticResource RdCaption}" Margin="0,2,0,0"
+                                   TextWrapping="Wrap" Visibility="Collapsed"/>
+                    </StackPanel>
+                    <Button Grid.Column="1" x:Name="UpdateButton" Style="{StaticResource RdOutlinedButton}"
+                            VerticalAlignment="Center" Visibility="Collapsed" Click="UpdateButton_Click"/>
+                </Grid>
             </Border>
         </StackPanel>
     </ScrollViewer>

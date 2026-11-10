@@ -16,6 +16,11 @@ public partial class App : Application
     /// <summary>Command-line switch the startup registration appends.</summary>
     public const string MinimizedSwitch = "--minimized";
 
+    /// <summary>Passed by the copy that just installed an update, so this one says so.</summary>
+    internal const string UpdatedSwitch = "--updated";
+
+    public static bool JustUpdated { get; private set; }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         if (PrivacyCursorGuard.TryRun(e.Args))
@@ -42,6 +47,9 @@ public partial class App : Application
         StartMinimized = e.Args.Any(a =>
             a.Equals(MinimizedSwitch, StringComparison.OrdinalIgnoreCase) ||
             a.Equals("/minimized", StringComparison.OrdinalIgnoreCase));
+        JustUpdated = e.Args.Contains(UpdatedSwitch, StringComparer.OrdinalIgnoreCase);
+        // The copy this one replaced, once it has exited.
+        Updater.CleanUp(Environment.ProcessPath!);
 
         // Catch any drift from the shared cross-language crypto vectors.
         System.Diagnostics.Debug.Assert(Crypto.SelfTest(), "Crypto self-test failed");

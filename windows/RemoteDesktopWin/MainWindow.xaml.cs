@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -25,7 +24,22 @@ public partial class MainWindow : Window
     // than that is better served by a keyframe than by catching up.
     private const int MaxWaitingPatches = 8;
 
-    private record Peer(string Id, string Device, string Name);
+    /// <summary>A device online in the session. Version is null for apps from
+    /// before devices announced it.</summary>
+    private record Peer(string Id, string Device, string Name, string? Version)
+    {
+        public static Peer From(JsonNode p) => new(
+            p["id"]!.GetValue<string>(), p["device"]!.GetValue<string>(), p["name"]!.GetValue<string>(),
+            ClipboardService.Str(p["version"]));
+    }
+
+    private readonly Updater _updater = new(Updater.RunningVersion, Environment.ProcessPath!);
+    // Checks once a minute whether a downloaded update can go in without interrupting anyone.
+    private readonly DispatcherTimer _updateTimer = new() { Interval = TimeSpan.FromMinutes(1) };
+    private int _idleMinutes;
+    private const int IdleMinutesBeforeUpdate = 3;
+    private string? _updateBalloonShownFor;
+    private Action? _balloonClicked;
 
     /// <summary>One row of the devices list: an online peer, a pending approval,
     /// or a trusted-but-offline device from the trust store. Public so the
@@ -42,7 +56,9 @@ public partial class MainWindow : Window
         public bool ShowView { get; init; }
         public bool ShowDisconnect { get; init; }
         public bool ShowRevoke { get; init; }
-        public bool ShowMore => ShowDisconnect || ShowRevoke;
+        /// <summary>The newer version this PC could be asked to update to.</summary>
+        public string? UpdateTo { get; init; }
+        public bool ShowMore => ShowDisconnect || ShowRevoke || UpdateTo != null;
     }
 
     private string _lastState = "disconnected";
@@ -74,11 +90,11 @@ public partial class MainWindow : Window
         _settings = settings;
         _auth = auth;
         InitializeComponent();
-        var assembly = typeof(MainWindow).Assembly;
-        var version = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
-            ?? assembly.GetName().Version?.ToString(3)
-            ?? "Unknown";
-        VersionText.Text = version.Split('+')[0]; // Omit build metadata such as the Git commit hash.
+        VersionText.Text = Updater.RunningVersion;
+        _updater.Changed += () => Dispatcher.BeginInvoke(OnUpdaterChanged);
+        _updateTimer.Tick += (_, _) => UpdateTick();
+        _updateTimer.Start();
+        if (App.JustUpdated) Loaded += (_, _) => Toast.Show($"Remote Desktop updated to version {Updater.RunningVersion}");
         _streamer = new ScreenStreamer(_ws)
         {
             Fps = _settings.Fps,
@@ -209,6 +225,7 @@ public partial class MainWindow : Window
         menu.Items.Add("Exit", null, (_, _) => ExitApp());
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => RestoreFromTray();
+        _tray.BalloonTipClicked += (_, _) => _balloonClicked?.Invoke();
     }
 
     private void RestoreFromTray()
@@ -226,6 +243,7 @@ public partial class MainWindow : Window
         if (!_trayTipShown)
         {
             _trayTipShown = true;
+            _balloonClicked = null;
             _tray?.ShowBalloonTip(3000, "Remote Desktop is still running",
                 "Paired devices can still connect. Right-click the tray icon and choose Exit to quit.",
                 System.Windows.Forms.ToolTipIcon.Info);
@@ -240,6 +258,180 @@ public partial class MainWindow : Window
         _ws.Stop();
         if (_tray != null) { _tray.Visible = false; _tray.Dispose(); _tray = null; }
         Application.Current.Shutdown();
+    }
+
+    // ---------- updates ----------
+
+    // The relay names the newest release; this PC downloads it straight away
+    // and installs it once nobody has been using the app for a few minutes.
+
+    private void OnLatestRelease(string? version)
+    {
+        _updater.OnLatest(version);
+        _ = _updater.PrepareAsync();
+        RefreshDeviceList(); // other PCs that are behind can now be asked to update
+    }
+
+    /// <summary>The app can't update itself, so the user has to.</summary>
+    private bool UpdateNeedsYou =>
+        _updater.UpdateAvailable && _updater.Target == _updater.Latest &&
+        _updater.State == Updater.Phase.Failed && !_updater.FailureIsTemporary;
+
+    private void OnUpdaterChanged()
+    {
+        var latest = _updater.Latest;
+        var phase = _updater.Target == latest ? _updater.State : Updater.Phase.Idle;
+        string? text = null, button = null;
+        if (latest != null && !_updater.UpdateAvailable) text = "Up to date";
+        else if (_updater.UpdateAvailable)
+        {
+            (text, button) = phase switch
+            {
+                Updater.Phase.Downloading => ($"Downloading version {latest}…", null),
+                Updater.Phase.Ready => ($"Version {latest} is ready. It installs itself when nobody is using this PC remotely.", "Restart now"),
+                Updater.Phase.Failed when _updater.FailureIsTemporary =>
+                    ($"Couldn't download version {latest} yet: {_updater.Error} It tries again within the hour.", "Download"),
+                Updater.Phase.Failed => ($"Couldn't update to version {latest}: {_updater.Error}", "Download"),
+                Updater.Phase.Unsupported => ($"Version {latest} is available. {_updater.Error}", "Download"),
+                _ => ($"Version {latest} is available.", null),
+            };
+        }
+        UpdateText.Text = text ?? "";
+        UpdateText.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
+        UpdateButton.Content = button;
+        UpdateButton.Visibility = button == null ? Visibility.Collapsed : Visibility.Visible;
+        ApplySectionVisibility();
+
+        // Waiting in the tray, the window can't say so; once per version.
+        if (UpdateNeedsYou && _updateBalloonShownFor != latest)
+        {
+            _updateBalloonShownFor = latest;
+            _balloonClicked = OpenReleasesPage;
+            _tray?.ShowBalloonTip(10000, $"Remote Desktop {latest} is available",
+                $"This PC couldn't update itself: {_updater.Error} Click to download it.",
+                System.Windows.Forms.ToolTipIcon.Info);
+        }
+    }
+
+    private void UpdateButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_updater.ReadyToInstall) InstallUpdate();
+        else OpenReleasesPage();
+    }
+
+    private static void OpenReleasesPage()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Updater.ReleasesPage)
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex) { Toast.Show("Couldn't open the browser: " + ex.Message); }
+    }
+
+    private void UpdateTick()
+    {
+        if (!_updater.UpdateAvailable) return;
+        if (!_updater.ReadyToInstall)
+        {
+            _idleMinutes = 0;
+            _ = _updater.PrepareAsync(); // retries a failed download once its hour is up
+            return;
+        }
+        _idleMinutes = IsIdleForUpdate() ? _idleMinutes + 1 : 0;
+        if (_idleMinutes >= IdleMinutesBeforeUpdate) InstallUpdate();
+    }
+
+    /// <summary>Restarting now would interrupt nobody: no one is viewing this
+    /// PC or moving files, and none of this app's windows is being used. Nor is
+    /// the privacy screen up: it ends with the app, uncovering the screen.</summary>
+    private bool IsIdleForUpdate() =>
+        !_privacy.IsEnabled &&
+        !_streamer.IsStreaming &&
+        _transfers.ActiveCount == 0 &&
+        _auth.Pending.Count == 0 &&
+        _pcView == null && _phoneView == null && _fileExplorers.Count == 0 &&
+        !CaptureOfferCard.AnyOpen &&
+        !Application.Current.Windows.OfType<Window>().Any(w => w.IsActive);
+
+    /// <summary>Swaps in the downloaded exe, starts it, and exits. False if that
+    /// failed, in which case this copy keeps running.</summary>
+    private bool InstallUpdate()
+    {
+        var args = $"{App.RestartSwitch} {App.UpdatedSwitch}" + (IsVisible ? "" : " " + App.MinimizedSwitch);
+        try
+        {
+            _updater.Install(exe => System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo(exe, args) { UseShellExecute = false }));
+        }
+        catch (Exception ex)
+        {
+            Toast.Show($"Couldn't install version {_updater.Latest}: {ex.Message}");
+            return false;
+        }
+        ExitApp();
+        return true;
+    }
+
+    /// <summary>A trusted device asked this PC to update now, e.g. from the
+    /// phone that is viewing it. It answers with update-status as it goes.</summary>
+    private async Task UpdateForPeerAsync(string peerId)
+    {
+        void Reply(string state, string? error = null) => _ws.SendJson(new JsonObject
+        {
+            ["type"] = "update-status",
+            ["to"] = peerId,
+            ["state"] = state,
+            ["version"] = state == "current" ? Updater.RunningVersion : _updater.Latest,
+            ["error"] = error,
+        });
+
+        if (_updater.Latest == null)
+        {
+            Reply("failed", "The relay hasn't said which version is newest yet.");
+            return;
+        }
+        if (!_updater.UpdateAvailable)
+        {
+            Reply("current");
+            return;
+        }
+        const string privacyOn = "Its privacy screen is on, and restarting would uncover the screen. Turn privacy off, then update.";
+        if (_privacy.IsEnabled)
+        {
+            Reply("failed", privacyOn);
+            return;
+        }
+        Reply("updating");
+        Toast.Show($"{PeerName(peerId)} asked this PC to update to version {_updater.Latest}");
+        if (!await _updater.PrepareAsync(retryFailed: true))
+        {
+            Reply("failed", _updater.Error ?? "The download failed.");
+            return;
+        }
+        if (_privacy.IsEnabled) Reply("failed", privacyOn); // turned on during the download
+        else if (!InstallUpdate()) Reply("failed", _updater.Error ?? "Installing it failed.");
+    }
+
+    /// <summary>How a PC this one asked to update is getting on.</summary>
+    private void OnPeerUpdateStatus(string peerId, JsonNode msg)
+    {
+        var name = PeerName(peerId);
+        var version = ClipboardService.Str(msg["version"]);
+        switch (ClipboardService.Str(msg["state"]))
+        {
+            case "updating":
+                Toast.Show($"{name} is updating to version {version}. It reconnects when it restarts.");
+                break;
+            case "current":
+                Toast.Show($"{name} is already up to date");
+                break;
+            case "failed":
+                Toast.Show($"{name} couldn't update: {ClipboardService.Str(msg["error"])}", 8000);
+                break;
+        }
     }
 
     // ---------- elevation & run at login ----------
@@ -469,7 +661,8 @@ public partial class MainWindow : Window
         SessionCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
         StatusCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
         ComputerCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
-        VersionCard.Visibility = extras ? Visibility.Visible : Visibility.Collapsed;
+        // Also when this PC can't update itself, so the Download button is in reach.
+        VersionCard.Visibility = extras || UpdateNeedsYou ? Visibility.Visible : Visibility.Collapsed;
 
         bool detail = !compact || _accessExpanded;
         AccessDetailPanel.Visibility = detail ? Visibility.Visible : Visibility.Collapsed;
@@ -551,15 +744,29 @@ public partial class MainWindow : Window
             case "welcome":
                 _peers.Clear();
                 foreach (var p in msg["peers"]!.AsArray())
-                    _peers.Add(new Peer(p!["id"]!.GetValue<string>(), p["device"]!.GetValue<string>(), p["name"]!.GetValue<string>()));
+                    _peers.Add(Peer.From(p!));
                 foreach (var p in _peers)
                     _auth.OnPeerJoined(p.Id, p.Name, p.Device);
                 RefreshDeviceList();
+                OnLatestRelease(ClipboardService.Str(msg["latest"]));
+                break;
+
+            case "latest":
+                // Only the relay's own word counts; a peer's message carries "from".
+                if (from == null) OnLatestRelease(ClipboardService.Str(msg["version"]));
+                break;
+
+            case "update-now":
+                // Another device saw this PC is behind and asked it to update now.
+                if (_auth.IsTrusted(from) && from != null) _ = UpdateForPeerAsync(from);
+                break;
+
+            case "update-status":
+                if (from != null) OnPeerUpdateStatus(from, msg);
                 break;
 
             case "peer-joined":
-                var np = msg["peer"]!;
-                var joined = new Peer(np["id"]!.GetValue<string>(), np["device"]!.GetValue<string>(), np["name"]!.GetValue<string>());
+                var joined = Peer.From(msg["peer"]!);
                 _peers.Add(joined);
                 _auth.OnPeerJoined(joined.Id, joined.Name, joined.Device);
                 RefreshDeviceList();
@@ -892,12 +1099,15 @@ public partial class MainWindow : Window
                 Fingerprint = fp,
                 Name = p.Name,
                 Title = $"{p.Name} ({p.Device})",
-                Subtitle = code + status,
+                Subtitle = code + status + (p.Version == null ? "" : $" · version {p.Version}"),
                 Dot = trusted ? good : warn,
                 ShowApprove = pending,
                 ShowView = true,
                 ShowDisconnect = trusted,
                 ShowRevoke = fp != null && _auth.TrustedDevices.Any(d => d.Fingerprint == fp),
+                // Only PCs can update themselves; a phone's user installs the APK.
+                UpdateTo = trusted && p.Device == "windows" && p.Version != null && _updater.Latest is { } latest &&
+                           Updater.CompareVersions(latest, p.Version) > 0 ? latest : null,
             });
         }
         foreach (var d in _auth.TrustedDevices)
@@ -935,6 +1145,21 @@ public partial class MainWindow : Window
     {
         if (RowOf(sender) is not { } row) return;
         var menu = new ContextMenu { Style = (Style)FindResource("RdMenu") };
+        if (row.UpdateTo is { } version && row.PeerId is { } peerId)
+        {
+            var item = new MenuItem
+            {
+                Header = $"Update to version {version}",
+                Style = (Style)FindResource("RdMenuItem"),
+                ToolTip = "That PC downloads the new version and restarts the app (its viewers reconnect)",
+            };
+            item.Click += (_, _) =>
+            {
+                _ws.SendJson(new JsonObject { ["type"] = "update-now", ["to"] = peerId });
+                Toast.Show($"Asked {row.Name} to update");
+            };
+            menu.Items.Add(item);
+        }
         if (row.ShowDisconnect)
         {
             var item = new MenuItem

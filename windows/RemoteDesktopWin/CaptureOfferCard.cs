@@ -21,6 +21,10 @@ namespace RemoteDesktopWin;
 internal sealed class CaptureOfferCard : Window
 {
     private static readonly List<CaptureOfferCard> Cards = new();
+
+    /// <summary>A card is on screen, so restarting the app now would lose it.</summary>
+    internal static bool AnyOpen => Cards.Count > 0;
+
     // Older offers make room rather than stack up the screen.
     private const int MaxCards = 4;
 

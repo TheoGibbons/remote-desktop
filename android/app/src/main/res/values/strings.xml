@@ -104,6 +104,16 @@
     <string name="peer_browse_description">Browse files on %1$s</string>
     <string name="peer_phone_off">Turn on Allow other phones on %1$s</string>
     <string name="peer_phone_outdated">Update Remote Desktop on %1$s to open it from this phone</string>
+    <string name="peer_pc_behind">Version %1$s is out. %2$s has %3$s.</string>
+    <string name="peer_pc_update">Update PC to %1$s</string>
+    <string name="peer_pc_updating">Updating…</string>
+    <string name="peer_pc_update_description">Update %1$s to version %2$s</string>
+    <string name="update_status_updating">%1$s is updating to version %2$s. It reconnects when it restarts.</string>
+    <string name="update_status_current">%1$s is already up to date</string>
+    <string name="update_status_failed">%1$s couldn\'t update: %2$s</string>
+    <string name="update_notification_title">Remote Desktop %1$s is available</string>
+    <string name="update_notification_text">This phone has %1$s. Tap to download the update.</string>
+    <string name="version_update_available">%1$s · %2$s available</string>
     <string name="viewer_awaiting_approval">Approve this phone on %1$s.\nCode: %2$s</string>
     <string name="allow_phones">Allow other phones</string>
     <string name="allow_phones_description">Let approved phones view, control and browse this phone</string>

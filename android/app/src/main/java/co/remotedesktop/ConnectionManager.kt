@@ -26,7 +26,13 @@ import java.util.concurrent.atomic.AtomicLong
  */
 object ConnectionManager {
 
-    data class Peer(val id: String, val device: String, val name: String)
+    /** A device online in the session. [version] is null for apps from before devices announced it. */
+    data class Peer(val id: String, val device: String, val name: String, val version: String? = null) {
+        companion object {
+            fun from(p: JSONObject) = Peer(p.getString("id"), p.getString("device"), p.getString("name"),
+                p.optString("version").ifEmpty { null })
+        }
+    }
     data class DebugStats(
         val state: String,
         val connectedForMs: Long,
@@ -385,6 +391,8 @@ object ConnectionManager {
                     .put("device", "android")
                     .put("name", prefs.deviceName)
                     .put("uid", prefs.deviceUid)
+                    // Shown to the other devices, so they can tell when this one is behind.
+                    .put("version", BuildConfig.VERSION_NAME)
                     .toString()
             )
         }
@@ -464,18 +472,20 @@ object ConnectionManager {
                 peers.clear()
                 PeerAuth.resetConnection() // new connection, stale peer ids
                 msg.optJSONArray("peers")?.let { arr ->
-                    for (i in 0 until arr.length()) {
-                        val p = arr.getJSONObject(i)
-                        peers.add(Peer(p.getString("id"), p.getString("device"), p.getString("name")))
-                    }
+                    for (i in 0 until arr.length()) peers.add(Peer.from(arr.getJSONObject(i)))
                 }
                 peers.forEach { PeerAuth.onPeerJoined(it.id, it.name, it.device) }
+                AppUpdate.onLatest(appContext, msg.optString("latest").ifEmpty { null })
                 blockedUntilMs = 0L
                 setState("connected")
             }
+            // A new release is out. Only the relay's own word counts: a peer's message has a sender.
+            "latest" -> if (from.isEmpty()) {
+                AppUpdate.onLatest(appContext, msg.optString("version"))
+                setState(state) // PCs that are now behind get their Update button
+            }
             "peer-joined" -> {
-                val p = msg.getJSONObject("peer")
-                val peer = Peer(p.getString("id"), p.getString("device"), p.getString("name"))
+                val peer = Peer.from(msg.getJSONObject("peer"))
                 peers.add(peer)
                 PeerAuth.onPeerJoined(peer.id, peer.name, peer.device)
                 main.post {
@@ -533,6 +543,12 @@ object ConnectionManager {
                     deniedReason = if (shutOut) phonesOffReason(prefs) else null)
             }
             "get-file-access" -> if (PeerAuth.isTrusted(from)) sendFileAccess(from)
+
+            // A PC this phone asked to update says how it's going.
+            "update-status" -> AppUpdate.statusText(appContext, peerName(from), from, msg)?.let { text ->
+                main.post { android.widget.Toast.makeText(appContext, text, android.widget.Toast.LENGTH_LONG).show() }
+                setState(state) // the Update button comes back if it failed
+            }
         }
         main.post { jsonListeners.forEach { it(msg) } }
     }

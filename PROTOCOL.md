@@ -35,16 +35,42 @@ route to one peer; otherwise it is broadcast to all other peers in the session.
 
 | type    | fields                                   | notes |
 |---------|------------------------------------------|-------|
-| `hello` | `session` (the derived **pairing id**, not the raw key), `device` (`windows`\|`android`), `name`, `uid`? | First message after connect. Cleartext. `uid` is a stable random per-install id; when a device reconnects with the same `uid`, the server kicks its stale connection from the session (and broadcasts `peer-left`) so the device is never listed twice. |
+| `hello` | `session` (the derived **pairing id**, not the raw key), `device` (`windows`\|`android`), `name`, `uid`?, `version`? | First message after connect. Cleartext. `uid` is a stable random per-install id; when a device reconnects with the same `uid`, the server kicks its stale connection from the session (and broadcasts `peer-left`) so the device is never listed twice. `version` is the app's version, e.g. `1.0.53`; the server passes it on in peer lists so each device can tell when another is behind. |
 
 ### Server → Client
 
 | type          | fields                                | notes |
 |---------------|----------------------------------------|-------|
-| `welcome`     | `id` (your peer id), `peers` (array of `{id, device, name}`), `binaryTo`? | Reply to `hello`. `binaryTo: true` means this relay delivers [addressed binary frames](#addressed-binary-frames); older relays omit it. |
-| `peer-joined` | `peer` `{id, device, name}`            | |
+| `welcome`     | `id` (your peer id), `peers` (array of `{id, device, name, version?}`), `binaryTo`?, `latest`? | Reply to `hello`. `binaryTo: true` means this relay delivers [addressed binary frames](#addressed-binary-frames); older relays omit it. `latest` is the newest released app version (see [Updates](#updates)); left out until the relay knows it. A peer's `version` is missing for apps from before it was sent. |
+| `peer-joined` | `peer` `{id, device, name, version?}`  | |
+| `latest`      | `version`                              | A new release is out. Sent to every connected device when the relay first sees it. A device trusts only the relay's own message, which has no `from`. |
 | `peer-left`   | `id`                                   | |
 | `error`       | `code`, `message`, `retryAfter`?       | e.g. `rate-limited`, `banned`, `too-many-connections`, `bad-hello`. Connection is closed after. A ban carries `retryAfter`, the seconds until the relay accepts this IP again. |
+
+### Updates
+
+The relay polls GitHub's latest release every 10 minutes (`RELEASES_URL`,
+`RELEASE_CHECK_MS`; `RELEASES_URL=""` turns it off) and names it in `welcome`
+and `latest` only once the release has both the Windows exe and the Android APK
+uploaded. It never announces its own version: pushing `main` deploys the relay
+before the tag build has published the apps, and a failed build publishes
+nothing. Drafts and prereleases are ignored. Versions compare numerically
+(`1.0.10` > `1.0.9`), and a prerelease comes before its release.
+
+- **Windows** downloads the release's exe beside the running one as `.new`. It
+  must match the release's `SHA256SUMS.txt`, report that version, and carry a
+  valid Authenticode signature from the same publisher as the running exe (the
+  certificate itself renews every few days). The relay only names a version, so
+  it can't hand a PC a program. Once nobody has used the app for 3 minutes (no
+  viewer, no transfer, no viewer or file window open, no approval waiting, none
+  of its windows in front), the running exe is renamed to `.old`, the new one
+  takes its name and starts with `--restart --updated`, and the old one exits.
+  The new copy deletes `.old`. Unsigned development builds never update.
+- **Android** posts one notification per version that opens the APK download in
+  the browser, and Settings → App version offers the same. Installs from Google
+  Play, and builds that aren't tagged releases, aren't told.
+
+The relay's status page (`/`) shows its own version and the newest app release.
 
 ## Device authentication
 
@@ -181,6 +207,16 @@ gone too. So a sender whose relay connection drops, or whose receiver leaves,
 fails the file instead of finishing it over the next connection; it would
 otherwise look sent while nothing arrived. A Windows upload counts as sent only
 once `fs-saved` arrives, and offers a retry when it fails.
+
+### Remote updates
+
+A viewer that sees a PC's `version` is older than `latest` can ask it to update
+now, without waiting for it to be idle (see [Updates](#updates)).
+
+| type            | fields | notes |
+|-----------------|--------|-------|
+| `update-now`    | `to` | Ask a Windows host to install the newest release now. It acts only for an approved device, and restarts at once, so its viewers reconnect. Only sent to peers that announced a `version`; older apps don't know it. |
+| `update-status` | `to`, `state`, `version`?, `error`? | The host's answer. `state` is `updating` (downloading, then restarting into `version`), `current` (already the newest), or `failed` with a human-readable `error`, e.g. the relay hasn't named a release yet, or the download didn't verify. |
 
 ### New captures
 

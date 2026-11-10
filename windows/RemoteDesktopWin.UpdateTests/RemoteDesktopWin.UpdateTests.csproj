@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- This test's own exe stands in for a downloaded release, so it reports a version. -->
+    <Version>9.8.7</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../RemoteDesktopWin/Updater.cs" Link="Updater.cs" />
+  </ItemGroup>
+</Project>

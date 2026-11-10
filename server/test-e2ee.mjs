@@ -45,7 +45,7 @@ ok("two encryptions differ (fresh nonce)", !encrypt(encKey, Buffer.from("x"), CH
 const PORT = 8600 + Math.floor(Math.random() * 300);
 const URL = `ws://127.0.0.1:${PORT}/ws`;
 const server = spawn(process.execPath, ["server.js"], {
-  env: { ...process.env, PORT: String(PORT) },
+  env: { ...process.env, PORT: String(PORT), RELEASES_URL: "" },
   stdio: ["ignore", "ignore", "inherit"],
 });
 

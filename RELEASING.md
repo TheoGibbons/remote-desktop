@@ -120,3 +120,19 @@ SHA256SUMS.txt
 
 The marketing site always points to the newest release using GitHub's
 `releases/latest/download` URLs.
+
+## How the apps hear about it
+
+The relay checks GitHub's latest release every 10 minutes and tells every
+connected device once the exe and APK have both uploaded (see "Updates" in
+[PROTOCOL.md](PROTOCOL.md)). The relay's status page at `/` shows the version it
+announces. Within about 15 minutes of a release:
+
+- **Windows** downloads and verifies it, then restarts into it once nobody has
+  used the app for 3 minutes. A phone can update a PC sooner with Update PC.
+- **Android** posts one notification that downloads the APK.
+
+So a broken release reaches idle PCs on its own. To stop it spreading, mark the
+GitHub release as a pre-release (or delete it): the relay goes back to
+announcing the previous release, and PCs don't downgrade, so any already
+updated need the next release.

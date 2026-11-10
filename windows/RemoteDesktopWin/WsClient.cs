@@ -214,6 +214,8 @@ public class WsClient : IDisposable
                     ["device"] = "windows",
                     ["name"] = _deviceName,
                     ["uid"] = _deviceUid,
+                    // Shown to the other devices, so they can tell when this one is behind.
+                    ["version"] = Updater.RunningVersion,
                 });
 
                 var pump = Task.Run(() => SendPump(_ws, wake, ct), ct);

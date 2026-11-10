@@ -84,4 +84,14 @@
             app:iconPadding="6dp"
             style="@style/Widget.Material3.Button.OutlinedButton.Icon" />
     </LinearLayout>
+
+    <!-- A PC on an older version than the newest release. -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/peerUpdate"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:maxLines="1"
+        android:visibility="gone"
+        style="@style/Widget.Material3.Button.TonalButton" />
 </LinearLayout>

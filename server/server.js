@@ -4,6 +4,7 @@
 
 import http from "http";
 import crypto from "crypto";
+import fs from "fs";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT || 8090);
@@ -29,6 +30,22 @@ const CH_FILE = 2;
 // Set on byte 0 of an addressed binary frame, which carries its recipients
 // in cleartext ahead of the encrypted payload. See PROTOCOL.md.
 const ADDRESSED = 0x80;
+
+// The apps learn of new releases from the relay rather than each asking
+// GitHub. Pushing main deploys the relay minutes before the tag build has
+// published the apps, and a failed build publishes nothing, so the relay
+// announces what GitHub has released, never its own version.
+// RELEASES_URL="" turns the check off.
+const RELEASES_URL = process.env.RELEASES_URL ??
+  "https://api.github.com/repos/TheoGibbons/remote-desktop/releases/latest";
+const RELEASE_CHECK_MS = Number(process.env.RELEASE_CHECK_MS || 10 * 60_000);
+// A release exists before its files have finished uploading.
+const RELEASE_ASSETS = ["RemoteDesktop-Windows-x64.exe", "RemoteDesktop-Android.apk"];
+const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/;
+const RELAY_VERSION = (() => {
+  try { return JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf8")).version; }
+  catch { return "unknown"; }
+})();
 
 /** sessionKeyHash -> Map<peerId, client> */
 const sessions = new Map();
@@ -82,7 +99,7 @@ function closeWithError(ws, code, message, extra = {}) {
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "content-type": "text/plain" });
-  res.end("remote-desktop relay ok\n");
+  res.end(`remote-desktop relay ok\nrelay v${RELAY_VERSION}\nlatest apps ${latestVersion ? "v" + latestVersion : "unknown"}\n`);
 });
 
 const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 16 * 1024 * 1024 });
@@ -117,6 +134,7 @@ wss.on("connection", (ws, req) => {
     uid: null,
     name: null,
     device: null,
+    version: null,
     sessionHash: null,
     alive: true,
     joinedAt: 0,
@@ -189,6 +207,8 @@ function handleHello(client, msg, helloTimer) {
   client.device = msg.device === "windows" ? "windows" : "android";
   client.name = String(msg.name || client.device).slice(0, 64);
   client.uid = typeof msg.uid === "string" && msg.uid ? msg.uid.slice(0, 64) : null;
+  // The app's version, so each device can tell when another is behind.
+  client.version = typeof msg.version === "string" && VERSION_RE.test(msg.version) ? msg.version : null;
   client.id = String(nextPeerId++);
   client.joinedAt = Date.now();
 
@@ -218,17 +238,26 @@ function handleHello(client, msg, helloTimer) {
   send(client, {
     type: "welcome",
     id: client.id,
-    peers: [...peers.values()].map((p) => ({ id: p.id, device: p.device, name: p.name })),
+    peers: [...peers.values()].map(peerInfo),
     // Clients address their binary frames only once they see this; an older
     // relay would broadcast an addressed frame that no receiver can read.
     binaryTo: true,
+    // Left out until GitHub has answered.
+    latest: latestVersion ?? undefined,
   });
 
   for (const p of peers.values()) {
-    send(p, { type: "peer-joined", peer: { id: client.id, device: client.device, name: client.name } });
+    send(p, { type: "peer-joined", peer: peerInfo(client) });
   }
   peers.set(client.id, client);
-  console.log(`[join] ${client.name} (${client.device}) from ${client.ip}, session peers=${peers.size}`);
+  console.log(`[join] ${client.name} (${client.device} ${client.version ? "v" + client.version : "unknown version"}) ` +
+    `from ${client.ip}, session peers=${peers.size}`);
+}
+
+/** A device as other devices' peer lists show it. Apps from before the
+ *  version field send none, and then it is left out. */
+function peerInfo(p) {
+  return { id: p.id, device: p.device, name: p.name, version: p.version ?? undefined };
 }
 
 /**
@@ -337,6 +366,46 @@ setInterval(() => {
     }
   }
 }, KEEPALIVE_MS);
+
+// The newest published app release, or null until GitHub has answered.
+let latestVersion = null;
+let lastReleaseProblem = null;
+
+async function checkLatestRelease() {
+  let problem = null;
+  try {
+    const res = await fetch(RELEASES_URL, {
+      headers: { accept: "application/vnd.github+json", "user-agent": "remote-desktop-relay" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const release = await res.json();
+    const version = String(release.tag_name ?? "").replace(/^v/, "");
+    const uploaded = new Set((release.assets ?? []).filter((a) => a.state === "uploaded").map((a) => a.name));
+    if (!VERSION_RE.test(version) || release.draft || release.prerelease) {
+      problem = `ignored release ${JSON.stringify(release.tag_name)}`;
+    } else if (!RELEASE_ASSETS.every((name) => uploaded.has(name))) {
+      problem = `v${version} is still uploading`;
+    } else if (version !== latestVersion) {
+      latestVersion = version;
+      console.log(`[release] latest apps are v${version}`);
+      // Devices stay connected for days, so tell them now, not on their next join.
+      for (const peers of sessions.values()) {
+        for (const c of peers.values()) send(c, { type: "latest", version });
+      }
+    }
+  } catch (e) {
+    problem = `check failed: ${e.message}`;
+  }
+  // Logged once per change, so a long GitHub outage is one line, not one every check.
+  if (problem && problem !== lastReleaseProblem) console.log(`[release] ${problem}`);
+  lastReleaseProblem = problem;
+}
+
+if (RELEASES_URL) {
+  checkLatestRelease();
+  setInterval(checkLatestRelease, RELEASE_CHECK_MS);
+}
 
 // Periodic cleanup of stale IP state.
 setInterval(() => {

@@ -24,6 +24,16 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("autoConnect", true)
         set(v) = sp.edit().putBoolean("autoConnect", v).apply()
 
+    /** The newest release the relay last named, so Settings knows it offline. */
+    var latestRelease: String
+        get() = install.getString("latestRelease", "") ?: ""
+        set(v) = install.edit().putString("latestRelease", v).apply()
+
+    /** The release this phone last posted an update notification for: one per version. */
+    var updateNotified: String
+        get() = install.getString("updateNotified", "") ?: ""
+        set(v) = install.edit().putString("updateNotified", v).apply()
+
     // Auto (un-)privacy and rememberPrivacy both decide what happens when viewing
     // starts and stops, so switching one on switches the other off.
     var autoPrivacy: Boolean

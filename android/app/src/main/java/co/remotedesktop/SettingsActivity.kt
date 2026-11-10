@@ -18,6 +18,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var serverUrlValue: TextView
     private lateinit var autoPrivacyValue: TextView
     private lateinit var connectionHistoryValue: TextView
+    private lateinit var versionValue: TextView
+    private lateinit var versionRow: View
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,11 +74,8 @@ class SettingsActivity : AppCompatActivity() {
             startActivity(Intent(this, PrivacySettingsActivity::class.java))
         }
 
-        findViewById<TextView>(R.id.versionValue).text = try {
-            packageManager.getPackageInfo(packageName, 0).versionName
-        } catch (e: Exception) {
-            "?"
-        }
+        versionValue = findViewById(R.id.versionValue)
+        versionRow = findViewById(R.id.versionRow)
     }
 
     override fun onResume() {
@@ -84,7 +83,27 @@ class SettingsActivity : AppCompatActivity() {
         refresh()
     }
 
+    private fun refreshVersion() {
+        val latest = AppUpdate.latest(this)
+        if (AppUpdate.updateAvailable(this) && latest != null) {
+            versionValue.text = getString(R.string.version_update_available, AppUpdate.current, latest)
+            versionValue.setTextColor(getColor(R.color.rd_warn))
+            versionRow.setOnClickListener {
+                try {
+                    startActivity(AppUpdate.downloadIntent(latest))
+                } catch (e: Exception) {
+                    android.widget.Toast.makeText(this, "No browser to download it with", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        } else {
+            versionValue.text = AppUpdate.current
+            versionRow.setOnClickListener(null)
+            versionRow.isClickable = false
+        }
+    }
+
     private fun refresh() {
+        refreshVersion()
         deviceNameValue.text = prefs.deviceName
         serverUrlValue.text = prefs.serverUrl
         connectionHistoryValue.text = ConnectionLog.lastDrop()?.let {

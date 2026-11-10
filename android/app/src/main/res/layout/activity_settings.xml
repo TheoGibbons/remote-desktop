@@ -363,12 +363,16 @@
                 android:layout_height="wrap_content"
                 style="@style/RdCard">
 
+                <!-- Downloads the newest release when there is one. -->
                 <LinearLayout
+                    android:id="@+id/versionRow"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
                     android:gravity="center_vertical"
-                    android:padding="16dp">
+                    android:padding="16dp"
+                    android:background="?attr/selectableItemBackground"
+                    android:clickable="false">
 
                     <ImageView
                         style="@style/RdRowIcon"

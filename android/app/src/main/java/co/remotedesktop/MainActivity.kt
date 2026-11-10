@@ -220,9 +220,27 @@ class MainActivity : AppCompatActivity() {
                 text = status.label
                 setTextColor(status.color)
             }
+            // A PC on an older version can be told to update from here.
+            val latest = AppUpdate.latest(this)
+            val behind = peer.device == "windows" && status.ready && latest != null &&
+                AppUpdate.isNewer(latest, peer.version)
+            val detail = status.detail ?: if (behind) getString(R.string.peer_pc_behind, latest, peer.name, peer.version) else null
             row.findViewById<TextView>(R.id.peerDetail).apply {
-                text = status.detail
-                visibility = if (status.detail == null) View.GONE else View.VISIBLE
+                text = detail
+                visibility = if (detail == null) View.GONE else View.VISIBLE
+            }
+            row.findViewById<MaterialButton>(R.id.peerUpdate).apply {
+                visibility = if (behind) View.VISIBLE else View.GONE
+                if (behind) {
+                    val updating = AppUpdate.isUpdating(peer.id)
+                    isEnabled = !updating
+                    text = if (updating) getString(R.string.peer_pc_updating) else getString(R.string.peer_pc_update, latest)
+                    contentDescription = getString(R.string.peer_pc_update_description, peer.name, latest)
+                    setOnClickListener {
+                        AppUpdate.askToUpdate(peer.id)
+                        refreshStatus()
+                    }
+                }
             }
             val phone = peer.device == "android"
             if (peer.device == "windows" || phone) {

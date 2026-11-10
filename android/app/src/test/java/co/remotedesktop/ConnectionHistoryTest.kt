@@ -288,7 +288,10 @@ class ConnectionHistoryTest {
     }
 
     private fun refuse(conn: FakeRelay.Connection) {
-        assertEquals("hello", JSONObject(String(conn.read().second)).getString("type"))
+        val hello = JSONObject(String(conn.read().second))
+        assertEquals("hello", hello.getString("type"))
+        // The other devices are told which version this phone runs.
+        assertEquals(BuildConfig.VERSION_NAME, hello.getString("version"))
         conn.sendText("""{"type":"error","code":"too-many-connections",""" +
             """"message":"too many connections from this network"}""")
         conn.sendClose(4002, "too-many-connections")
