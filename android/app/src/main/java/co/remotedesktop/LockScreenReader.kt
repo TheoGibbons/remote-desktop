@@ -73,6 +73,22 @@ internal object LockScreenReader {
         }
     }
 
+    /** One look at the window in front. */
+    sealed class Read {
+        /** The window was read from end to end, and this is what it holds;
+         *  or an app's window is in front of the lock screen, which holds
+         *  nothing of the lock screen's. */
+        data class Complete(val found: Found) : Read()
+
+        /** There was no window to read, or the walk broke off or was cut
+         *  short. Nothing is known: not that there is a grid, and not that
+         *  there is none. */
+        object Unknown : Read()
+    }
+
+    /** What [walk] got through, and whether that was all of it. */
+    class Walk(val nodes: List<Node>, val complete: Boolean)
+
     const val DELETE = "delete"
     const val OK = "ok"
 
@@ -186,21 +202,24 @@ internal object LockScreenReader {
 
     /**
      * What the window in front says about entering the pattern or PIN, on a
-     * screen [width] by [height] pixels. Nothing unless that window belongs
-     * to [LOCK_SCREEN_PACKAGE]: no other app's window is walked.
+     * screen [width] by [height] pixels. No window but one that belongs to
+     * [LOCK_SCREEN_PACKAGE] is walked: with an app in front (a call, the
+     * camera over the lock screen) the answer is that nothing is there.
+     * Safe to call off the main thread.
      */
-    fun read(service: AccessibilityService, width: Int, height: Int): Found {
+    fun read(service: AccessibilityService, width: Int, height: Int): Read {
         val root = try {
             service.rootInActiveWindow
         } catch (e: RuntimeException) {
             // E.g. the service was switched off a moment ago.
             null
-        } ?: return Found.NOTHING
-        if (root.packageName?.toString() != LOCK_SCREEN_PACKAGE) return Found.NOTHING
-        val nodes = walk(root)
-        val found = find(nodes, width, height)
-        if (BuildConfig.DEBUG) describe(nodes, found)
-        return found
+        } ?: return Read.Unknown // Windows are changing hands; there will be one in a moment.
+        if (root.packageName?.toString() != LOCK_SCREEN_PACKAGE) return Read.Complete(Found.NOTHING)
+        val walk = walk(root)
+        if (!walk.complete) return Read.Unknown
+        val found = find(walk.nodes, width, height)
+        if (BuildConfig.DEBUG) describe(walk.nodes, found)
+        return Read.Complete(found)
     }
 
     /**
@@ -208,11 +227,16 @@ internal object LockScreenReader {
      * is and what it is called, and what it says only where [messageText]
      * and [keyWord] allow.
      */
-    fun walk(root: AccessibilityNodeInfo): List<Node> {
+    fun walk(root: AccessibilityNodeInfo): Walk {
         val nodes = ArrayList<Node>()
         val bounds = Rect()
+        var complete = true
         fun visit(node: AccessibilityNodeInfo) {
-            if (nodes.size >= MAX_NODES || !node.isVisibleToUser) return
+            if (!node.isVisibleToUser) return
+            if (nodes.size >= MAX_NODES) {
+                complete = false
+                return
+            }
             node.getBoundsInScreen(bounds)
             val id = node.viewIdResourceName
             val clickable = node.isClickable
@@ -234,9 +258,11 @@ internal object LockScreenReader {
         try {
             visit(root)
         } catch (e: RuntimeException) {
-            // The window went away mid-walk. What was read of it still counts.
+            // The window went away mid-walk. Half a window is not a window
+            // with half its keys missing: it is one that wasn't read.
+            complete = false
         }
-        return nodes
+        return Walk(nodes, complete)
     }
 
     /**

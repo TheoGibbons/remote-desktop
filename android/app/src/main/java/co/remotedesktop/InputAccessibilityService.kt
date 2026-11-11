@@ -111,8 +111,9 @@ class InputAccessibilityService : AccessibilityService() {
 
     /** Where the pattern or PIN is entered, if the unlock screen is in front
      *  (see [LockScreenReader]). Only [LockState] asks, and only while the
-     *  phone is locked and being viewed. Main thread. */
-    internal fun readLockScreen(): LockScreenReader.Found {
+     *  phone is locked and being viewed. It is a walk through another
+     *  process's window, so [LockState] calls it off the main thread. */
+    internal fun readLockScreen(): LockScreenReader.Read {
         val (w, h) = screenSize()
         return LockScreenReader.read(this, w, h)
     }
@@ -154,7 +155,8 @@ class InputAccessibilityService : AccessibilityService() {
      * reading it for a viewer. Everything else is dropped unread.
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event?.packageName?.toString() == LockScreenReader.LOCK_SCREEN_PACKAGE) LockState.lockScreenChanged(this)
+        if (event?.packageName?.toString() != LockScreenReader.LOCK_SCREEN_PACKAGE) return
+        LockState.lockScreenChanged(windowChanged = event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
     }
     override fun onInterrupt() {}
 

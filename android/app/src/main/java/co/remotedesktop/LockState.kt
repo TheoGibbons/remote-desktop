@@ -8,9 +8,12 @@ import android.content.IntentFilter
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 /**
  * Whether this phone's screen is on and whether it is locked, and telling
@@ -26,7 +29,8 @@ import org.json.JSONObject
  * the pattern or PIN is entered once the unlock screen is up, and what the
  * lock screen's message line says ([LockScreenReader]). That is the only time
  * the lock screen is read, and it stops the moment any of the three ends:
- * locked, screen on, someone viewing.
+ * locked, screen on, someone viewing. [LockScreenWatch] keeps the reading
+ * seldom, and it is done off the main thread.
  */
 internal object LockState {
     /** What Android says right now. */
@@ -91,13 +95,20 @@ internal object LockState {
     /** The service that is reporting changes on the lock screen; null while
      *  the lock screen is not to be read. */
     private var lockScreenService: InputAccessibilityService? = null
-    private var lockScreen = LockScreenReader.Found.NOTHING
-    /** The lock screen has changed since it was read. */
-    private var lockScreenStale = false
-    private var rereadPending = false
-    /** A lock screen that is counting down changes every second; it is read
-     *  no more often than this. */
-    private const val REREAD_MS = 150L
+    /** When the lock screen is read again, and what viewers are told of it. */
+    private val watch = LockScreenWatch()
+    private var readInFlight = false
+    /** Goes up each time reading starts or stops, so a read that comes back
+     *  after that is known to be about a time that is over. */
+    private var readEpoch = 0
+    private val readDue = Runnable { readLockScreen() }
+
+    /** Where the lock screen is walked: it is a string of calls into another
+     *  process, and the main thread is where a viewer's touches are played. */
+    internal var readOn: Executor = Executors.newSingleThreadExecutor { work ->
+        Thread(work, "lock-screen-reader").apply { isDaemon = true }
+    }
+
     /** What each viewer was last told, so it is told again only what is new. */
     private val told = HashMap<String, String>()
 
@@ -153,38 +164,69 @@ internal object LockState {
     }
 
     /**
-     * The accessibility service saw something change in a window of the
-     * system's interface. It matters only while the lock screen is being
-     * read, and then it is read again shortly, once for however many changes
-     * arrive meanwhile.
+     * The accessibility service saw something change in the system's
+     * interface: a window came or went ([windowChanged]), or something
+     * inside one changed. It matters only while the lock screen is being
+     * read, and [LockScreenWatch] says how soon it is worth reading again.
      */
-    fun lockScreenChanged(context: Context) {
-        if (lockScreenService == null || rereadPending) return
-        rereadPending = true
-        val app = context.applicationContext
-        main.postDelayed({
-            rereadPending = false
-            lockScreenStale = true
-            tell(app)
-        }, REREAD_MS)
+    fun lockScreenChanged(windowChanged: Boolean) {
+        if (lockScreenService == null) return
+        val now = SystemClock.uptimeMillis()
+        if (windowChanged) watch.windowChanged(now) else watch.contentChanged(now)
+        scheduleRead()
     }
 
     /**
-     * Reads the lock screen if it is time to, and stops reading it if not.
+     * Starts reading the lock screen if it is time to, and stops if not.
      * [wanted] is asked afresh every time: the phone may have been unlocked
      * since the change that brought us here.
      */
     private fun lookAtLockScreen(wanted: Boolean) {
         val service = if (wanted) InputAccessibilityService.instance else null
-        if (service !== lockScreenService) {
-            lockScreenService?.listenToLockScreen(false)
-            lockScreenService = service
-            service?.listenToLockScreen(true)
-            lockScreenStale = true
+        if (service === lockScreenService) return
+        lockScreenService?.listenToLockScreen(false)
+        lockScreenService = service
+        readEpoch++
+        // What was read is dropped with the reading; a new one starts from nothing.
+        watch.start(SystemClock.uptimeMillis())
+        main.removeCallbacks(readDue)
+        if (service != null) {
+            service.listenToLockScreen(true)
+            scheduleRead()
         }
-        if (lockScreenStale) {
-            lockScreenStale = false
-            lockScreen = service?.readLockScreen() ?: LockScreenReader.Found.NOTHING
+    }
+
+    private fun scheduleRead() {
+        main.removeCallbacks(readDue)
+        // One read at a time. When it comes back, whatever is due by then is set down.
+        if (readInFlight || lockScreenService == null) return
+        val due = watch.nextDue ?: return
+        main.postDelayed(readDue, (due - SystemClock.uptimeMillis()).coerceAtLeast(0))
+    }
+
+    private fun readLockScreen() {
+        val service = lockScreenService ?: return
+        val context = service.applicationContext
+        // Asked afresh, and again where the reading is done: an unlocked phone is never read.
+        if (!read(context).let { it.screenOn && it.locked }) {
+            tell(context)
+            return
+        }
+        watch.reading(SystemClock.uptimeMillis())
+        readInFlight = true
+        val epoch = readEpoch
+        readOn.execute {
+            val result = try {
+                if (read(context).let { it.screenOn && it.locked }) service.readLockScreen() else LockScreenReader.Read.Unknown
+            } catch (e: RuntimeException) {
+                LockScreenReader.Read.Unknown
+            }
+            main.post {
+                readInFlight = false
+                // A read from before reading stopped, or started over, says nothing about now.
+                if (epoch == readEpoch && watch.read(result, SystemClock.uptimeMillis())) tell(context)
+                scheduleRead()
+            }
         }
     }
 
@@ -200,12 +242,12 @@ internal object LockState {
         // The screen is being turned on. Wait to see whether it comes on, so a
         // viewer isn't told "asleep" for the moment that takes.
         else if (ScreenWaker.pending) return
-        val text = message(reading, wakeFailed, lockScreen).toString()
+        val text = message(reading, wakeFailed, watch.published).toString()
         val news = viewers.filter { told[it] != text }
         if (news.isEmpty()) return
         // Not the message line: it is the phone's own words to whoever holds it.
         Log.i("LockState", "To ${news.size} viewer(s): screenOn=${reading.screenOn} locked=${reading.locked}" +
-            " wakeFailed=$wakeFailed entry=${lockScreen.entry?.javaClass?.simpleName}")
+            " wakeFailed=$wakeFailed entry=${watch.published.entry?.javaClass?.simpleName}")
         for (viewer in news) {
             told[viewer] = text
             ConnectionManager.sendJson(JSONObject(text).put("to", viewer))
