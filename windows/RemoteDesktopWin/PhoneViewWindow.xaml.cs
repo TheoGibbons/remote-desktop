@@ -591,11 +591,15 @@ public partial class PhoneViewWindow : Window
         DrawUnlockScreen();
     }
 
-    /// <summary>Taps the points given, in order: digits typed for a PIN.</summary>
+    /// <summary>Taps the keys at the points given, in order: digits typed for a PIN.</summary>
     private void TapEach(IEnumerable<(double X, double Y)> points)
     {
         foreach (var (x, y) in points)
-            _ws.SendJson(new JsonObject { ["type"] = "tap", ["to"] = _phoneId, ["x"] = x, ["y"] = y });
+        {
+            var tap = LockOverlay.PinTapMessage(x, y);
+            tap["to"] = _phoneId;
+            _ws.SendJson(tap);
+        }
     }
 
     /// <summary>Puts the words over the picture, or takes them away.</summary>
@@ -942,10 +946,12 @@ public partial class PhoneViewWindow : Window
         var text = e.Text;
         if (string.IsNullOrEmpty(text)) return;
         if (text.Length == 1 && char.IsControl(text[0])) return; // control chars go via key events
-        // Digits for a PIN are taps on the phone's own keys, and never text.
-        if (CurrentPin is { } pin && LockOverlay.PinTaps(pin, text) is { } taps)
+        // Digits for a PIN are taps on the phone's own keys, and nothing
+        // typed while its pad is up is sent as text: not a digit, and not a
+        // letter that came with one.
+        if (CurrentPin is { } pin)
         {
-            TapEach(taps);
+            TapEach(LockOverlay.PinTaps(pin, text));
             e.Handled = true;
             return;
         }

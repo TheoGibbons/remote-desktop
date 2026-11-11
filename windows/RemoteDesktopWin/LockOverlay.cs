@@ -243,21 +243,28 @@ internal static class LockOverlay
     }
 
     /// <summary>
-    /// Where to tap for digits typed on the PC's keyboard, one tap a digit;
-    /// null if <paramref name="text"/> is anything but digits. Digits typed
-    /// while the phone asks for a PIN are never sent as text.
+    /// Where to tap for what was typed on the PC's keyboard while the phone
+    /// asks for a PIN: one tap for each digit, in order. Anything else in
+    /// <paramref name="text"/> is left out, and the caller sends none of it
+    /// as text: a PIN pad has no use for a letter, and nothing typed at a
+    /// lock should turn up as text in whatever field takes it next.
     /// </summary>
-    public static IReadOnlyList<(double X, double Y)>? PinTaps(PinEntry pin, string text)
+    public static IReadOnlyList<(double X, double Y)> PinTaps(PinEntry pin, string text)
     {
-        if (text.Length == 0) return null;
         var taps = new List<(double, double)>();
         foreach (char c in text)
-        {
-            if (c is < '0' or > '9') return null;
-            if (pin.Tap(c.ToString()) is { } at) taps.Add(at);
-        }
+            if (c is >= '0' and <= '9' && pin.Tap(c.ToString()) is { } at) taps.Add(at);
         return taps;
     }
+
+    /// <summary>
+    /// The <c>tap</c> for a key of the PIN pad, without its <c>to</c>. It is
+    /// marked <c>onlyIfLocked</c>: where the keys are is what the phone said
+    /// a moment ago, and if it has unlocked since, that place is now
+    /// something on its home screen. The phone drops the tap then.
+    /// </summary>
+    public static JsonObject PinTapMessage(double x, double y) =>
+        new() { ["type"] = "tap", ["x"] = x, ["y"] = y, ["onlyIfLocked"] = true };
 
     /// <summary>
     /// Whether a decoded picture is nearly all black, from a coarse sample of

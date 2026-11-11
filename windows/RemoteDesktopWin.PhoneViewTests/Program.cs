@@ -1038,10 +1038,18 @@ internal static class Program
 
         var taps = LockOverlay.PinTaps(pad, "4071");
         Check(taps is { Count: 4 }, "Typed digits become one tap each");
-        Check(taps![0] == pad.Tap("4") && taps[1] == pad.Tap("0") && taps[2] == pad.Tap("7") && taps[3] == pad.Tap("1"), "In the order typed");
-        Check(LockOverlay.PinTaps(pad, "4a") == null && LockOverlay.PinTaps(pad, " ") == null && LockOverlay.PinTaps(pad, "") == null,
-            "Anything but digits is not for the pad");
-        Check(LockOverlay.PinTaps(pad, "٤") == null, "Nor digits of another script: the keys say 0 to 9");
+        Check(taps[0] == pad.Tap("4") && taps[1] == pad.Tap("0") && taps[2] == pad.Tap("7") && taps[3] == pad.Tap("1"), "In the order typed");
+        // What a keyboard can hand over in one go: digits with something else among them.
+        var mixed = LockOverlay.PinTaps(pad, "12a 3");
+        Check(mixed.Count == 3 && mixed[0] == pad.Tap("1") && mixed[1] == pad.Tap("2") && mixed[2] == pad.Tap("3"),
+            "The digits are tapped and the rest is left out");
+        Check(LockOverlay.PinTaps(pad, "abc").Count == 0 && LockOverlay.PinTaps(pad, " ").Count == 0 && LockOverlay.PinTaps(pad, "").Count == 0,
+            "Nothing but letters taps nothing, and the caller sends none of it as text");
+        Check(LockOverlay.PinTaps(pad, "\u0664").Count == 0, "Digits of another script are not keys: the keys say 0 to 9");
+
+        var tap = LockOverlay.PinTapMessage(0.25, 0.5);
+        Check(tap.ToJsonString() == """{"type":"tap","x":0.25,"y":0.5,"onlyIfLocked":true}""",
+            "A tap on a key is marked for the unlock screen only, so the phone drops it once unlocked");
 
         Check(pad.Tap(PinEntry.Delete) is { } delete && Math.Abs(delete.X * 1080 - 260) < 0.5, "Backspace is the pad's delete key");
         Check(pad.Tap(PinEntry.Ok) is { } ok && Math.Abs(ok.X * 1080 - 820) < 0.5, "Enter is its OK key");
