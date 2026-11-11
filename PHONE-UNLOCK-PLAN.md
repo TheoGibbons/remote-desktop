@@ -1,6 +1,6 @@
 # Waking and unlocking a phone from a viewer: plan
 
-Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Nothing here is built yet except the wake itself (`ScreenWaker`, in `30009c4`, not released).
+Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Phase 1 was built on 2026-11-11 and its section below describes what was built; Phases 2 and 3 are not built. None of it is released.
 
 **This is the plan for unlocking.** `PHONE-VIDEO-PLAN.md` used to contain a *Phase U. Unlocking the phone from the PC*; that phase is now a pointer here, and its checks C4 and C5 stay there as a record. [Differences from Phase U](#differences-from-phase-u) lists what changed on the way. `PHONE-PLANS-ORDER.md` gives the build order: this plan is its steps 5 to 7, after the menu plan and before the video plan.
 
@@ -74,11 +74,12 @@ One message, added to PROTOCOL.md under *Input: controlling Android*.
 
 | type | direction | fields |
 |------|-----------|--------|
-| `lock-state` | phone → each viewer | `to`, `screenOn` (bool), `locked` (bool), `entry`?, `message`? |
+| `lock-state` | phone → each viewer | `to`, `screenOn` (bool), `locked` (bool), `wakeFailed`?, `entry`?, `message`? |
 
+- `wakeFailed` (built in Phase 1) is present only while the screen is off after the phone tried to turn it on and it was still off a second later: `notifications` when the app's notifications are off on the phone, `unknown` otherwise. The plan first had the viewer work this out from `screenOn: false` alone, which can't tell a phone nobody tried to wake from one that refused.
 - `entry` is present only while the unlock screen is up and the phone could read it (Phase 2). `{ "kind": "pattern", "area": [x, y, w, h] }` or `{ "kind": "pin", "keys": [{ "label": "1", "rect": [x, y, w, h] }, …] }` or `{ "kind": "password" }`. Rectangles are fractions of the screen, like `tap`. PIN key labels are the digits plus `delete` and `ok` where the phone has them.
 - `message` is the lock screen's own message line, e.g. "Incorrect pattern drawn" or a "try again in 30 seconds" countdown.
-- Sent to each device that is viewing, addressed, never broadcast: when it starts viewing, and whenever any field changes. The same gate as frames (`PhoneScreenCapture.maySendFrames` and `recipients()`).
+- Sent to each device that is viewing, addressed, never broadcast: when it starts viewing, and whenever any field changes. The same gate as frames (`PhoneScreenCapture.maySendFrames` and `recipients()`). The phone remembers what it last told each viewer, so a viewer that sends `start-view` again is not told again. A viewer that starts while the phone is asleep is told once it is known whether the phone woke, so it is never told "asleep" for the moment waking takes.
 - Older viewers ignore it. Older phones never send it, and a new viewer then behaves as today.
 
 No new viewer-to-phone message. Unlocking uses `tap`, `touch`, `swipe` and `text`, which already require `mayControl(from)`.
@@ -87,31 +88,40 @@ No new viewer-to-phone message. Unlocking uses `tap`, `touch`, `swipe` and `text
 
 ### Phase 1: wake, say what is going on (no new permission)
 
+Built 2026-11-11. On the S26 only what an awake, unlocked phone can show has been checked; everything that needs it asleep or locked is listed for the session at the end of the build (check 1 below).
+
 Phone:
 
-- `LockState.kt` (new): reads `PowerManager.isInteractive` and `KeyguardManager.isKeyguardLocked`, builds `lock-state`, and sends it when a viewer starts and on `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF` / `ACTION_USER_PRESENT`. The receiver is registered only while someone is viewing; hook `PhoneScreenCapture.refresh()`, which already runs on every start and stop.
-- `PhoneScreenCapture.onViewRequested` wakes the phone only when the device was not already viewing (decision 8).
-- Notifications become part of waking. `PermissionsActivity` and `MainActivity` count four or five required permissions today and notifications are not among them. Add a row, "Notifications: needed to wake this phone for a viewer", required on Samsung phones at least. `ScreenWaker` checks `isInteractive` again a second after trying and, if the screen is still off, `lock-state` goes out with `screenOn: false` so the viewer can say why.
-- Fallback for phones that ignore the wake lock: the Accessibility service starts a tiny activity with `setTurnScreenOn(true)` and `setShowWhenLocked(true)` that finishes at once. Build it only if a phone needs it; the S26 does not.
-- Remove the comment at the top of `InputAccessibilityService.kt` saying a secure lock can't be crossed.
+- `LockState.kt`: reads `PowerManager.isInteractive` and `KeyguardManager.isKeyguardLocked`, builds `lock-state`, and sends it when a viewer starts and on `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF` / `ACTION_USER_PRESENT`. The receiver is registered only while someone may be sent the picture; `PhoneScreenCapture.refresh()`, which runs on every start and stop, switches it. The menu plan's `rotate` is refused, and left out of `can`, on the same reading (`LockState.Reading.inUse`), so the two can't come to mean different things by "locked".
+- `PhoneScreenCapture.onViewRequested` wakes the phone, and shows the "started viewing" toast, only when the device was not already viewing (decision 8, ruling 10).
+- Notifications are part of waking. `PermissionsActivity` has a **Notifications** row that opens the app's notification settings, and it is counted with the required permissions there and on the main screen (one list now, `PermissionsActivity.required`). It is counted on every phone, not only Samsung: nobody knows which other makers refuse, and pairing requests also arrive as notifications.
+- `ScreenWaker` looks again a second after trying. If the screen is still off, `lock-state` goes out with `wakeFailed`, which says whether notifications are off. One look covers every try made while it is awaited.
+- Not built: the fallback for phones that ignore the wake lock (the Accessibility service starting a tiny activity with `setTurnScreenOn(true)` and `setShowWhenLocked(true)` that finishes at once). Build it only if a phone needs it; the S26 does not.
+- The comment at the top of `InputAccessibilityService.kt` no longer says a secure lock can't be crossed.
 
-Viewers (`PhoneViewWindow` on Windows, `PhoneViewerActivity` on Android): a caption over the picture, driven by `lock-state`. On Windows it is a layer in the menu plan's picture host, above the picture and below the video plan's Stats readout.
+Viewers (`PhoneViewWindow` on Windows, `PhoneViewerActivity` on Android): a caption over the picture, driven by `lock-state`. On Windows it is a layer in the menu plan's picture host, above the picture and below the video plan's Stats readout. It sits at the top of the picture, clear of where a pattern is drawn and of the words "Screen unavailable" that the phone sends in the middle of a black picture while its screen is off. Clicks pass through it. The decisions are in `LockOverlay.cs` (Windows) and `LockCaption.kt` (Android).
 
 | State | Caption |
 |---|---|
-| `screenOn: false` | "The phone is asleep. Click to wake it." After a failed wake: "The phone didn't wake. Allow notifications for Remote Desktop on the phone." |
+| `screenOn: false` | "The phone is asleep. Click to wake it." |
+| `screenOn: false`, `wakeFailed: notifications` | "The phone didn't wake. Allow notifications for Remote Desktop on the phone." |
+| `screenOn: false`, any other `wakeFailed` | "The phone didn't wake. Click to try again." |
 | `locked`, no `entry` | none while the lock screen is visible; "Swipe up to unlock" is already in the picture |
 | picture nearly all black while `locked` | "Android hides the unlock screen from the picture. Clicks and drags still reach it." |
-
+| awake and not locked | none, however dark the picture |
 | picture nearly all black, from a phone that has sent no `lock-state` (v1.0.53 or older) | "The phone's screen is off, or it is on its unlock screen. Clicks and drags still reach an unlock screen." |
 
-The last two rows are what make Phase 1 usable alone: the viewer notices the black picture itself (it has the frame), so blind unlocking at least explains itself.
+The phone viewer on Android says the same with the other phone's name for "the phone" and "tap" for "click".
 
-The black test is a plain function over decoded pixels (a coarse sample is enough), run a couple of times a second at most. It is called wherever the picture is decoded. Today that is `PhoneViewWindow.OnFrame` on the UI thread. The video plan moves decoding to its feed thread (step 0.5) and later to an H.264 decoder (Phase 2); the call moves with it each time.
+The two black-picture rows are what make Phase 1 usable alone: the viewer notices the black picture itself (it has the frame), so blind unlocking at least explains itself.
 
-Docs: both READMEs and `android/README.md` ("Why the PC can't unlock the phone") say it is impossible. Replace with what is true: it can, by pattern, PIN or password, blind for now, once the phone has been unlocked by hand after a restart.
+The black test is a plain function over decoded pixels (`LockOverlay.IsNearlyBlack`). It looks at about a hundred pixels across the picture's shorter side and calls the picture nearly all black when at most 1 in 100 of them has a colour channel above 16. That lets through the unlock screen's Back arrow and the words "Screen unavailable", and keeps out a clock on a black wallpaper and a dark theme's dark grey. It runs twice a second at most, and only while a black picture would mean something: on a locked phone, or one that has never sent `lock-state`. It is called wherever the picture is decoded. Today that is `PhoneViewWindow.OnFrame` on the UI thread. The video plan moves decoding to its feed thread (step 0.5) and later to an H.264 decoder (Phase 2); the call moves with it each time.
 
-Tests: `LockStateTest` on the `AllowOtherPhonesTest` pattern (`RecordingSocket`, fields set by reflection, no new shadow of `PeerAuth` or `ConnectionManager`). Cases: sent to a viewer on start; sent again on screen off and on; never to a device that isn't viewing; nothing with control off. Full suite afterwards.
+When `lock-state` changes, the Windows viewer asks for `phone-state` again: the phone holds no rotation while asleep or locked and leaves `rotate` out of `can`, and it does not push `phone-state`.
+
+Docs: PROTOCOL.md has `lock-state`. README.md, windows/README.md and `android/README.md` (now "Unlocking the phone from a viewer") say what is true: it can be done, by pattern, PIN or password, blind for now, once the phone has been unlocked by hand after a restart. They also say that only a pattern has been tried so far.
+
+Tests: `LockStateTest` on the `AllowOtherPhonesTest` pattern (`RecordingSocket`, fields set by reflection, no new shadow of `PeerAuth` or `ConnectionManager`): sent to a viewer on start; sent again on screen off, on and unlock; never to a device that isn't viewing; nothing with control off or while an unapproved device is in the session; a viewer that asks again neither wakes nor is announced; a failed wake and its reason. `LockCaptionTest` and two cases in `PhoneViewerActivityTest` for the phone viewer. Windows: `CheckLockState`, `CheckCaptions`, `CheckBlackPicture` and `CheckBlackWatch` in `RemoteDesktopWin.PhoneViewTests`. The `lock-state` text is shared between `LockStateTest` and `CheckLockState`, as `phone-state` is.
 
 ### Phase 2: find the unlock area, draw it (Windows viewer)
 
@@ -181,7 +191,7 @@ Phase U has been removed from the video plan; this table is the record of what i
 
 Step 0 of `PHONE-PLANS-ORDER.md` gives the debug build a permanent `.debug` app id, so it installs beside the release app. Paired as an extra device, it covers these checks end to end with a viewer. Where a check is easier driven over adb, as the 2026-11-10 run was, add the probe receiver to that build without committing it. All of this is on the S26 only; nothing is installed on the S20.
 
-1. Phase 1: phone asleep, open the viewer: it wakes. Notifications off: it doesn't, and the viewer says why.
+1. Phase 1: phone asleep, open the viewer: it wakes. Notifications off: it doesn't, and the viewer says why. Not run yet: the S26 can't be reopened by an agent once it is locked, so this and the asleep, locked and unlock-screen captions wait for the one session at the end of the build.
 2. Phase 2 on the S26: draw the real pattern on the drawn grid. This settles whether the dots are on an even grid; adjust the inset if not.
 3. Switch the S26 to a PIN, then a password: read the node list, confirm the keys are found, unlock by clicking and by typing.
 4. Wrong pattern five times: the lockout message and countdown appear in the viewer.

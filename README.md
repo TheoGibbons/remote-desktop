@@ -236,8 +236,15 @@ publish alongside the relay.
 - ✅ **Copy to PC** in the phone's text-selection menu puts the selection on the
   PC's clipboard after you confirm, whether you are holding the phone or driving
   it from the PC; text and links shared to Remote Desktop go there too
-- ✅ A sleeping phone turns its screen on when you start viewing it
-- ⚠️ Unlocking a *secure* lockscreen (PIN/pattern/biometric) is **not possible** — Android forbids apps from doing it. A phone with no secure lock (swipe-only) can be unlocked, since the tap lands on the lockscreen surface.
+- ✅ A sleeping phone turns its screen on when you start viewing it. The
+  window says when the phone is asleep, and when it didn't wake and why
+- ⚠️ A locked phone can be unlocked from the PC, but blind for now. Swipe the
+  lock screen away, then draw the pattern or tap in the PIN or password with
+  the mouse (only a pattern has been tried so far). Android leaves that
+  unlock screen out of the picture, so the window shows it black and says
+  that clicks and drags still reach it. After a restart the phone must be
+  unlocked by hand once before the app runs at all, and fingerprint and face
+  can't be used from the PC
 
 **PC ↔ PC (computer-to-computer)**
 - ✅ View and control another Windows PC: the same dirty-rect screen stream, full

@@ -196,7 +196,12 @@ unapproved device is present in the session, streaming and file serving pause.
     phone is lying; Quick settings; Screenshot, which pops up on this PC like
     any capture the phone takes; and Lock screen. The menu stays open after
     a click, so Back can be pressed several times. A phone whose app is older
-    shows only the first four, and a line saying to update it. While the
+    shows only the first four, and a line saying to update it. A sleeping
+    phone wakes when the window opens. A line over the picture says when the
+    phone is asleep, when it didn't wake, and when it is on its unlock
+    screen: Android leaves that screen out of the picture, so it is black,
+    but clicks and drags still reach it, and a pattern can be drawn or a PIN
+    tapped in blind. While the
     window is focused, your keyboard types
     into the phone's focused text box (Android 13 and later), with Enter,
     Backspace, arrows and Ctrl shortcuts; Esc is Back, and Ctrl+V pastes this

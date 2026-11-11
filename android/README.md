@@ -78,6 +78,7 @@ Permissions**:
 | **Screen view and control (Accessibility)** | Default phone viewing on Android 11+, plus taps/swipes | Accessibility service toggle; normally persists across reboots |
 | **Smooth screen sharing (optional)** | Smoother phone viewing while enabled | MediaProjection consent, required again after reboot or the capture session ends |
 | **File access** | PC can browse this phone's files | All-files access (Android 11+) |
+| **Notifications** | Waking this phone's screen for a viewer, and pairing requests while the app is in the background | Notification permission (asked at first launch on Android 13+) |
 
 Accessibility viewing sends a screenshot about every 400 ms (up to 2.5 FPS), only
 while an approved device is viewing. It needs no root, USB debugging, or new
@@ -263,11 +264,40 @@ window that shows the phone.
 When an approved device starts viewing, or sends a tap or key while the screen
 is off, the phone turns its screen on. The lock screen stays in place and the
 phone sleeps again on its usual timeout. Setting the volume, turning the
-screen and locking are not input and leave a sleeping phone asleep.
+screen and locking are not input and leave a sleeping phone asleep. So does a
+viewer that is already viewing and asks for the picture again.
 
-## Why the PC can't unlock the phone
+A Samsung phone turns its screen on for an app only while that app's
+notifications are allowed. That is why **Notifications** is one of the rows
+in *Permissions & Access*, and is counted with the required ones on every
+phone. Tapping the row opens the app's notification settings.
 
-Android does not let any app dismiss a **secure** lockscreen (PIN/pattern/
-biometric); accessibility gestures can't cross it. If the phone uses swipe-only
-(no secure lock), the PC's swipe/tap can unlock it because the gesture lands on
-the lockscreen surface itself.
+While a device is viewing, the phone tells it whether the screen is on and
+whether the phone is locked, and whether a wake it tried a second ago failed.
+The viewer shows that as a line over the picture: that the phone is asleep,
+or that it didn't wake and notifications need allowing. The phone listens for
+its screen and its lock only while someone is viewing.
+
+## Unlocking the phone from a viewer
+
+A viewer's taps and drags land on the lock screen as they do anywhere else.
+So an approved device can swipe the lock screen away, and then draw the
+pattern, or tap in the PIN or password, on the unlock screen behind it.
+
+For now that is done blind. Android leaves the unlock screen out of every
+picture an app can take, so the viewer gets it black, apart from a Back
+arrow, and says over it that clicks and drags still reach it. The ordinary
+lock screen, with its clock and notifications, is in the picture as usual.
+Drawing a pattern this way has been tried on a Samsung phone; a PIN and a
+password have not been tried yet.
+
+What to know:
+
+- Anyone using a device you have approved, who knows the pattern or PIN, gets
+  a fully unlocked phone. *View and control this phone* is the switch that
+  governs that.
+- After a restart Android does not run the app until the phone has been
+  unlocked once by hand.
+- Fingerprint and face can't be supplied from another device.
+- Wrong attempts count against the phone's own limit, as they do on the
+  phone itself.
