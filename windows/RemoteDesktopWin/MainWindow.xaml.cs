@@ -89,6 +89,7 @@ public partial class MainWindow : Window
     private readonly DownloadsFolderOpener _downloadsOpener;
     private TransfersWindow? _transfersWindow;
     private System.Windows.Forms.NotifyIcon? _tray;
+    private readonly bool _trayIcon;
     private bool _exiting;
     private bool _trayTipShown;
 
@@ -96,8 +97,12 @@ public partial class MainWindow : Window
 
     public MainWindow() : this(AppSettings.Load(), new PeerAuth(AppSettings.StorageDir)) { }
 
-    internal MainWindow(AppSettings settings, PeerAuth auth)
+    /// <param name="trayIcon">False for a test, which builds this window without
+    /// showing it: an icon in the notification area would be the one thing of it
+    /// on the screen, and a run that crashed would leave it there.</param>
+    internal MainWindow(AppSettings settings, PeerAuth auth, bool trayIcon = true)
     {
+        _trayIcon = trayIcon;
         _settings = settings;
         _auth = auth;
         InitializeComponent();
@@ -229,7 +234,7 @@ public partial class MainWindow : Window
         _tray = new System.Windows.Forms.NotifyIcon
         {
             Text = AppProfile.Name is { } profile ? $"Remote Desktop [{profile}]" : "Remote Desktop",
-            Visible = true,
+            Visible = _trayIcon,
         };
         try
         {

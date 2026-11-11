@@ -25,7 +25,7 @@ internal static class PrivacyLifecycleTests
         app.Resources = (ResourceDictionary)XamlReader.Parse(resources.ToString());
         string storage = Path.Combine(Path.GetTempPath(), "privacy-lifecycle-" + Guid.NewGuid().ToString("N"));
         var auth = new PeerAuth(storage);
-        var host = new MainWindow(new AppSettings { AutoConnect = false }, auth);
+        var host = new MainWindow(new AppSettings { AutoConnect = false }, auth, trayIcon: false);
         var ws = Field<WsClient>(host, "_ws");
         // Allow privacy acknowledgements to encrypt normally; no socket or
         // outgoing queue is opened, so the messages stay on this machine.
