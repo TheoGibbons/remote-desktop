@@ -189,11 +189,55 @@ internal sealed unsafe class H264Decoder : IDisposable
             lock (ProbeGate)
             {
                 if (_available is { } known) return known;
-                using var probe = TryCreate(out _);
+                using var probe = TryCreate(MaxCodedSize, MaxCodedSize, out string why, out bool notInstalled);
                 _available = probe != null;
+                _notInstalled = notInstalled;
+                _whyNot = why;
                 return probe != null;
             }
         }
+    }
+
+    /// <summary>
+    /// True when there is no decoder because Windows has none: no Media
+    /// Foundation, or no H.264 decoder registered in it. False when there is
+    /// one, and also when there is one that could not be set up, which is a
+    /// fault and not a kind of Windows. The tests skip on the first and fail
+    /// on the second, so that a mistake in the set-up cannot pass as "this PC
+    /// has no decoder".
+    /// </summary>
+    internal static bool IsNotInstalled
+    {
+        get
+        {
+            bool available = IsAvailable;
+            lock (ProbeGate) return !available && _notInstalled;
+        }
+    }
+
+    /// <summary>Why <see cref="IsAvailable"/> is false, in words; empty when it is true.</summary>
+    internal static string WhyNotAvailable
+    {
+        get
+        {
+            _ = IsAvailable;
+            lock (ProbeGate) return _whyNot;
+        }
+    }
+
+    private static bool _notInstalled;
+    private static string _whyNot = "";
+
+    // COM's ways of saying a class is not there: not registered, not
+    // available, or its DLL not found.
+    private static bool MeansNotInstalled(int hr) =>
+        hr == unchecked((int)0x80040154) || hr == unchecked((int)0x80040111) || hr == unchecked((int)0x8007007E);
+
+    private static bool MeansNotInstalled(Exception e)
+    {
+        for (Exception? at = e; at != null; at = at.InnerException)
+            if (at is DllNotFoundException or EntryPointNotFoundException) return true;
+        return false;
     }
 
     public static H264Decoder? TryCreate() => TryCreate(out _);
@@ -205,8 +249,12 @@ internal sealed unsafe class H264Decoder : IDisposable
     /// padded size (Windows' own limit, which fails in silence) or a given
     /// number of pixels (this class's, which says so).</summary>
     internal static H264Decoder? TryCreate(int maxCodedWidth, int maxCodedHeight, out string why, int maxPixels = MaxPixels)
+        => TryCreate(maxCodedWidth, maxCodedHeight, out why, out _, maxPixels);
+
+    private static H264Decoder? TryCreate(int maxCodedWidth, int maxCodedHeight, out string why, out bool notInstalled, int maxPixels = MaxPixels)
     {
         why = "";
+        notInstalled = false;
         IMFTransform? mft = null;
         try
         {
@@ -218,7 +266,12 @@ internal sealed unsafe class H264Decoder : IDisposable
                 CoInitializeEx(IntPtr.Zero, 0 /* multithreaded */);
                 hr = CoCreateInstance(ClsidMsH264Decoder, IntPtr.Zero, 1, IidIMFTransform, out raw);
             }
-            if (hr < 0) { why = $"no H.264 decoder (0x{hr:X8})"; return null; }
+            if (hr < 0)
+            {
+                notInstalled = MeansNotInstalled(hr);
+                why = notInstalled ? $"Windows has no H.264 decoder (0x{hr:X8})" : $"the H.264 decoder could not be made (0x{hr:X8})";
+                return null;
+            }
             mft = new IMFTransform(raw);
 
             // Before the types, or they are not looked at. Reading Attributes
@@ -263,8 +316,9 @@ internal sealed unsafe class H264Decoder : IDisposable
         }
         catch (Exception e)
         {
-            // DllNotFoundException and its kin: no Media Foundation here.
-            why = $"no Media Foundation ({e.GetType().Name})";
+            // A missing DLL: no Media Foundation here. Anything else is a fault.
+            notInstalled = MeansNotInstalled(e);
+            why = notInstalled ? $"Windows has no Media Foundation ({e.GetType().Name})" : $"the H.264 decoder's set-up threw {e.GetType().Name}: {e.Message}";
         }
         try { mft?.Dispose(); } catch { }
         return null;

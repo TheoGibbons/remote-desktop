@@ -137,6 +137,32 @@ public sealed class H264Encoder : IDisposable
         return TryCreateFrom(hardware, width, height, bitrate, fps);
     }
 
+    /// <summary>
+    /// Whether Windows lists any H.264 encoder at all, a graphics card's or
+    /// its own. For the tests: with none listed they have nothing to make a
+    /// stream with and skip; with one listed that cannot be made to work,
+    /// something is broken and they fail.
+    /// </summary>
+    internal static bool AnyRegistered()
+    {
+        try { MediaFoundationStartup.EnsureStarted(); }
+        catch { return false; }
+        var input = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoFormatGuids.NV12 };
+        var output = new RegisterTypeInfo { GuidMajorType = MediaTypeGuids.Video, GuidSubtype = VideoFormatGuids.H264 };
+        foreach (int kind in new[] { MftEnumFlagHardware, MftEnumFlagSyncMft })
+        {
+            try
+            {
+                using var listed = MediaFactory.MFTEnumEx(TransformCategoryGuids.VideoEncoder, (uint)(MftEnumFlagSortAndFilter | kind), input, output);
+                bool any = false;
+                foreach (var activate in listed) { any = true; activate.Dispose(); }
+                if (any) return true;
+            }
+            catch { }
+        }
+        return false;
+    }
+
     private static H264Encoder? TryCreateFrom(bool hardware, int width, int height, int bitrate, int fps)
     {
         int flags = MftEnumFlagSortAndFilter | (hardware ? MftEnumFlagHardware : MftEnumFlagSyncMft);

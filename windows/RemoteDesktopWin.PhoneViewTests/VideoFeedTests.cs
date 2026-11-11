@@ -24,17 +24,7 @@ internal static class VideoFeedTests
         CheckOffer();
         CheckReadout();
 
-        if (!H264Decoder.IsAvailable)
-        {
-            Console.WriteLine("SKIP: no H.264 decoder here, so the feed's video checks did not run");
-            return;
-        }
-        var kinds = H264Tests.Encoders();
-        if (kinds.Count == 0)
-        {
-            Console.WriteLine("SKIP: no H.264 encoder here to make a stream with, so the feed's video checks did not run");
-            return;
-        }
+        if (!H264Tests.CodecsAreHere("the feed's video checks", out var kinds)) return;
         foreach (bool hardware in kinds)
         {
             _say = hardware == kinds[^1];

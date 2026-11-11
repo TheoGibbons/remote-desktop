@@ -32,18 +32,7 @@ internal static unsafe class H264Tests
         CheckWhatCountsAsAKeyframe();
         CheckEncoderColourNumbers();
 
-        if (!H264Decoder.IsAvailable)
-        {
-            H264Decoder.TryCreate(out string why)?.Dispose();
-            Console.WriteLine($"SKIP: no H.264 decoder here ({why}), so the decoder's checks did not run");
-            return;
-        }
-        var kinds = Encoders();
-        if (kinds.Count == 0)
-        {
-            Console.WriteLine("SKIP: no H.264 encoder here to make a stream with, so the decoder's checks did not run");
-            return;
-        }
+        if (!CodecsAreHere("the decoder's checks", out var kinds)) return;
         Console.WriteLine("  (streams for the decoder's checks come from: " + string.Join(" and ", kinds.Select(Clip.EncoderName)) + ")");
 
         CheckRoundTrips(kinds);
@@ -68,6 +57,33 @@ internal static unsafe class H264Tests
             CheckOneDecoderAfterAnother(small, turned);
         }
         _say = true;
+    }
+
+    /// <summary>
+    /// Whether the checks that need real codecs can run. They are skipped,
+    /// with a line saying so, only where Windows truly has no H.264 decoder
+    /// or lists no H.264 encoder. A decoder or an encoder that is there and
+    /// cannot be made to work is a failure: otherwise a mistake in setting
+    /// one up would print SKIP and pass, while the app quietly stopped
+    /// offering video.
+    /// </summary>
+    internal static bool CodecsAreHere(string what, out List<bool> kinds)
+    {
+        kinds = [];
+        if (!H264Decoder.IsAvailable)
+        {
+            Check(H264Decoder.IsNotInstalled, "Windows has an H.264 decoder and it could not be set up: " + H264Decoder.WhyNotAvailable);
+            Console.WriteLine($"SKIP: {H264Decoder.WhyNotAvailable}, so {what} did not run");
+            return false;
+        }
+        kinds = Encoders();
+        if (kinds.Count == 0)
+        {
+            Check(!H264Encoder.AnyRegistered(), "Windows lists an H.264 encoder and H264Encoder could not make one work, not even Windows' own");
+            Console.WriteLine($"SKIP: Windows lists no H.264 encoder to make a stream with, so {what} did not run");
+            return false;
+        }
+        return true;
     }
 
     /// <summary>Which encoders this PC has: true for the graphics card's, false for Windows' software one.</summary>

@@ -242,6 +242,9 @@ internal static class PrivacyLifecycleTests
             for (int i = 0; i < 500 && typeof(PhoneFeed).GetField("_canDecode", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(feed) == null; i++)
                 Pump(20);
             bool video = H264Decoder.IsAvailable;
+            // No decoder is one thing; a decoder that is there and could not be set up is a fault.
+            if (!video && !H264Decoder.IsNotInstalled)
+                throw new Exception("Windows has an H.264 decoder and it could not be set up: " + H264Decoder.WhyNotAvailable);
             string codecs = video ? "[\"h264\",\"jpeg\"]" : "[\"jpeg\"]";
             var view = new PhoneViewWindow(ws, phone, "Test phone", feed, () => auth.IsTrusted(phone));
             typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, view);
@@ -342,7 +345,11 @@ internal static class PrivacyLifecycleTests
                 var encodedAgain = video ? VideoOf(96, 160, System.Drawing.Color.FromArgb(220, 220, 220)) : null;
                 var encodedTurned = video ? VideoOf(160, 96, System.Drawing.Color.FromArgb(128, 128, 128)) : null;
                 if (encoded == null || encodedAgain == null || encodedTurned == null)
-                    Console.WriteLine("SKIP: no H.264 decoder or encoder here, so video was not put through the phone window");
+                {
+                    if (video && H264Encoder.AnyRegistered())
+                        throw new Exception("Windows lists an H.264 encoder and H264Encoder could not make a stream with one");
+                    Console.WriteLine("SKIP: no H.264 decoder or encoder in this Windows, so video was not put through the phone window");
+                }
                 else
                 {
                     byte[] Video(ulong stream, uint seq, List<byte[]> units, int unit, int w = 96, int h = 160) => Frame(Crypto.ChPhone, PhoneFrame.Build(
