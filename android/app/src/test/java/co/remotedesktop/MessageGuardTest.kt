@@ -1,0 +1,145 @@
+package co.remotedesktop
+
+import android.content.Context
+import android.os.Looper
+import android.util.Base64
+import okhttp3.Request
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
+import org.json.JSONObject
+import org.junit.After
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+
+/**
+ * Messages as they come off the socket, good and bad. Whatever a device in
+ * the session sends, the phone must stay on the relay: an exception that gets
+ * out of the socket's listener makes OkHttp drop the connection.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
+class MessageGuardTest {
+    private val socket = RecordingSocket()
+    private val context get() = RuntimeEnvironment.getApplication()
+    private val previous = mutableMapOf<String, Any?>()
+
+    private fun connectionField(name: String) = ConnectionManager::class.java.getDeclaredField(name)
+        .apply { isAccessible = true }
+
+    private fun authField(name: String) = PeerAuth::class.java.getDeclaredField(name).apply { isAccessible = true }
+
+    @Suppress("UNCHECKED_CAST")
+    private val trustedPeers get() = authField("trustedPeers").get(PeerAuth) as MutableSet<String>
+
+    private val captureContext = PhoneScreenCapture::class.java.getDeclaredField("appContext")
+        .apply { isAccessible = true }
+
+    /** The app's own listener, as OkHttp calls it. */
+    private val listener get() = connectionField("listener").get(ConnectionManager) as WebSocketListener
+
+    @Before
+    fun setup() {
+        context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit()
+        for (name in listOf("appContext", "encKey", "ws", "fs", "state")) previous[name] = connectionField(name).get(ConnectionManager)
+        connectionField("appContext").set(ConnectionManager, context)
+        connectionField("encKey").set(ConnectionManager, socket.key)
+        connectionField("ws").set(ConnectionManager, socket)
+        connectionField("fs").set(ConnectionManager, FsHandler(context))
+        connectionField("state").set(ConnectionManager, "connected")
+        ConnectionManager.peers.add(ConnectionManager.Peer("pc", "windows", "Test PC"))
+        ConnectionManager.peers.add(ConnectionManager.Peer("other-pc", "windows", "Other PC"))
+        ConnectionManager.peers.add(ConnectionManager.Peer("stranger", "windows", "Stranger"))
+        trustedPeers.addAll(listOf("pc", "other-pc"))
+        previous["allPeersTrusted"] = authField("allPeersTrusted").get(PeerAuth)
+        authField("allPeersTrusted").set(PeerAuth, true)
+        previous["capture"] = captureContext.get(PhoneScreenCapture)
+        captureContext.set(PhoneScreenCapture, null)
+        PhoneScreenCapture.init(context)
+    }
+
+    @After
+    fun cleanup() {
+        PhoneScreenCapture.onViewStopped()
+        idle()
+        captureContext.set(PhoneScreenCapture, previous.remove("capture"))
+        authField("allPeersTrusted").set(PeerAuth, previous.remove("allPeersTrusted"))
+        for ((name, value) in previous) connectionField(name).set(ConnectionManager, value)
+        ConnectionManager.peers.clear()
+        trustedPeers.clear()
+        context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit()
+    }
+
+    private fun idle() = shadowOf(Looper.getMainLooper()).idle()
+
+    /** A text frame arrives, exactly as written. */
+    private fun arrives(text: String) {
+        listener.onMessage(socket, text)
+        idle()
+    }
+
+    /** What the relay hands on from [from]: an envelope round a message encrypted with the session key. */
+    private fun sealed(inner: String, from: String) = JSONObject().put("type", "enc").put("from", from)
+        .put("d", Base64.encodeToString(Crypto.encrypt(socket.key, inner.toByteArray(), Crypto.CH_JSON), Base64.NO_WRAP))
+        .toString()
+
+    private fun frame(type: Byte, payload: ByteArray): ByteString =
+        (byteArrayOf(type) + Crypto.encrypt(socket.key, payload, type)).toByteString()
+
+    @Test
+    fun aMessageThatMakesNoSenseIsSkippedAndTheNextOneIsHeard() {
+        // Nothing here may throw: the test fails if anything gets out of the listener.
+        for (text in listOf("null", "5", "[1]", "\"x\"", "{", "", """{"type":5}""", """{"type":["welcome"]}""",
+            """{"type":"enc"}""", """{"type":"enc","d":5}""", """{"type":"enc","d":"not base64!"}""", """{"type":"enc","d":"AAAA"}""",
+            // The relay's own, with what it should hold missing.
+            """{"type":"peer-joined"}""", """{"type":"peer-joined","peer":{"id":5}}"""))
+            arrives(text)
+
+        // Encrypted with the session key, as any device in the session can, and still no message.
+        for (inner in listOf("null", "[1]", "7", "not json", """{"type":5}""", """{"type":{"a":1}}""",
+            """{"type":"tap","x":"left"}""", """{"type":"touch"}""", """{"type":"key"}""", """{"type":"volume","level":"loud"}""",
+            """{"type":"rotate"}""", """{"type":"fs-get"}""", """{"type":"fs-begin","xferId":"x"}""", """{"type":"fs-list","path":5}""",
+            """{"type":"auth-response","nonce":5}""", """{"type":"auth-challenge"}""", """{"type":"update-status","state":7}""",
+            """{"type":"frame-ack","stream":5,"seq":"last"}""", """{"type":"diagnostic-ping","nonce":"x"}""",
+            """{"type":"start-view","codecs":"jpeg"}""", """{"type":"start-view","codecs":[5,null,{"a":1}]}""")) {
+            arrives(sealed(inner, "pc"))
+            arrives(sealed(inner, "stranger"))
+        }
+        PhoneScreenCapture.onViewStopped()
+        idle()
+
+        for (bytes in listOf(ByteString.EMPTY, byteArrayOf(1).toByteString(), byteArrayOf(2, 0, 0).toByteString(),
+            ByteArray(40).toByteString(), frame(Crypto.CH_FILE, ByteArray(2)), frame(Crypto.CH_PATCH, ByteArray(3)),
+            frame(Crypto.CH_H264, ByteArray(3)), frame(Crypto.CH_PHONE, ByteArray(5)), frame(Crypto.CH_VIDEO, ByteArray(4)))) {
+            listener.onMessage(socket, bytes)
+            idle()
+        }
+
+        // The phone is still listening.
+        assertFalse(PhoneScreenCapture.isViewing("pc"))
+        arrives(sealed("""{"type":"start-view"}""", "pc"))
+        assertTrue(PhoneScreenCapture.isViewing("pc"))
+    }
+
+    private class RecordingSocket : WebSocket {
+        val key = ByteArray(32) { 7 }
+        val messages = mutableListOf<JSONObject>()
+        override fun request() = Request.Builder().url("https://example.test/").build()
+        override fun queueSize() = 0L
+        override fun send(text: String): Boolean {
+            val blob = Base64.decode(JSONObject(text).getString("d"), Base64.NO_WRAP)
+            messages.add(JSONObject(String(Crypto.decrypt(key, blob, Crypto.CH_JSON)!!)))
+            return true
+        }
+        override fun send(bytes: ByteString) = true
+        override fun close(code: Int, reason: String?) = true
+        override fun cancel() {}
+    }
+}

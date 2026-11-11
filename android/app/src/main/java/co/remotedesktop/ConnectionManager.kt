@@ -402,7 +402,27 @@ object ConnectionManager {
             )
         }
 
+        // One message that can't be read, or that something downstream
+        // chokes on, is one message lost. An exception let out of onMessage
+        // makes OkHttp fail the socket: any device in the session could then
+        // knock this phone off the relay at will.
         override fun onMessage(webSocket: WebSocket, text: String) {
+            try {
+                receive(webSocket, text)
+            } catch (e: Exception) {
+                Log.w("ConnectionManager", "Skipped a message: $e")
+            }
+        }
+
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            try {
+                receive(bytes)
+            } catch (e: Exception) {
+                Log.w("ConnectionManager", "Skipped a frame: $e")
+            }
+        }
+
+        private fun receive(webSocket: WebSocket, text: String) {
             receivedWireBytes.addAndGet(text.toByteArray(Charsets.UTF_8).size.toLong())
             receivedMessages.incrementAndGet()
             lastReceiveAtMs = SystemClock.elapsedRealtime()
@@ -419,7 +439,7 @@ object ConnectionManager {
             }
         }
 
-        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+        private fun receive(bytes: ByteString) {
             receivedWireBytes.addAndGet(bytes.size.toLong())
             receivedMessages.incrementAndGet()
             lastReceiveAtMs = SystemClock.elapsedRealtime()
