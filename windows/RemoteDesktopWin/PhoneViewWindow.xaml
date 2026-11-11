@@ -77,7 +77,7 @@
                     Padding="10,7" CornerRadius="6" Background="#D9000000" BorderBrush="#40FFFFFF"
                     BorderThickness="1" IsHitTestVisible="False" Visibility="Collapsed">
                 <TextBlock x:Name="StatsText" FontFamily="Segoe UI" FontSize="12" Foreground="White"
-                           TextWrapping="Wrap" AutomationProperties.Name="Stats"/>
+                           TextWrapping="Wrap"/>
             </Border>
         </Grid>
 
