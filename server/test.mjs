@@ -151,19 +151,22 @@ async function main() {
   const fileArrived = await arrivesAtStalled(2);
   ok("type 5 frames are dropped for a viewer that is not reading", videoArrived < sentToStalled / 2);
   ok("type 5 falls under the video buffer limit, not the file one", fileArrived - videoArrived >= 4 * 1024 * 1024);
-  // 3d. JSON that is no message (null, a number, a string, a list) is
-  // dropped, before the hello and after it. `null` used to end the relay.
+  // 3d. Text that is no message (not JSON at all, or null, a number, a
+  // string, a list) is dropped, before the hello and after it. `null` used
+  // to end the relay. Messages that are objects with something wrong inside
+  // them are 3e and 3f.
+  const noMessage = ["null", "5", '"hello"', "[1,2]", "true", "{", "not json", ""];
   const odd = new WebSocket(URL);
   await once(odd, "open");
-  for (const text of ["null", "5", '"hello"', "[1,2]", "true"]) odd.send(text);
+  for (const text of noMessage) odd.send(text);
   await sleep(150);
   odd.close();
   pc.msgs.length = 0;
-  for (const text of ["null", "5", '"hello"', "[1,2]", "true"]) phone2.ws.send(text);
+  for (const text of noMessage) phone2.ws.send(text);
   phone2.ws.send(JSON.stringify({ type: "still-here", to: pc.welcome.id }));
   await sleep(200);
-  ok("JSON that is no message does not end the relay", server.exitCode === null);
-  ok("JSON that is no message is not passed on, and what follows it is",
+  ok("text that is no message does not end the relay", server.exitCode === null);
+  ok("text that is no message is not passed on, and what follows it is",
     pc.msgs.length === 1 && pc.msgs[0].type === "still-here" && pc.msgs[0].from === phone2.welcome.id);
 
   // 3e. A field that is an object with a broken toString cannot be turned

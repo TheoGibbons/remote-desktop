@@ -14,6 +14,7 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
@@ -45,6 +46,13 @@ class MessageGuardTest {
     /** The app's own listener, as OkHttp calls it. */
     private val listener get() = connectionField("listener").get(ConnectionManager) as WebSocketListener
 
+    /** What the listener hands a message to, without the listener's guard round it. */
+    private val handleJson = ConnectionManager::class.java.getDeclaredMethod("handleJson", JSONObject::class.java)
+        .apply { isAccessible = true }
+
+    private val instanceField = InputAccessibilityService::class.java.getDeclaredField("instance")
+        .apply { isAccessible = true }
+
     @Before
     fun setup() {
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit()
@@ -63,10 +71,13 @@ class MessageGuardTest {
         previous["capture"] = captureContext.get(PhoneScreenCapture)
         captureContext.set(PhoneScreenCapture, null)
         PhoneScreenCapture.init(context)
+        // Accessibility is on, as on any phone that can be controlled: taps are acted on.
+        instanceField.set(null, Robolectric.buildService(InputAccessibilityService::class.java).create().get())
     }
 
     @After
     fun cleanup() {
+        instanceField.set(null, null)
         PhoneScreenCapture.onViewStopped()
         idle()
         captureContext.set(PhoneScreenCapture, previous.remove("capture"))
@@ -93,39 +104,76 @@ class MessageGuardTest {
     private fun frame(type: Byte, payload: ByteArray): ByteString =
         (byteArrayOf(type) + Crypto.encrypt(socket.key, payload, type)).toByteString()
 
+    /** Whether handling this message throws, once it is past the listener: what the listener's guard is there for. */
+    private fun throwsWhereItIsHandled(message: String, from: String? = null): Boolean = try {
+        handleJson.invoke(ConnectionManager, JSONObject(message).apply { if (from != null) put("from", from) })
+        false
+    } catch (e: java.lang.reflect.InvocationTargetException) {
+        true
+    }
+
     @Test
-    fun aMessageThatMakesNoSenseIsSkippedAndTheNextOneIsHeard() {
-        // Nothing here may throw: the test fails if anything gets out of the listener.
-        for (text in listOf("null", "5", "[1]", "\"x\"", "{", "", """{"type":5}""", """{"type":["welcome"]}""",
-            """{"type":"enc"}""", """{"type":"enc","d":5}""", """{"type":"enc","d":"not base64!"}""", """{"type":"enc","d":"AAAA"}""",
-            // The relay's own, with what it should hold missing.
-            """{"type":"peer-joined"}""", """{"type":"peer-joined","peer":{"id":5}}"""))
-            arrives(text)
+    fun aMessageThePhoneChokesOnIsSkippedAndTheNextOneIsHeard() {
+        // The relay's own word with what it should hold missing, and a tap
+        // from an approved device that does not say where.
+        val fromTheRelay = listOf("""{"type":"peer-joined"}""", """{"type":"peer-joined","peer":{"id":5}}""")
+        val fromADevice = listOf("""{"type":"tap","x":"left"}""", """{"type":"tap"}""", """{"type":"swipe","x1":0.5}""")
+        // Each of them really does throw where it is handled. If one stops
+        // doing so, it proves nothing below and another has to be found.
+        for (text in fromTheRelay) assertTrue(text, throwsWhereItIsHandled(text))
+        for (inner in fromADevice) assertTrue(inner, throwsWhereItIsHandled(inner, from = "pc"))
 
-        // Encrypted with the session key, as any device in the session can, and still no message.
-        for (inner in listOf("null", "[1]", "7", "not json", """{"type":5}""", """{"type":{"a":1}}""",
-            """{"type":"tap","x":"left"}""", """{"type":"touch"}""", """{"type":"key"}""", """{"type":"volume","level":"loud"}""",
-            """{"type":"rotate"}""", """{"type":"fs-get"}""", """{"type":"fs-begin","xferId":"x"}""", """{"type":"fs-list","path":5}""",
-            """{"type":"auth-response","nonce":5}""", """{"type":"auth-challenge"}""", """{"type":"update-status","state":7}""",
-            """{"type":"frame-ack","stream":5,"seq":"last"}""", """{"type":"diagnostic-ping","nonce":"x"}""",
-            """{"type":"start-view","codecs":"jpeg"}""", """{"type":"start-view","codecs":[5,null,{"a":1}]}""")) {
-            arrives(sealed(inner, "pc"))
-            arrives(sealed(inner, "stranger"))
-        }
-        PhoneScreenCapture.onViewStopped()
-        idle()
+        // Through the listener, as OkHttp hands them over, nothing gets out:
+        // the test fails here if anything does.
+        for (text in fromTheRelay) arrives(text)
+        for (inner in fromADevice) arrives(sealed(inner, "pc"))
 
-        for (bytes in listOf(ByteString.EMPTY, byteArrayOf(1).toByteString(), byteArrayOf(2, 0, 0).toByteString(),
-            ByteArray(40).toByteString(), frame(Crypto.CH_FILE, ByteArray(2)), frame(Crypto.CH_PATCH, ByteArray(3)),
-            frame(Crypto.CH_H264, ByteArray(3)), frame(Crypto.CH_PHONE, ByteArray(5)), frame(Crypto.CH_VIDEO, ByteArray(4)))) {
-            listener.onMessage(socket, bytes)
-            idle()
+        // The same for whatever goes wrong further on, in a screen that is
+        // listening, with a message or with a picture.
+        var choked = 0
+        val onJson: (JSONObject) -> Unit = { choked++; throw IllegalStateException("a screen choked on a message") }
+        val onFrame: (ByteArray) -> Unit = { choked++; throw IllegalStateException("a screen choked on a frame") }
+        ConnectionManager.networkJsonListeners.add(onJson)
+        ConnectionManager.binaryListeners.add(onFrame)
+        try {
+            arrives(sealed("""{"type":"something-new"}""", "pc"))
+            listener.onMessage(socket, frame(Crypto.CH_VIDEO, ByteArray(4)))
+            listener.onMessage(socket, frame(Crypto.CH_PHONE, ByteArray(5)))
+        } finally {
+            ConnectionManager.networkJsonListeners.remove(onJson)
+            ConnectionManager.binaryListeners.remove(onFrame)
         }
+        assertEquals("each reached the screen that choked on it", 3, choked)
 
         // The phone is still listening.
         assertFalse(PhoneScreenCapture.isViewing("pc"))
         arrives(sealed("""{"type":"start-view"}""", "pc"))
         assertTrue(PhoneScreenCapture.isViewing("pc"))
+    }
+
+    @Test
+    fun whatIsNotAMessageIsHandedToNobody() {
+        val heard = mutableListOf<String>()
+        val hear: (JSONObject) -> Unit = { heard.add(it.toString()) }
+        ConnectionManager.networkJsonListeners.add(hear)
+        try {
+            // Not JSON, JSON that is no object, and an envelope with nothing readable in it.
+            for (text in listOf("null", "5", "[1]", "\"x\"", "{", "", """{"type":"enc"}""", """{"type":"enc","d":5}""",
+                """{"type":"enc","d":"not base64!"}""", """{"type":"enc","d":"AAAA"}"""))
+                arrives(text)
+            // Encrypted with the session key, as any device in the session can, and still no message.
+            for (inner in listOf("null", "[1]", "7", "not json")) {
+                arrives(sealed(inner, "pc"))
+                arrives(sealed(inner, "stranger"))
+            }
+            assertEquals(emptyList<String>(), heard)
+            // A list of codecs that is no list of names is a viewer that named none.
+            arrives(sealed("""{"type":"start-view","codecs":[5,null,{"a":1}]}""", "pc"))
+            assertEquals(1, heard.size)
+            assertTrue(PhoneScreenCapture.isViewing("pc"))
+        } finally {
+            ConnectionManager.networkJsonListeners.remove(hear)
+        }
     }
 
     @Test

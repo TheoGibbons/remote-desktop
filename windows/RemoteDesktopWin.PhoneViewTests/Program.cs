@@ -1426,9 +1426,9 @@ internal static class Program
             "A phone this PC has approved is offered JPEG in type 5 frames");
         Check(PhoneFeed.StartView("7", offerCodecs: false).ToJsonString() == """{"type":"start-view","to":"7"}""",
             "A phone it has not approved is asked as it always was");
-        // The window sends every start-view through this one function, the
-        // first and each one after, so a later one cannot take the offer back.
-        Console.WriteLine("PASS: every start-view to an approved phone says what this viewer can draw");
+        // That the window's later start-views keep the offer is checked with
+        // the window itself, in PrivacyLifecycleTests.
+        Console.WriteLine("PASS: a start-view offers JPEG in type 5 frames to an approved phone, and nothing new to any other");
     }
 
     // ---------------- the Stats readout ----------------

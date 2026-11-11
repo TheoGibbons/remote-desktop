@@ -148,6 +148,12 @@ internal static class PrivacyLifecycleTests
             // each time any device in the session sent one.
             // The control switch stays off, so the clip-get at the end is refused and presses no keys.
             sent.Clear();
+            // Three of them do throw where the socket client handles them,
+            // shown by leaving out the guard it has round that. If one stops
+            // doing so, it proves nothing below and another has to be found.
+            foreach (var bad in new object[] { "{", "{\"type\":\"enc\",\"d\":\"not base64!\"}", Sealed("not json", "unapproved") })
+                if (!ThrowsWhereItIsHandled(bad, binary: false))
+                    throw new Exception("A message meant to make the socket client throw no longer does");
             foreach (var text in new[]
             {
                 "null", "5", "[1]", "\"x\"", "{", "", "{\"type\":5}", "{\"type\":[\"welcome\"]}", "{\"type\":\"enc\"}",
@@ -162,7 +168,25 @@ internal static class PrivacyLifecycleTests
             foreach (var frame in new[] { Array.Empty<byte>(), new byte[] { 1 }, new byte[] { 2, 0, 0 }, new byte[] { 5, 1, 2, 3 }, new byte[40],
                          Frame(2, new byte[2]), Frame(3, new byte[3]), Frame(5, new byte[5]), Frame(1, new byte[4]) })
                 OffSocket(frame, binary: true);
-            // And the next good one is still heard.
+            // The same for whatever goes wrong further on, in a window that
+            // is listening, with a message or with a picture.
+            int choked = 0;
+            Action<JsonNode> chokeOnMessage = _ => { Interlocked.Increment(ref choked); throw new InvalidOperationException("A window choked on a message"); };
+            Action<byte[]> chokeOnFrame = _ => { Interlocked.Increment(ref choked); throw new InvalidOperationException("A window choked on a frame"); };
+            ws.JsonReceived += chokeOnMessage;
+            ws.BinaryReceived += chokeOnFrame;
+            try
+            {
+                OffSocket(Sealed("{\"type\":\"something-new\"}", "unapproved"), binary: false);
+                OffSocket(Frame(1, new byte[4]), binary: true);
+            }
+            finally
+            {
+                ws.JsonReceived -= chokeOnMessage;
+                ws.BinaryReceived -= chokeOnFrame;
+            }
+            if (choked != 2) throw new Exception("The message and the frame did not reach the listener that was to choke on them");
+            // None of all that was answered, and the next good one is still heard.
             OffSocket(Sealed("{\"type\":\"clip-get\",\"reqId\":\"6\"}", peer), binary: false);
             if (sent.Count != 1 || sent[0]["reqId"]?.GetValue<string>() != "6")
                 throw new Exception("A message that makes no sense stopped the ones after it");
@@ -275,6 +299,33 @@ internal static class PrivacyLifecycleTests
                     throw new Exception("Copying the figures gave: " + copied);
                 view.ToggleStats();
                 Console.WriteLine("PASS: the readout pings the phone and shows the delay of the pictures that are drawn");
+
+                // Every start-view the window sends says what it can draw, the
+                // later ones too: the phone takes the latest as the whole of it.
+                List<string> StartViews() => Outgoing().Where(m => m["type"]?.GetValue<string>() == "start-view")
+                    .Select(m => m.ToJsonString()).ToList();
+                const string offer = "{\"type\":\"start-view\",\"to\":\"phone-7\",\"codecs\":[\"jpeg\"]}";
+                const string plain = "{\"type\":\"start-view\",\"to\":\"phone-7\"}";
+                Outgoing();
+                view.ResendStartView();
+                if (!StartViews().SequenceEqual(new[] { offer }))
+                    throw new Exception("Asking for the stream again took back the offer of type 5 frames");
+                // Nothing about the phone's approval has changed, so it is not asked again.
+                view.TrustChanged();
+                if (StartViews().Count != 0) throw new Exception("The phone was asked again though its approval had not changed");
+                // This PC stops approving the phone: it is asked again, as a phone that is not approved is.
+                trusted.Remove(phone);
+                view.TrustChanged();
+                if (!StartViews().SequenceEqual(new[] { plain }))
+                    throw new Exception("A phone that is no longer approved was not asked again without the offer");
+                view.ResendStartView();
+                if (!StartViews().SequenceEqual(new[] { plain }))
+                    throw new Exception("A phone that is not approved was offered type 5 frames when asked again");
+                trusted.Add(phone);
+                view.TrustChanged();
+                if (!StartViews().SequenceEqual(new[] { offer }))
+                    throw new Exception("A phone that is approved again was not offered type 5 frames");
+                Console.WriteLine("PASS: each start-view from the phone window says what it can draw, and a change of approval asks again");
             }
             finally
             {
@@ -303,6 +354,18 @@ internal static class PrivacyLifecycleTests
         }.ToJsonString());
 
         byte[] Frame(byte type, byte[] payload) => [type, .. Crypto.Encrypt(Field<byte[]>(ws, "_encKey"), payload, type)];
+
+        // Whether the socket client throws on this message where it handles
+        // it, with the guard it has round that left out.
+        bool ThrowsWhereItIsHandled(object message, bool binary)
+        {
+            var data = message as byte[] ?? System.Text.Encoding.UTF8.GetBytes((string)message);
+            var handle = typeof(WsClient).GetMethod("Handle", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var done = Task.Run(() => handle.Invoke(ws, new object[] { data, binary }));
+            while (!done.IsCompleted) Pump(5);
+            Pump(20);
+            return done.IsFaulted;
+        }
 
         // Hands a message to the socket client on another thread, as the
         // receive loop does, and lets the window deal with what it posts.
