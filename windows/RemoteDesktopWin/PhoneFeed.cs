@@ -102,6 +102,7 @@ internal sealed class PhoneFeed : IDisposable
     // each until a window is opened on it GiveUpWearsOffMs or more later.
     private readonly Dictionary<string, (long At, string Why)> _givenUp = new();
     private readonly Action<string, string>? _gaveUp;
+    private long? _jpegOnlySaidAt;  // when the phone was last told that only JPEG is taken
     private byte[]? _parameterSets; // the stream's last SPS and PPS, for a keyframe that comes without
     private H264Decoder? _decoder;  // made and used on the feed's thread, let go from any
     private readonly H264PictureHandler _onDecoded;
@@ -233,6 +234,7 @@ internal sealed class PhoneFeed : IDisposable
         _stream.Forget();
         _acks.Forget();
         _stats.Reset();
+        _jpegOnlySaidAt = null;
         _waiting = null;
         DropVideo();
         // A frame may be in the decoder at this moment, on the feed's thread.
@@ -298,7 +300,7 @@ internal sealed class PhoneFeed : IDisposable
     public void OnFrame(byte[] data)
     {
         if (data.Length < 2) return;
-        JsonObject? ack = null, keyframe = null;
+        JsonObject? ack = null, keyframe = null, jpegOnly = null;
         lock (_gate)
         {
             if (_phoneId == null || _closed) return;
@@ -340,12 +342,23 @@ internal sealed class PhoneFeed : IDisposable
                     // break in the chain are still good and stay in the queue.
                 }
                 keyframe = AskOrGiveUp(now);
+                // Video that this PC is not taking, from a phone that was
+                // offered JPEG: the start-view that said so was lost, or was
+                // overtaken by an earlier one that still offered video. Said
+                // again, at most once a second, for as long as it comes.
+                if (header.Format == PhoneFrame.H264 && _offered && !_stream.OffersH264 && keyframe == null &&
+                    (_jpegOnlySaidAt is not { } said || now - said >= 1000))
+                {
+                    _jpegOnlySaidAt = now;
+                    jpegOnly = StartView(_phoneId, offerCodecs: true, h264: false);
+                }
             }
             else return;
             Monitor.Pulse(_gate);
         }
         if (ack != null) _send(ack);
         if (keyframe != null) _send(keyframe);
+        if (jpegOnly != null) _send(jpegOnly);
     }
 
     /// <summary>
@@ -388,6 +401,7 @@ internal sealed class PhoneFeed : IDisposable
     private JsonObject GiveUp(string why)
     {
         _givenUp[_phoneId!] = (_nowMs(), why);
+        _jpegOnlySaidAt = _nowMs();
         _stream.OffersH264 = false;
         _video.Clear();
         _videoBytes = 0;

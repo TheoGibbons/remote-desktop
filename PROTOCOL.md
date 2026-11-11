@@ -689,7 +689,10 @@ JPEG until a window is opened on it ten minutes or more later, when H.264 is
 offered again. Other phones are not affected. The phone changes format as it
 would for any viewer that does not list `"h264"`: a new stream,
 `codec: "jpeg"`. Video frames that still arrive are acknowledged and not
-drawn. A picture that is only slow to come out of the PC's decoder is waited
+drawn, and while they keep arriving the PC sends that `start-view` again, at
+most once a second: the first may have been lost, or overtaken by an earlier
+one that still offered video. It does the same whenever video arrives that it
+did not offer. A picture that is only slow to come out of the PC's decoder is waited
 for and is not a failure.
 
 ## Viewport streaming

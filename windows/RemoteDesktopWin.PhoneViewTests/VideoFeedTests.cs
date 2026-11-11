@@ -721,14 +721,24 @@ internal static class VideoFeedTests
         Check(rig.Of("start-view").SequenceEqual(["""{"type":"start-view","to":"7","codecs":["jpeg"]}"""]),
             "The phone is told by a start-view that offers JPEG only: " + string.Join(" ", rig.Of("start-view")));
         int asked = rig.Count("request-keyframe");
-        rig.Now = 4000;
-        rig.Frame(StreamA, 6, clip.Units[0]);
-        rig.Frame(StreamA, 7, clip.Units[1]);
-        rig.Now = 4040;
-        Check(rig.Pump() == 0 && rig.Of("frame-ack")[^1].Contains("\"seq\":7"), "Video that still arrives is acknowledged and not drawn");
+        // The phone goes on sending video: the start-view was lost on the
+        // way, or one sent a moment earlier, still offering video, came in
+        // behind it. It is told again, once a second, until it stops.
+        uint late = 6;
+        for (long now = 3100; now <= 5900; now += 100)
+        {
+            rig.Now = now;
+            rig.Frame(StreamA, late++, clip.Units[(int)(late % 8)]);
+            rig.Pump();
+        }
+        Check(rig.Shown.Count == 2, "Video that still arrives is not drawn");
+        Check(rig.Of("frame-ack")[^1].Contains($"\"seq\":{late - 1}"), "It is acknowledged: " + rig.Of("frame-ack")[^1]);
+        Check(rig.Of("start-view").Count == 3 && rig.Of("start-view").All(m => m == """{"type":"start-view","to":"7","codecs":["jpeg"]}"""),
+            $"And the phone is told again that only JPEG is taken, once a second while video keeps coming: {rig.Of("start-view").Count} times");
         rig.Now = 6000;
         rig.Pump();
         Check(rig.Count("request-keyframe") == asked, "And no more keyframes are asked for");
+        Check(rig.GaveUp.Count == 1, "The person at the PC is not told again each time");
         Check(rig.Feed.StatsText().Contains("H.264 given up for this phone (a keyframe gave no picture). Tried again when its window is opened ten minutes later or more."),
             "The readout says so:\n" + rig.Feed.StatsText());
 
@@ -820,7 +830,9 @@ internal static class VideoFeedTests
         rig.Frame(StreamA, 1, clip.Units[0]);
         rig.Frame(StreamA, 3, clip.Units[1]);
         Check(rig.Pump() == 0 && rig.Shown.Count == 0 && rig.Feed.VideoState.Queued == 0, "Video that was not offered is not decoded");
-        Check(rig.Count("request-keyframe") == 0 && rig.Count("start-view") == 0, "Nothing is asked about it");
+        Check(rig.Count("request-keyframe") == 0, "No keyframe is asked for");
+        Check(rig.Of("start-view").SequenceEqual(["""{"type":"start-view","to":"7","codecs":["jpeg"]}"""]),
+            "The phone is told again what this PC takes, once: " + string.Join(" ", rig.Of("start-view")));
         rig.Now = 100;
         rig.Pump();
         Check(rig.Of("frame-ack")[^1].Contains("\"seq\":3"), "It is acknowledged like any frame");
