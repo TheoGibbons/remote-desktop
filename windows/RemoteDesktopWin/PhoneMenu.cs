@@ -512,3 +512,122 @@ internal sealed record PhoneState(int Volume, int VolumeMax, bool Muted, string 
         return null;
     }
 }
+
+/// <summary>How the menu's Smooth video row looks right now.</summary>
+internal readonly record struct SmoothRow(bool Shown, bool Enabled, bool Ticked, string ToolTip);
+
+/// <summary>
+/// The menu's Smooth video row: asking the phone to share its screen as
+/// video, and to stop. The phone says whether it can in <c>smooth</c> of its
+/// <c>screen-info</c>: <c>on</c>, <c>available</c> or <c>unavailable</c>. A
+/// phone on an app from before this never says, and gets no row. What comes
+/// of a request arrives as <c>smooth-status</c>, and is told to the person as
+/// it comes.
+///
+/// Android shows a prompt on the phone, and somebody has to approve it: on
+/// the phone, or here, by clicking its button in the picture like anything
+/// else on the phone's screen. This app never presses it.
+/// </summary>
+internal sealed class SmoothVideo
+{
+    public const string On = "on", Available = "available", Unavailable = "unavailable";
+
+    /// <summary>How long the phone has to say anything before the person is
+    /// told it did not answer. A phone that refuses the asker says nothing.</summary>
+    public static readonly TimeSpan AnswerWait = TimeSpan.FromSeconds(5);
+
+    /// <summary>The most of the phone's own words that is shown.</summary>
+    public const int MaxReason = 200;
+
+    public const string AskTip =
+        "Asks the phone to share its screen as video. Approve the prompt on the phone; you can click it here. " +
+        "If the phone is on its side, scroll the prompt up to reach its button.";
+    public const string OnTip =
+        "Smooth video is on. Choose this to go back to ordinary viewing. " +
+        "Android blanks password fields and one-time codes while the screen is shared as video.";
+    public const string UnavailableTip =
+        "This phone can't be asked from here right now. Smooth screen sharing can be turned on in its Permissions screen.";
+    public const string PromptText =
+        "The phone is asking. Click Share screen in the picture, or approve it on the phone. " +
+        "If the phone is on its side, scroll the prompt up first.";
+    public const string NoAnswerText = "The phone didn't answer.";
+
+    private string? _offer;     // smooth, from the phone's last screen-info; null if it did not say
+    private DateTime? _asked;   // when the row was chosen, until the phone says something
+
+    /// <summary>The phone's <c>screen-info</c> said this about smooth
+    /// sharing, or nothing (null). A word this app does not know is taken as
+    /// nothing, so no row is shown that might do something else.</summary>
+    public void Offer(string? smooth)
+    {
+        var offer = smooth is On or Available or Unavailable ? smooth : null;
+        // What was being waited for has happened, or can no longer.
+        if (offer != _offer) _asked = null;
+        _offer = offer;
+    }
+
+    public SmoothRow Row => new(
+        Shown: _offer != null,
+        Enabled: _offer is On or Available,
+        Ticked: _offer == On,
+        ToolTip: _offer switch { On => OnTip, Unavailable => UnavailableTip, _ => AskTip });
+
+    /// <summary>The row was chosen. Returns the message to send the phone, or
+    /// null when there is nothing to ask.</summary>
+    public string? Choose(DateTime now)
+    {
+        if (_offer is not (On or Available)) return null;
+        _asked = now;
+        return _offer == On ? "stop-smooth" : "request-smooth";
+    }
+
+    /// <summary>When <see cref="Tick"/> should be called, if an answer is being waited for.</summary>
+    public DateTime? NextDue => _asked + AnswerWait;
+
+    /// <summary>Returns what to tell the person, once, when the phone has
+    /// had its time and said nothing.</summary>
+    public string? Tick(DateTime now)
+    {
+        if (_asked is not { } asked || now < asked + AnswerWait) return null;
+        _asked = null;
+        return NoAnswerText;
+    }
+
+    /// <summary>A <c>smooth-status</c> from the phone being viewed. Returns
+    /// what to tell the person, or null for a state this app does not know.</summary>
+    public string? Status(JsonObject msg)
+    {
+        var state = Text(msg["state"]);
+        var reason = Clean(Text(msg["reason"]));
+        if (state is not ("prompting" or "started" or "declined" or "ended" or "unavailable")) return null;
+        _asked = null;
+        switch (state)
+        {
+            case "prompting":
+                // With words of its own, the phone is asking some other way: by a notification.
+                return reason ?? PromptText;
+            case "started":
+                _offer = On;
+                return "Smooth video is on.";
+            case "declined":
+                return reason ?? "The prompt was declined on the phone.";
+            case "ended":
+                // A phone that has no other way to show its screen sends no screen-info to say so.
+                if (_offer == On) _offer = Available;
+                return reason ?? "Smooth video has ended.";
+            default:
+                return reason ?? "The phone can't start smooth video right now.";
+        }
+    }
+
+    private static string? Text(JsonNode? node) => node is JsonValue v && v.TryGetValue<string>(out var text) ? text : null;
+
+    /// <summary>The phone's words, made fit to show: one line, and not a long one.</summary>
+    private static string? Clean(string? reason)
+    {
+        if (reason == null) return null;
+        var line = new string(reason.Select(c => char.IsControl(c) ? ' ' : c).ToArray()).Trim();
+        if (line.Length == 0) return null;
+        return line.Length <= MaxReason ? line : line[..MaxReason].TrimEnd() + "…";
+    }
+}

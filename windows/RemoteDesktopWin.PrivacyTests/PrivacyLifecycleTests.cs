@@ -326,6 +326,61 @@ internal static class PrivacyLifecycleTests
                 if (!StartViews().SequenceEqual(new[] { offer }))
                     throw new Exception("A phone that is approved again was not offered type 5 frames");
                 Console.WriteLine("PASS: each start-view from the phone window says what it can draw, and a change of approval asks again");
+
+                // Smooth video: the row is there only for a phone that says it
+                // can be asked, and only an approved phone is believed. What
+                // the person would be told is taken here, not put on the screen.
+                var told = new List<string>();
+                Toast.Capture = told.Add;
+                try
+                {
+                    var row = (System.Windows.Controls.Button)view.FindName("SmoothButton");
+                    var tick = (System.Windows.Controls.TextBlock)view.FindName("SmoothTick");
+                    string Info(string smooth) => "{\"type\":\"screen-info\",\"width\":8,\"height\":16,\"typing\":true," +
+                        "\"capture\":\"accessibility\",\"smooth\":\"" + smooth + "\"}";
+                    string Status(string rest) => "{\"type\":\"smooth-status\"," + rest + "}";
+                    void Click() => row.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                    List<string> Asked() => Outgoing().Select(m => m.ToJsonString()).Where(m => m.Contains("smooth")).ToList();
+
+                    if (row.Visibility == Visibility.Visible) throw new Exception("Smooth video was offered before the phone said it could be asked");
+                    trusted.Remove(phone);
+                    OffSocket(Sealed(Info("available"), phone), binary: false);
+                    if (row.Visibility == Visibility.Visible) throw new Exception("A phone this PC has not approved put a row in the menu");
+                    trusted.Add(phone);
+                    OffSocket(Sealed(Info("available"), phone), binary: false);
+                    if (row.Visibility != Visibility.Visible || !row.IsEnabled || tick.Visibility == Visibility.Visible)
+                        throw new Exception("Smooth video was not offered, unticked, for a phone that says it is available");
+
+                    Outgoing();
+                    Click();
+                    if (!Asked().SequenceEqual(new[] { "{\"type\":\"request-smooth\",\"to\":\"phone-7\"}" }))
+                        throw new Exception("Choosing Smooth video did not ask the phone to start");
+                    // Another device's word about it is not the phone's.
+                    OffSocket(Sealed(Status("\"state\":\"started\""), "unapproved"), binary: false);
+                    if (told.Count != 0 || tick.Visibility == Visibility.Visible) throw new Exception("A smooth-status from another device was believed");
+                    OffSocket(Sealed(Status("\"state\":\"prompting\""), phone), binary: false);
+                    if (!told.SequenceEqual(new[] { SmoothVideo.PromptText })) throw new Exception("The person was not told the phone is asking");
+                    OffSocket(Sealed(Status("\"state\":\"started\""), phone), binary: false);
+                    if (tick.Visibility != Visibility.Visible || told[^1] != "Smooth video is on.")
+                        throw new Exception("Smooth video was not ticked when the phone said it started");
+
+                    Click();
+                    if (!Asked().SequenceEqual(new[] { "{\"type\":\"stop-smooth\",\"to\":\"phone-7\"}" }))
+                        throw new Exception("Choosing the ticked row did not ask the phone to stop");
+                    OffSocket(Sealed(Status("\"state\":\"ended\",\"reason\":\"Smooth video was stopped from Test PC.\""), phone), binary: false);
+                    if (tick.Visibility == Visibility.Visible || told[^1] != "Smooth video was stopped from Test PC.")
+                        throw new Exception("The end of smooth video, and why, was not shown");
+
+                    OffSocket(Sealed(Info("unavailable"), phone), binary: false);
+                    if (row.Visibility != Visibility.Visible || row.IsEnabled) throw new Exception("An unavailable Smooth video row was not greyed");
+                    Click();
+                    if (Asked().Count != 0) throw new Exception("A greyed row asked the phone anyway");
+                    Console.WriteLine("PASS: the Smooth video row follows what an approved phone says, asks it to start and stop, and says what came of it");
+                }
+                finally
+                {
+                    Toast.Capture = null;
+                }
             }
             finally
             {

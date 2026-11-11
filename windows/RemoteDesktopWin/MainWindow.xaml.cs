@@ -1031,7 +1031,9 @@ public partial class MainWindow : Window
                 var siW = msg["width"]?.GetValue<int>() ?? 0;
                 var siH = msg["height"]?.GetValue<int>() ?? 0;
                 if (_phoneView != null && _phoneView.PeerId == from)
-                    _phoneView.OnScreenInfo(siW, siH, msg["typing"]?.GetValue<bool>() ?? false);
+                    _phoneView.OnScreenInfo(siW, siH, msg["typing"]?.GetValue<bool>() ?? false,
+                        // Whether it can be asked for smooth video. Only an approved phone's word puts a row in the menu.
+                        _auth.IsTrusted(from) && msg["smooth"] is JsonValue smooth && smooth.TryGetValue<string>(out var word) ? word : null);
                 if (_pcView != null && _pcView.PeerId == from) _pcView.OnScreenInfo(siW, siH);
                 break;
 
@@ -1045,6 +1047,13 @@ public partial class MainWindow : Window
                 // The phone being viewed says whether its screen is on and whether it is locked.
                 if (_phoneView != null && _phoneView.PeerId == from && msg is JsonObject lockState)
                     _phoneView.OnLockState(lockState);
+                break;
+
+            case "smooth-status":
+                // The phone being viewed says how a request for smooth video went, in
+                // words of its own that are shown: only an approved phone's are.
+                if (_phoneView != null && _phoneView.PeerId == from && _auth.IsTrusted(from) && msg is JsonObject smoothStatus)
+                    _phoneView.OnSmoothStatus(smoothStatus);
                 break;
 
             case "fs-list":

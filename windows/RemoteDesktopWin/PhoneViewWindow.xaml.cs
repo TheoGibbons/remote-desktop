@@ -25,7 +25,8 @@ namespace RemoteDesktopWin;
 /// the button and closes when it leaves (see <see cref="MenuHover"/>). A phone
 /// that says it can (<c>phone-state</c>) also gets its media volume, which
 /// way its screen is held, Quick settings, Screenshot and Lock screen there
-/// (see <see cref="MenuRows"/>).
+/// (see <see cref="MenuRows"/>), and a phone that says whether it can share
+/// its screen as video gets Smooth video (see <see cref="SmoothVideo"/>).
 ///
 /// A phone that is asleep, or on the unlock screen Android leaves out of the
 /// picture, gets a line of words over the picture saying so (see
@@ -95,6 +96,8 @@ public partial class PhoneViewWindow : Window
     private bool _showingPhoneRotation; // the rotation choices are being lit as the phone said
     private readonly RotationCheck _rotation = new();
     private readonly DispatcherTimer _rotationTimer;
+    private readonly SmoothVideo _smooth = new();
+    private readonly DispatcherTimer _smoothTimer;
 
     // What the phone last said in lock-state; null until it does, and for
     // good with a phone app too old to say. Written here, on the window's
@@ -193,7 +196,13 @@ public partial class PhoneViewWindow : Window
             if (_rotation.Tick(DateTime.UtcNow))
                 Toast.Show("The phone didn't rotate. The app on screen may not allow it.");
         };
-        Closed += (_, _) => { _updateLineTimer.Stop(); _volumeTimer.Stop(); _rotationTimer.Stop(); };
+        _smoothTimer = new DispatcherTimer();
+        _smoothTimer.Tick += (_, _) =>
+        {
+            _smoothTimer.Stop();
+            if (_smooth.Tick(DateTime.UtcNow) is { } said) Toast.Show(said);
+        };
+        Closed += (_, _) => { _updateLineTimer.Stop(); _volumeTimer.Stop(); _rotationTimer.Stop(); _smoothTimer.Stop(); };
 
         SendStartView();
         AskPhoneState(always: true);
@@ -386,6 +395,48 @@ public partial class PhoneViewWindow : Window
             // Another program can be holding the clipboard at that moment.
             return "Couldn't copy the figures: " + ex.Message;
         }
+    }
+
+    // ---------------- smooth video ----------------
+
+    /// <summary>Makes the row match what the phone last said.</summary>
+    private void ShowSmoothRow()
+    {
+        var row = _smooth.Row;
+        SmoothButton.Visibility = row.Shown ? Visibility.Visible : Visibility.Collapsed;
+        SmoothButton.IsEnabled = row.Enabled;
+        SmoothButton.ToolTip = row.ToolTip;
+        SmoothTick.Visibility = row.Ticked ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetName(SmoothButton, row.Ticked ? "Smooth video, on" : "Smooth video");
+    }
+
+    /// <summary>Asks the phone to start, or to stop. What comes of it
+    /// arrives as smooth-status; a phone that says nothing is reported.</summary>
+    private void SmoothButton_Click(object sender, RoutedEventArgs e)
+    {
+        var now = DateTime.UtcNow;
+        if (_smooth.Choose(now) is not { } type) return;
+        SendAction(type);
+        _smoothTimer.Stop();
+        if (_smooth.NextDue is { } due)
+        {
+            _smoothTimer.Interval = due - now;
+            _smoothTimer.Start();
+        }
+    }
+
+    /// <summary>The phone says how a request for smooth video is going, or
+    /// that smooth video has ended and why.</summary>
+    public void OnSmoothStatus(JsonObject msg)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            var said = _smooth.Status(msg);
+            _smoothTimer.Stop();
+            ShowSmoothRow();
+            // The words about the prompt take a moment to read and act on.
+            if (said != null) Toast.Show(said, said.Length > 80 ? 7000 : 3500);
+        });
     }
 
     // ---------------- what the phone can do, and its volume ----------------
@@ -772,11 +823,14 @@ public partial class PhoneViewWindow : Window
 
     // ---------------- window size ----------------
 
-    public void OnScreenInfo(int width, int height, bool typing)
+    /// <param name="smooth">What the phone said about smooth sharing, if it said.</param>
+    public void OnScreenInfo(int width, int height, bool typing, string? smooth = null)
     {
         Dispatcher.BeginInvoke(() =>
         {
             _phoneTypes = typing;
+            _smooth.Offer(smooth);
+            ShowSmoothRow();
             if (_viewingSince == null)
             {
                 _viewingSince = DateTime.UtcNow;

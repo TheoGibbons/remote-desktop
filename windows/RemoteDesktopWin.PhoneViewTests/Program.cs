@@ -37,6 +37,7 @@ internal static class Program
         CheckAskPace();
         CheckPhoneState();
         CheckMenuRows();
+        CheckSmoothVideo();
         CheckRotation();
         CheckLockState();
         CheckCaptions();
@@ -699,6 +700,92 @@ internal static class Program
         var newer = PhoneState.Parse(Json("""{"volume":3,"volumeMax":15,"can":["rotate","torch","lock"]}"""));
         Check(MenuRows.For(newer, At(1000), At(5000)) == none with { Rotation = true, Lock = true }, "Names this app doesn't know add nothing");
         Console.WriteLine("PASS: the menu shows the rows the phone lists, or says to update a phone that lists nothing");
+    }
+
+    private static void CheckSmoothVideo()
+    {
+        static JsonObject Status(string state, string? reason = null)
+        {
+            var msg = new JsonObject { ["type"] = "smooth-status", ["state"] = state };
+            if (reason != null) msg["reason"] = reason;
+            return msg;
+        }
+
+        // A phone that has said nothing about smooth sharing has no row: an
+        // app from before this, or a phone this PC has not approved.
+        var smooth = new SmoothVideo();
+        Check(!smooth.Row.Shown, "no row until the phone says");
+        Check(smooth.Choose(At(0)) == null && smooth.NextDue == null, "nothing to ask of such a phone");
+        // A word from some later app is not a row either.
+        smooth.Offer("sometimes");
+        Check(!smooth.Row.Shown, "an unknown word is no offer");
+
+        smooth.Offer(SmoothVideo.Available);
+        Check(smooth.Row == new SmoothRow(true, true, false, SmoothVideo.AskTip), "available: shown, not ticked");
+        Check(smooth.Row.ToolTip.Contains("scroll the prompt"), "the tooltip says a sideways phone's prompt may need scrolling");
+        smooth.Offer(SmoothVideo.Unavailable);
+        Check(smooth.Row == new SmoothRow(true, false, false, SmoothVideo.UnavailableTip), "unavailable: shown greyed");
+        Check(smooth.Choose(At(0)) == null, "a greyed row asks nothing");
+        smooth.Offer(SmoothVideo.On);
+        Check(smooth.Row == new SmoothRow(true, true, true, SmoothVideo.OnTip), "on: ticked");
+        // The phone stops saying: this PC no longer approves it, say.
+        smooth.Offer(null);
+        Check(!smooth.Row.Shown, "the row goes when the phone stops saying");
+
+        // Asking, and the phone answering in time.
+        smooth.Offer(SmoothVideo.Available);
+        Check(smooth.Choose(At(0)) == "request-smooth", "choosing the row asks the phone to start");
+        Check(smooth.NextDue == At(5000), "an answer is waited for, five seconds");
+        Check(smooth.Tick(At(4999)) == null, "not reported before its time");
+        Check(smooth.Status(Status("prompting")) == SmoothVideo.PromptText, "the prompt is up: say where to click");
+        Check(smooth.NextDue == null && smooth.Tick(At(6000)) == null, "an answer ends the wait");
+        Check(!smooth.Row.Ticked, "not on until the phone says it started");
+        Check(smooth.Status(Status("started")) == "Smooth video is on." && smooth.Row.Ticked, "started: ticked");
+
+        // Stopping, and being told why it ended.
+        Check(smooth.Choose(At(10_000)) == "stop-smooth", "choosing the ticked row asks the phone to stop");
+        Check(smooth.Status(Status("ended", "Smooth video was stopped from RIG-PC.")) == "Smooth video was stopped from RIG-PC.",
+            "the reason is shown as the phone gave it");
+        Check(smooth.Row is { Shown: true, Ticked: false, Enabled: true }, "ended: it can be asked for again");
+        Check(smooth.NextDue == null, "the end is the answer to a stop");
+
+        // A phone that says nothing: it dropped the request, as it does from a device that may not ask.
+        smooth.Choose(At(20_000));
+        Check(smooth.Tick(At(25_000)) == SmoothVideo.NoAnswerText, "no answer in five seconds is reported");
+        Check(smooth.Tick(At(26_000)) == null && smooth.NextDue == null, "and only once");
+        // The phone's screen-info can be the answer too.
+        smooth.Choose(At(30_000));
+        smooth.Offer(SmoothVideo.On);
+        Check(smooth.NextDue == null, "a change in what the phone offers ends the wait");
+        smooth.Choose(At(31_000));
+        smooth.Offer(SmoothVideo.On);
+        Check(smooth.NextDue == At(36_000), "a repeat of what it offered does not");
+
+        // Each state has words, with the phone's own where it gave some.
+        smooth = new SmoothVideo();
+        smooth.Offer(SmoothVideo.Available);
+        Check(smooth.Status(Status("prompting", "Tap the notification on the phone to see the prompt."))
+            == "Tap the notification on the phone to see the prompt.", "a prompt that needs a tap first says so, and nothing else");
+        Check(smooth.Status(Status("declined")) == "The prompt was declined on the phone.", "declined");
+        Check(smooth.Status(Status("declined", "Nobody answered the prompt on the phone.")) == "Nobody answered the prompt on the phone.",
+            "declined, with why");
+        Check(smooth.Status(Status("unavailable", "Unlock the phone first.")) == "Unlock the phone first.", "unavailable, with why");
+        Check(smooth.Status(Status("unavailable")) == "The phone can't start smooth video right now.", "unavailable");
+        Check(smooth.Status(Status("ended")) == "Smooth video has ended.", "ended");
+        Check(!smooth.Row.Ticked, "none of those turned it on");
+
+        // Odd messages: an unknown state is nothing, and it is not an answer.
+        smooth.Choose(At(40_000));
+        Check(smooth.Status(Status("later")) == null && smooth.NextDue == At(45_000), "an unknown state says nothing");
+        Check(smooth.Status(new JsonObject { ["state"] = 7 }) == null, "a state that is no text");
+        // The phone's words are shown on one line, and not at any length.
+        var said = smooth.Status(Status("unavailable", "  one\ntwo\u0007 " + new string('x', 400)))!;
+        Check(said.StartsWith("one two  xxx") && said.Length == SmoothVideo.MaxReason + 1 && said.EndsWith("…"), "a long reason is cut: " + said);
+        Check(smooth.Status(Status("unavailable", " \n ")) == "The phone can't start smooth video right now.", "an empty reason is none");
+        Check(smooth.Status(new JsonObject { ["state"] = "declined", ["reason"] = 5 }) == "The prompt was declined on the phone.",
+            "a reason that is no text is none");
+
+        Console.WriteLine("PASS: Smooth video is offered only by a phone that says it can be, asks and stops, and says what came of it");
     }
 
     private static void CheckRotation()

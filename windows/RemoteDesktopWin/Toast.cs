@@ -16,8 +16,17 @@ public static class Toast
     // Oldest at the bottom.
     private static readonly List<Window> Open = new();
 
+    /// <summary>Takes the words in place of showing them. For a test, which
+    /// must put nothing on the screen and wants to know what was said.</summary>
+    internal static Action<string>? Capture;
+
     public static void Show(string message, int durationMs = 3500)
     {
+        if (Capture is { } capture)
+        {
+            capture(message);
+            return;
+        }
         Application.Current?.Dispatcher.BeginInvoke(() => ShowCore(message, durationMs));
     }
 

@@ -180,6 +180,19 @@
                     <Button x:Name="LockButton" Style="{StaticResource RdMenuButton}" Tag="lock"
                             Content="Lock screen" Visibility="Collapsed" Click="MenuAction_Click"/>
                     <Separator Style="{StaticResource RdMenuSeparator}"/>
+                    <!-- Asks the phone to share its screen as video, and to stop;
+                         ticked while it does (see SmoothVideo). Only for a phone
+                         that says whether it can, in screen-info. -->
+                    <Button x:Name="SmoothButton" Style="{StaticResource RdMenuButton}" Visibility="Collapsed"
+                            HorizontalContentAlignment="Stretch" AutomationProperties.Name="Smooth video"
+                            ToolTipService.ShowOnDisabled="True" Click="SmoothButton_Click">
+                        <Grid>
+                            <TextBlock Text="Smooth video"/>
+                            <!-- Segoe MDL2 Assets: a tick. -->
+                            <TextBlock x:Name="SmoothTick" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                       FontFamily="Segoe MDL2 Assets" FontSize="12" Text="&#xE73E;" Visibility="Collapsed"/>
+                        </Grid>
+                    </Button>
                     <Button x:Name="StatsButton" Style="{StaticResource RdMenuButton}" Content="Stats"
                             ToolTip="Shows how fast pictures arrive and how far behind the phone they are. F8 does the same; Shift+F8 copies the last minute."
                             Click="StatsButton_Click"/>
