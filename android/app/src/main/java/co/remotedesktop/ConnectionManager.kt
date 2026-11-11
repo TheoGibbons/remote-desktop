@@ -111,9 +111,12 @@ object ConnectionManager {
     /** What a peer announced itself as ("windows", "android"), or null if it isn't online. */
     fun deviceOf(peerId: String?): String? = peers.firstOrNull { it.id == peerId }?.device
 
-    /** Above this many queued bytes a video frame is skipped rather than sent,
-     *  so a slow uplink shows a recent picture instead of seconds-old ones. */
-    const val VIDEO_QUEUE_LIMIT = 300_000L
+    /** Above this many queued bytes a picture is skipped rather than sent, so
+     *  a slow uplink shows a recent picture instead of seconds-old ones. It is
+     *  less than one picture: the one before must have left the app's queue.
+     *  (It was 300 KB, which let two or three wait here on top of the megabyte
+     *  or more that waits in the system's own buffer, where the app can't see.) */
+    const val VIDEO_QUEUE_LIMIT = 64_000L
 
     /** Whether a video frame sent now would go out rather than be skipped. */
     fun hasRoomForVideo(): Boolean = (ws?.queueSize() ?: 0L) <= VIDEO_QUEUE_LIMIT

@@ -31,6 +31,9 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
     private var inFlight = false // main thread only
     private var lastRequestAt = -400L
     private var sentSize: Pair<Int, Int>? = null // worker thread only
+    // Worker thread only: the picture last sent and when, to tell a screen that has not changed.
+    private var lastSent: Bitmap? = null
+    private var lastSentAt = 0L
     private val infoRequested = AtomicBoolean(true)
 
     fun resendScreenInfo() { infoRequested.set(true) }
@@ -45,10 +48,18 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
         generation++
         main.removeCallbacks(request)
         if (on) schedule()
+        // The next picture goes whatever it shows, and this one need not be kept meanwhile.
+        else worker.post(::forgetSent)
+    }
+
+    private fun forgetSent() {
+        lastSent?.recycle()
+        lastSent = null
     }
 
     fun close() {
         setStreaming(false)
+        worker.post(::forgetSent)
         closed = true
         thread.quitSafely()
     }
@@ -79,7 +90,8 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
                     } catch (e: RuntimeException) {
                         Log.w("AccessibilityCapture", "Could not encode screenshot", e)
                     } finally {
-                        bitmap?.recycle()
+                        // Not the one that is kept to compare the next with.
+                        if (bitmap !== lastSent) bitmap?.recycle()
                         hardware?.recycle()
                         buffer.close()
                         complete()
@@ -130,20 +142,41 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
             canvas.drawText("Screen unavailable", bitmap.width / 2f, bitmap.height / 2f, paint)
             send(bitmap, token, SystemClock.uptimeMillis())
         } finally {
-            bitmap.recycle()
+            if (bitmap !== lastSent) bitmap.recycle()
         }
     }
 
     private var sentGeneration = -1L
 
-    /** [capturedAt] is when the screen was captured, on the uptime clock. */
+    /**
+     * Sends a screenshot, unless there is no room for it or it shows nothing
+     * new. [capturedAt] is when the screen was captured, on the uptime clock.
+     * A bitmap that is sent is kept, to compare the next one with: the caller
+     * must not recycle [lastSent].
+     */
     private fun send(bitmap: Bitmap, token: Long, capturedAt: Long) {
+        // No room: this one is passed over before the work of compressing it. The next is 400 ms away.
+        if (!isCurrent(token) || !PhoneScreenCapture.hasRoom()) return
         val (width, height) = StreamSize.of(bitmap.width, bitmap.height)
+        val size = width to height
         val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
         try {
+            // What a viewer is owed whatever the screen shows: a picture and
+            // its size after a turn, for a viewer that has just asked, and
+            // when pictures start again.
+            val owed = infoRequested.get() || sentSize != size || sentGeneration != token
+            val now = SystemClock.uptimeMillis()
+            // A viewer that acknowledges is sent a lost picture again
+            // (PhoneScreenCapture). One that cannot is sent an unchanged
+            // screen now and then instead, or a picture the relay dropped
+            // for it would stay wrong until the screen next changed.
+            val overdue = !PhoneScreenCapture.acknowledged && now - lastSentAt >= UNCHANGED_EVERY_MS
+            // A screen that has not changed sends nothing: it was 100 KB two
+            // and a half times a second, and on a slow upload a picture that
+            // had changed then waited behind ones that had not.
+            if (!owed && !overdue && lastSent?.sameAs(scaled) == true) return
             val out = ByteArrayOutputStream(200_000)
             if (!scaled.compress(Bitmap.CompressFormat.JPEG, 55, out) || !isCurrent(token)) return
-            val size = width to height
             // Rotation and source/session switches need fresh dimensions before the JPEG.
             if (infoRequested.getAndSet(false) || sentSize != size || sentGeneration != token) {
                 if (PhoneScreenCapture.sendScreenInfo(service, width, height, PhoneScreenCapture.ACCESSIBILITY)) {
@@ -154,10 +187,21 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
                     infoRequested.set(true)
                 }
             }
-            if (isCurrent(token))
-                PhoneScreenCapture.send(service, out.toByteArray(), width, height, capturedAt, PhoneScreenCapture.ACCESSIBILITY)
+            if (isCurrent(token) &&
+                PhoneScreenCapture.send(service, out.toByteArray(), width, height, capturedAt, PhoneScreenCapture.ACCESSIBILITY)) {
+                // Kept only once it has really gone: one the queue refused is tried again.
+                val before = lastSent
+                lastSent = scaled
+                lastSentAt = now
+                if (before !== scaled) before?.recycle()
+            }
         } finally {
-            if (scaled !== bitmap) scaled.recycle()
+            if (scaled !== bitmap && scaled !== lastSent) scaled.recycle()
         }
+    }
+
+    private companion object {
+        /** How often an unchanged screen is still sent to viewers that cannot acknowledge. */
+        const val UNCHANGED_EVERY_MS = 3_000L
     }
 }

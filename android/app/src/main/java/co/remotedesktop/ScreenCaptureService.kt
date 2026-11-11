@@ -86,13 +86,14 @@ class ScreenCaptureService : Service() {
 
     private val maxFps = 10
     // Capture thread only. The screen produces a picture only when it changes,
-    // so one skipped for the frame rate or a full send queue is kept and sent
-    // later; otherwise the last change of an animation could be lost.
+    // so one skipped for the frame rate, a full send queue or a viewer that is
+    // behind is kept and sent later; otherwise the last change of an animation
+    // could be lost.
     private val pacer = FramePacer<Image>(1000L / maxFps, retryMs = 100L) { it.close() }
     @Volatile private var captureHandler: Handler? = null
     private val catchUp = Runnable {
         if (!streaming) pacer.clear()
-        else pacer.retry(SystemClock.uptimeMillis(), ConnectionManager.hasRoomForVideo())?.let(::encodeAndSend)
+        else pacer.retry(SystemClock.uptimeMillis(), PhoneScreenCapture.hasRoom())?.let(::encodeAndSend)
         scheduleCatchUp()
     }
     private val jpegQuality = 55
@@ -236,7 +237,7 @@ class ScreenCaptureService : Service() {
                 pacer.clear()
                 return@setOnImageAvailableListener
             }
-            pacer.offer(image, SystemClock.uptimeMillis(), ConnectionManager.hasRoomForVideo())?.let(::encodeAndSend)
+            pacer.offer(image, SystemClock.uptimeMillis(), PhoneScreenCapture.hasRoom())?.let(::encodeAndSend)
             scheduleCatchUp()
         }, captureHandler)
         return made
@@ -245,7 +246,7 @@ class ScreenCaptureService : Service() {
     private fun scheduleCatchUp() {
         val handler = captureHandler ?: return
         handler.removeCallbacks(catchUp)
-        pacer.retryDelay(SystemClock.uptimeMillis(), ConnectionManager.hasRoomForVideo())
+        pacer.retryDelay(SystemClock.uptimeMillis(), PhoneScreenCapture.hasRoom())
             ?.let { handler.postDelayed(catchUp, it) }
     }
 

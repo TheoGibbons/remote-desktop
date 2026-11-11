@@ -148,8 +148,13 @@ object PhoneScreenCapture {
     /** What each viewer that offered `codecs` was last told about the stream. */
     private val told = HashMap<String, String>()
 
-    /** The highest frame of the current stream each viewer has acknowledged. */
-    private val acked = HashMap<String, Long>()
+    /** What has been sent of the current stream and what each viewer says has arrived. */
+    private val inFlight = InFlight()
+
+    /** The last picture that went out in a stream, kept in case it has to be sent again. */
+    private class Sent(val stream: Long, val jpeg: ByteArray, val width: Int, val height: Int,
+                       val capturedAt: Long, val capture: String)
+    private var last: Sent? = null
 
     /** When each picture of the last second went out (uptime). */
     private val sentAt = ArrayDeque<Long>()
@@ -164,6 +169,9 @@ object PhoneScreenCapture {
 
     private const val TYPE_1 = "type 1"
     private const val PAUSED = "paused"
+
+    /** The soonest the newest picture is looked at again after a try to send it again found the queue full. */
+    private const val RESEND_CHECK_MS = 100L
 
     /**
      * Tells every viewer the picture's size, and those that offered `codecs`
@@ -196,22 +204,91 @@ object PhoneScreenCapture {
      * @param capturedAt when the screen was captured, on the uptime clock.
      * @return whether the picture went out; false also when the queue was too full to take it.
      */
-    fun send(context: Context, jpeg: ByteArray, width: Int, height: Int, capturedAt: Long, capture: String): Boolean {
+    fun send(context: Context, jpeg: ByteArray, width: Int, height: Int, capturedAt: Long, capture: String): Boolean =
+        send(context, jpeg, width, height, capturedAt, capture, repeatOf = 0L)
+
+    /** [repeatOf] is the stream whose last picture this is, sent again; 0 for a new picture. */
+    private fun send(context: Context, jpeg: ByteArray, width: Int, height: Int, capturedAt: Long, capture: String,
+                     repeatOf: Long): Boolean {
         if (!maySendFrames(context)) return false
         val to = recipients()
         synchronized(streamLock) {
+            // The stream a picture was to be sent again in is over: nobody is waiting for it.
+            if (repeatOf != 0L && stream != repeatOf) return false
             val word = settle(to, capture) ?: return false
+            if (repeatOf != 0L && stream != repeatOf) return false
             size = width to height
             for (viewer in to) tell(viewer, word, always = false)
+            val now = SystemClock.uptimeMillis()
             val sent = if (stream == 0L) ConnectionManager.sendBinary(Crypto.CH_VIDEO, jpeg, to) else {
                 val header = PhoneFrame.Header(stream, nextSeq, keyframe = true, format = PhoneFrame.JPEG,
-                    width = width, height = height, captureMs = capturedAt and 0xFFFFFFFFL)
+                    repeat = repeatOf != 0L, width = width, height = height, captureMs = capturedAt and 0xFFFFFFFFL)
                 // A picture the queue refused was never sent, and takes no number.
-                ConnectionManager.sendBinary(Crypto.CH_PHONE, PhoneFrame.build(header, jpeg), to).also { if (it) nextSeq++ }
+                ConnectionManager.sendBinary(Crypto.CH_PHONE, PhoneFrame.build(header, jpeg), to).also {
+                    if (!it) return@also
+                    inFlight.sent(nextSeq, now, to, repeat = repeatOf != 0L)
+                    last = Sent(stream, jpeg, width, height, capturedAt, capture)
+                    nextSeq++
+                }
             }
-            if (sent) noteSent(SystemClock.uptimeMillis())
+            if (sent) noteSent(now)
+            scheduleResend(now)
             return sent
         }
+    }
+
+    /** Whether every viewer acknowledges what it receives, which is while a type 5 stream is running. */
+    val acknowledged: Boolean get() = synchronized(streamLock) { stream != 0L }
+
+    /**
+     * Whether a picture sent now would be worth sending. The app's own queue
+     * must be all but empty. And when every viewer acknowledges what it
+     * receives, none of them may be behind ([InFlight]): the queue only shows
+     * what has not left the app, and most of what waits on a slow upload
+     * waits further down, where only an acknowledgement shows it.
+     *
+     * Both ways of capturing ask before they compress a picture, and keep
+     * the newest picture for when there is room.
+     */
+    fun hasRoom(): Boolean {
+        if (!ConnectionManager.hasRoomForVideo()) return false
+        synchronized(streamLock) { return stream == 0L || inFlight.hasRoom(SystemClock.uptimeMillis()) }
+    }
+
+    /** Looks again when the newest picture would be due to be sent again, if it is still unacknowledged then. */
+    private fun scheduleResend(now: Long) {
+        main.removeCallbacks(resend)
+        if (stream == 0L) return
+        inFlight.resendIn(now)?.let { main.postDelayed(resend, it.coerceAtLeast(RESEND_CHECK_MS)) }
+    }
+
+    /**
+     * The newest picture has gone unacknowledged for too long with nothing
+     * sent after it: the relay may have dropped it for a viewer that was
+     * backed up, and on a screen that has stopped changing nothing else
+     * would ever replace it. It goes again, marked as a repeat.
+     */
+    private val resend = Runnable {
+        val context = appContext ?: return@Runnable
+        val picture = synchronized(streamLock) {
+            val kept = last?.takeIf { stream != 0L && it.stream == stream } ?: return@Runnable
+            val now = SystemClock.uptimeMillis()
+            if (!inFlight.resendDue(now)) {
+                scheduleResend(now)
+                return@Runnable
+            }
+            kept
+        }
+        send(context, picture.jpeg, picture.width, picture.height, picture.capturedAt, picture.capture,
+            repeatOf = picture.stream)
+    }
+
+    /** The stream is over: its id is dead, and nothing of it is waited for or sent again. */
+    private fun endStream() {
+        stream = 0L
+        inFlight.reset()
+        last = null
+        main.removeCallbacks(resend)
     }
 
     /**
@@ -224,11 +301,11 @@ object PhoneScreenCapture {
      */
     private fun settle(to: List<String>, capture: String): String? {
         if (to.isEmpty()) return null
-        if (!to.all { JPEG in viewers[it].orEmpty() }) stream = 0L
+        if (!to.all { JPEG in viewers[it].orEmpty() }) endStream()
         else if (stream == 0L || this.capture != capture) {
+            endStream()
             stream = newStreamId()
             nextSeq = 0
-            acked.clear()
         }
         this.capture = capture
         return if (stream == 0L) TYPE_1 else PhoneFrame.streamHex(stream)
@@ -265,7 +342,7 @@ object PhoneScreenCapture {
      * they are told of the next stream.
      */
     private fun pauseStream() = synchronized(streamLock) {
-        stream = 0L
+        endStream()
         for (viewer in recipients()) tell(viewer, PAUSED, always = false)
     }
 
@@ -280,26 +357,28 @@ object PhoneScreenCapture {
     /** Forgets what was told to, and heard from, devices that no longer view. */
     private fun forgetGone() = synchronized(streamLock) {
         told.keys.retainAll(viewers.keys)
-        acked.keys.retainAll(viewers.keys)
         // The last viewer has gone: the stream ends with it.
-        if (viewers.isEmpty()) stream = 0L
+        if (viewers.isEmpty()) endStream()
     }
 
     /**
      * `frame-ack` from a device that is viewing: the highest frame of the
-     * current stream it has received. Remembered; nothing is held back by it yet.
+     * current stream it has received. It is what the phone holds back by
+     * ([hasRoom]), and what tells it a picture never arrived.
      */
     fun onFrameAck(peerId: String, msg: JSONObject) {
         val id = PhoneFrame.parseStream(msg.optString("stream")) ?: return
         val seq = msg.optLong("seq", -1)
         synchronized(streamLock) {
             if (stream == 0L || id != stream || seq < 0 || seq >= nextSeq) return
-            if (seq > (acked[peerId] ?: -1)) acked[peerId] = seq
+            val now = SystemClock.uptimeMillis()
+            inFlight.acked(peerId, seq, now)
+            scheduleResend(now)
         }
     }
 
     /** The highest frame of the current stream [peerId] has acknowledged, if any. */
-    internal fun ackedSeq(peerId: String): Long? = synchronized(streamLock) { acked[peerId] }
+    internal fun ackedSeq(peerId: String): Long? = synchronized(streamLock) { inFlight.ackedBy(peerId) }
 
     /**
      * `diagnostic-pong`, without its `to`: this phone's clock as the ping was

@@ -238,7 +238,7 @@ class PhoneScreenCaptureTest {
         stream.setStreaming(true)
         main.idle()
         fun token() = token(stream)
-        fun frame(w: Int, h: Int, generation: Long = token()) = frame(stream, w, h, generation)
+        fun frame(w: Int, h: Int, generation: Long = token(), colour: Int = 0) = frame(stream, w, h, generation, colour = colour)
         frame(1440, 2560)
         assertEquals(1080, ShadowPhoneCaptureConnection.info.last().getInt("width"))
         assertEquals(1920, ShadowPhoneCaptureConnection.info.last().getInt("height"))
@@ -247,11 +247,37 @@ class PhoneScreenCaptureTest {
         assertEquals(1080, decoded.width)
         assertEquals(1920, decoded.height)
         decoded.recycle()
+        // The screen has not changed: nothing is sent, not the size and not the picture.
+        frame(1440, 2560)
         frame(1440, 2560)
         assertEquals(1, ShadowPhoneCaptureConnection.info.size)
+        assertEquals(1, ShadowPhoneCaptureConnection.frames.size)
+        // It changes, and changes back: each is sent.
+        frame(1440, 2560, colour = 0xFF336699.toInt())
+        frame(1440, 2560, colour = 0xFF336699.toInt())
+        frame(1440, 2560)
+        assertEquals(3, ShadowPhoneCaptureConnection.frames.size)
+        assertEquals(1, ShadowPhoneCaptureConnection.info.size)
+        // A viewer asks, as one that has just joined does: it gets the size and a picture, changed or not.
+        stream.resendScreenInfo()
+        frame(1440, 2560)
+        assertEquals(4, ShadowPhoneCaptureConnection.frames.size)
+        assertEquals(2, ShadowPhoneCaptureConnection.info.size)
+        frame(1440, 2560)
+        assertEquals(4, ShadowPhoneCaptureConnection.frames.size)
+        // This viewer cannot acknowledge, so a lost picture is never sent
+        // again for it. An unchanged screen still goes every few seconds.
+        main.idleFor(Duration.ofMillis(2_999))
+        frame(1440, 2560)
+        assertEquals(4, ShadowPhoneCaptureConnection.frames.size)
+        main.idleFor(Duration.ofMillis(1))
+        frame(1440, 2560)
+        assertEquals(5, ShadowPhoneCaptureConnection.frames.size)
+        assertEquals(2, ShadowPhoneCaptureConnection.info.size)
         // Turned on its side it is sent as sharp as upright: the same pixels, turned.
         frame(2560, 1440)
-        assertEquals(2, ShadowPhoneCaptureConnection.info.size)
+        assertEquals(3, ShadowPhoneCaptureConnection.info.size)
+        assertEquals(6, ShadowPhoneCaptureConnection.frames.size)
         assertEquals(1920, ShadowPhoneCaptureConnection.info.last().getInt("width"))
         assertEquals(1080, ShadowPhoneCaptureConnection.info.last().getInt("height"))
         ShadowPhoneCaptureConnection.frames.last().let { turned ->
@@ -263,12 +289,14 @@ class PhoneScreenCaptureTest {
         stream.setStreaming(false)
         stream.setStreaming(true)
         frame(2560, 1440, oldToken)
-        assertEquals(3, ShadowPhoneCaptureConnection.frames.size)
+        assertEquals(6, ShadowPhoneCaptureConnection.frames.size)
+        // Pictures start again: the size and a picture go, though the screen is as it was.
         frame(2560, 1440)
-        assertEquals(3, ShadowPhoneCaptureConnection.info.size) // Same size, new session.
+        assertEquals(4, ShadowPhoneCaptureConnection.info.size) // Same size, new session.
+        assertEquals(7, ShadowPhoneCaptureConnection.frames.size)
         Prefs(context).allowControl = false
-        frame(2560, 1440)
-        assertEquals(4, ShadowPhoneCaptureConnection.frames.size)
+        frame(2560, 1440, colour = 0xFF445566.toInt())
+        assertEquals(7, ShadowPhoneCaptureConnection.frames.size)
     }
 
     private fun token(stream: AccessibilityScreenCapture) = AccessibilityScreenCapture::class.java
@@ -276,11 +304,56 @@ class PhoneScreenCaptureTest {
 
     /** A screenshot of that size reaches the capture, as Android would hand it over. */
     private fun frame(stream: AccessibilityScreenCapture, w: Int, h: Int, generation: Long = token(stream),
-                      capturedAt: Long = 0) {
+                      capturedAt: Long = 0, colour: Int = 0) {
         val send = AccessibilityScreenCapture::class.java.getDeclaredMethod("send", Bitmap::class.java,
             java.lang.Long.TYPE, java.lang.Long.TYPE).apply { isAccessible = true }
         val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        try { send.invoke(stream, bitmap, generation, capturedAt) } finally { bitmap.recycle() }
+        if (colour != 0) bitmap.eraseColor(colour)
+        // Not recycled here: the capture keeps the one it sent, to compare the next with.
+        send.invoke(stream, bitmap, generation, capturedAt)
+    }
+
+    /** With viewers that acknowledge, a picture is held back while one of them is behind. */
+    @Test fun aScreenshotIsPassedOverWhileAViewerIsBehindAndTheNextOneGoes() {
+        val service = Robolectric.buildService(CaptureTestService::class.java).create().get()
+        val stream = AccessibilityScreenCapture(service).also { capture = it }
+        PhoneScreenCapture.onViewRequested(context, "pc", setOf("jpeg"))
+        main.idle()
+        stream.setStreaming(true)
+        main.idle()
+        ShadowPhoneCaptureConnection.channel = Crypto.CH_PHONE
+        fun sent() = ShadowPhoneCaptureConnection.frames.size
+        fun seqs() = ShadowPhoneCaptureConnection.frames.map { PhoneFrame.parse(it)!!.seq }
+        var shade = 0
+        // A different screen each time, so only room decides.
+        fun screenshot() = frame(stream, 1080, 1920, colour = (0xFF000000 + ++shade * 0x10).toInt())
+        fun ack(seq: Long) = PhoneScreenCapture.onFrameAck("pc", JSONObject()
+            .put("stream", PhoneFrame.streamHex(PhoneFrame.parse(ShadowPhoneCaptureConnection.frames.last())!!.stream))
+            .put("seq", seq))
+
+        // Two may be on their way before the viewer has said anything.
+        screenshot(); screenshot()
+        assertEquals(2, sent())
+        screenshot()
+        assertEquals("No room: nothing was compressed or sent", 2, sent())
+        ack(1)
+        screenshot()
+        assertEquals(listOf(0L, 1L, 2L), seqs())
+        // Acknowledged in good time: the stream runs on.
+        main.idleFor(Duration.ofMillis(50)); ack(2)
+        main.idleFor(Duration.ofMillis(350)); screenshot()
+        main.idleFor(Duration.ofMillis(50)); ack(3)
+        main.idleFor(Duration.ofMillis(350)); screenshot()
+        assertEquals(listOf(0L, 1L, 2L, 3L, 4L), seqs())
+        // The viewer falls behind: later screenshots are passed over, and take no number.
+        main.idleFor(Duration.ofMillis(400)); screenshot()
+        main.idleFor(Duration.ofMillis(400)); screenshot()
+        assertEquals(5, sent())
+        // It catches up, and the next screenshot goes.
+        ack(4)
+        screenshot()
+        assertEquals(listOf(0L, 1L, 2L, 3L, 4L, 5L), seqs())
+        assertEquals(1, ShadowPhoneCaptureConnection.info.size)
     }
 
     /** The same screenshots, to a viewer that said it can draw type 5 frames. */

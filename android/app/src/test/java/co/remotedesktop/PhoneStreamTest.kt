@@ -474,6 +474,125 @@ class PhoneStreamTest {
         assertNull(PhoneScreenCapture.ackedSeq("pc"))
     }
 
+    private fun later(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
+
+    private fun ack(from: String, stream: String, seq: Long) =
+        receive(from, JSONObject().put("type", "frame-ack").put("stream", stream).put("seq", seq))
+
+    @Test
+    fun aPictureNobodySaysArrivedIsSentAgainAndThenLessAndLessOften() {
+        startView("pc")
+        socket.clear()
+        assertTrue(picture(capturedAt = 777))
+        later(999)
+        assertEquals(1, socket.frames.size)
+        // A second with no acknowledgement and nothing sent since: the relay may have dropped it.
+        later(1)
+        assertEquals(2, socket.frames.size)
+        socket.frames.last().let { again ->
+            assertEquals(PhoneFrame.Header(0xA1, 1, keyframe = true, format = PhoneFrame.JPEG, repeat = true,
+                width = 1080, height = 2340, captureMs = 777), header(again))
+            assertArrayEquals(jpeg, again.payload.copyOfRange(PhoneFrame.HEADER_SIZE, again.payload.size))
+            assertEquals(listOf("pc"), again.to)
+        }
+        // Then after two seconds, four, eight, and no more.
+        later(1_999); assertEquals(2, socket.frames.size)
+        later(1); assertEquals(3, socket.frames.size)
+        later(4_000); assertEquals(4, socket.frames.size)
+        later(8_000); assertEquals(5, socket.frames.size)
+        later(60_000); assertEquals(5, socket.frames.size)
+        assertEquals(listOf(0L, 1L, 2L, 3L, 4L), socket.frames.map { header(it).seq })
+        // Nothing new was said about the stream meanwhile.
+        assertEquals(1, infos().size)
+
+        // A new picture that is acknowledged is not sent again.
+        assertTrue(picture())
+        assertFalse(header(socket.frames.last()).repeat)
+        later(500)
+        ack("pc", id(1), 5)
+        later(30_000)
+        assertEquals(6, socket.frames.size)
+
+        // An acknowledgement of an older frame is not one of the newest.
+        assertTrue(picture())
+        ack("pc", id(1), 5)
+        later(1_000)
+        assertEquals(8, socket.frames.size)
+        assertTrue(header(socket.frames.last()).repeat)
+        // The viewer goes: nothing is sent again into a stream that is over.
+        receive("pc", JSONObject().put("type", "stop-view"))
+        later(60_000)
+        assertEquals(8, socket.frames.size)
+    }
+
+    @Test
+    fun aPictureIsNotSentAgainWhileNoPicturesMayGo() {
+        startView("pc")
+        picture()
+        socket.clear()
+        // A device nobody has approved joins before the second is up.
+        authField("allPeersTrusted").set(PeerAuth, false)
+        PhoneScreenCapture.refresh()
+        later(60_000)
+        assertTrue(socket.frames.isEmpty())
+        // And an older viewer joining ends the stream the picture belonged to.
+        authField("allPeersTrusted").set(PeerAuth, true)
+        PhoneScreenCapture.refresh()
+        idle()
+        picture()
+        startViewOld("old-pc")
+        socket.clear()
+        later(60_000)
+        assertTrue(socket.frames.isEmpty())
+    }
+
+    @Test
+    fun roomGoesByTheQueueAloneUntilEveryViewerAcknowledges() {
+        // A viewer on an older app cannot acknowledge: only the phone's own queue is looked at.
+        startViewOld("old-pc")
+        repeat(5) { assertTrue(picture()) }
+        assertFalse(PhoneScreenCapture.acknowledged)
+        assertTrue(PhoneScreenCapture.hasRoom())
+        socket.queued = ConnectionManager.VIDEO_QUEUE_LIMIT + 1
+        assertFalse(PhoneScreenCapture.hasRoom())
+        socket.queued = ConnectionManager.VIDEO_QUEUE_LIMIT
+        assertTrue(PhoneScreenCapture.hasRoom())
+
+        // Every viewer acknowledges: none of them may be behind.
+        receive("old-pc", JSONObject().put("type", "stop-view"))
+        startView("pc")
+        startView("phone")
+        assertTrue(PhoneScreenCapture.hasRoom())
+        assertTrue(picture())
+        assertTrue(PhoneScreenCapture.acknowledged)
+        assertTrue(picture())
+        assertFalse("Two are on their way and nobody has said a word", PhoneScreenCapture.hasRoom())
+        ack("pc", id(1), 1)
+        assertFalse("The slower viewer sets the pace", PhoneScreenCapture.hasRoom())
+        ack("phone", id(1), 1)
+        assertTrue(PhoneScreenCapture.hasRoom())
+        // The queue still counts.
+        socket.queued = ConnectionManager.VIDEO_QUEUE_LIMIT + 1
+        assertFalse(PhoneScreenCapture.hasRoom())
+        socket.queued = 0
+
+        // One viewer stalls. After two seconds the other is no longer held back.
+        assertTrue(picture())
+        ack("pc", id(1), 2)
+        later(300)
+        assertFalse(PhoneScreenCapture.hasRoom())
+        later(1_701)
+        // (Meanwhile the picture went again for the one that had not answered, as frame 3. The PC has that too.)
+        ack("pc", id(1), 3)
+        assertTrue(PhoneScreenCapture.hasRoom())
+
+        // An older viewer joins: back to the queue alone.
+        startViewOld("old-pc")
+        picture()
+        assertFalse(PhoneScreenCapture.acknowledged)
+        assertTrue(PhoneScreenCapture.hasRoom())
+    }
+
     @Test
     fun thePhonesConnectionIsMadeWithNagleOff() {
         val client = connectionField("client").get(ConnectionManager) as okhttp3.OkHttpClient

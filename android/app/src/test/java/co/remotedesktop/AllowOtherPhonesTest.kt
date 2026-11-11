@@ -164,13 +164,14 @@ class AllowOtherPhonesTest {
 
     @Test
     fun videoIsSkippedLongBeforeFileChunks() {
-        socket.queued = 400_000
+        // Less than one picture may wait in the app's queue: the one before must have left it.
+        socket.queued = 100_000
         assertFalse(ConnectionManager.hasRoomForVideo())
         assertFalse(ConnectionManager.sendBinary(Crypto.CH_VIDEO, ByteArray(10)))
         // The same picture behind a header, for a viewer on a current app.
         assertFalse(ConnectionManager.sendBinary(Crypto.CH_PHONE, ByteArray(10)))
         assertTrue(ConnectionManager.sendBinary(Crypto.CH_FILE, ByteArray(10)))
-        socket.queued = 200_000
+        socket.queued = 50_000
         assertTrue(ConnectionManager.hasRoomForVideo())
         assertTrue(ConnectionManager.sendBinary(Crypto.CH_VIDEO, ByteArray(10)))
         assertTrue(ConnectionManager.sendBinary(Crypto.CH_PHONE, ByteArray(10)))
