@@ -45,6 +45,15 @@ public sealed class H264Encoder : IDisposable
     private static readonly Guid MFLowLatency =
         new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
 
+    // How the colours are coded, said on both media types so that the encoder
+    // writes it into the stream: BT.709, 16 to 235. A phone's decoder turns
+    // the picture back into colours by what the stream says, and takes a
+    // guess by the picture's size where it says nothing.
+    private static readonly Guid MtYuvMatrix = new("3e23d450-2c75-4d25-a00e-b91670d12327");
+    private static readonly Guid MtVideoNominalRange = new("c21b8ee5-b956-4071-8daf-325edf5cab11");
+    private static readonly Guid MtVideoPrimaries = new("dbfbe4d7-0740-4ee0-8192-850ab0e21935");
+    private static readonly Guid MtTransferFunction = new("5fb0fce9-be5c-4935-a811-ec838f8eed93");
+
     private const int MftEnumFlagSyncMft = 0x1;
     private const int MftEnumFlagHardware = 0x4;
     private const int MftEnumFlagSortAndFilter = 0x40;
@@ -175,6 +184,19 @@ public sealed class H264Encoder : IDisposable
             attributes.Set(CodecAvEncCommonMeanBitRate, (uint)bitrate);
         }
 
+        // The types say how the colours are coded. An encoder that will not
+        // take types that say so gets them without, rather than being lost.
+        try { SetTypes(mft, width, height, bitrate, fps, sayColours: true); }
+        catch (SharpGenException) { SetTypes(mft, width, height, bitrate, fps, sayColours: false); }
+
+        if (hardware) events = mft.QueryInterfaceOrNull<IMFMediaEventGenerator>();
+        mft.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+        mft.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+        return events;
+    }
+
+    private static void SetTypes(IMFTransform mft, int width, int height, int bitrate, int fps, bool sayColours)
+    {
         // Output type must be set before input type: the encoder needs to know
         // what it is producing before it can say what it will accept.
         using (var outType = MediaFactory.MFCreateMediaType())
@@ -187,6 +209,7 @@ public sealed class H264Encoder : IDisposable
             outType.Set(MediaTypeAttributeKeys.PixelAspectRatio, Pack(1, 1));
             outType.Set(MediaTypeAttributeKeys.InterlaceMode, 2u); // progressive
             outType.Set(MediaTypeAttributeKeys.Mpeg2Profile, 77u); // Main
+            if (sayColours) SayColours(outType);
             mft.SetOutputType(0, outType, 0);
         }
 
@@ -198,13 +221,18 @@ public sealed class H264Encoder : IDisposable
             inType.Set(MediaTypeAttributeKeys.FrameRate, Pack(fps, 1));
             inType.Set(MediaTypeAttributeKeys.PixelAspectRatio, Pack(1, 1));
             inType.Set(MediaTypeAttributeKeys.InterlaceMode, 2u);
+            if (sayColours) SayColours(inType);
             mft.SetInputType(0, inType, 0);
         }
+    }
 
-        if (hardware) events = mft.QueryInterfaceOrNull<IMFMediaEventGenerator>();
-        mft.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
-        mft.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
-        return events;
+    /// <summary>BT.709, 16 to 235: what <see cref="BgraToNv12"/> makes.</summary>
+    private static void SayColours(IMFMediaType type)
+    {
+        type.Set(MtYuvMatrix, 1u);          // MFVideoTransferMatrix_BT709
+        type.Set(MtVideoNominalRange, 2u);  // MFNominalRange_16_235
+        type.Set(MtVideoPrimaries, 2u);     // MFVideoPrimaries_BT709
+        type.Set(MtTransferFunction, 5u);   // MFVideoTransFunc_709
     }
 
     private static ulong Pack(int high, int low) => ((ulong)(uint)high << 32) | (uint)low;
@@ -322,12 +350,20 @@ public sealed class H264Encoder : IDisposable
     }
 
     /// <summary>
-    /// BGRA to NV12 (BT.601 studio range), 2x2 chroma averaged. This runs on
+    /// BGRA to NV12 (BT.709, 16 to 235), 2x2 chroma averaged. This runs on
     /// the CPU, which is affordable only because viewport streaming keeps the
     /// frame down to roughly the viewer's screen size; it would not be at a
     /// full 4K desktop.
+    ///
+    /// BT.709 because that is what the stream says (see <see
+    /// cref="SayColours"/>), and what a graphics card's encoder says of its
+    /// own accord. The two must agree: this was BT.601 once under a stream
+    /// that said BT.709, and a phone showed the PC's pure green as 0, 215, 0.
+    /// The weights are the standard's, times 219 / 255 for Y and 224 / 255
+    /// for U and V, times 256. Each row of U and V weights sums to nothing,
+    /// so greys stay grey.
     /// </summary>
-    private static unsafe void BgraToNv12(Bitmap src, byte[] dst, int width, int height)
+    internal static unsafe void BgraToNv12(Bitmap src, byte[] dst, int width, int height)
     {
         var data = src.LockBits(new Rectangle(0, 0, width, height),
             ImageLockMode.ReadOnly, PixelFormat.Format32bppRgb);
@@ -346,7 +382,7 @@ public sealed class H264Encoder : IDisposable
                     for (int x = 0; x < width; x++)
                     {
                         byte b = row[x * 4], g = row[x * 4 + 1], r = row[x * 4 + 2];
-                        yOut[x] = (byte)(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+                        yOut[x] = (byte)(((47 * r + 157 * g + 16 * b + 128) >> 8) + 16);
                     }
                 }
 
@@ -362,8 +398,8 @@ public sealed class H264Encoder : IDisposable
                         int g = r0[x * 4 + 1] + r0[x * 4 + 5] + r1[x * 4 + 1] + r1[x * 4 + 5];
                         int r = r0[x * 4 + 2] + r0[x * 4 + 6] + r1[x * 4 + 2] + r1[x * 4 + 6];
                         b >>= 2; g >>= 2; r >>= 2;
-                        uvRow[x] = (byte)(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
-                        uvRow[x + 1] = (byte)(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+                        uvRow[x] = (byte)(((-26 * r - 86 * g + 112 * b + 128) >> 8) + 128);
+                        uvRow[x + 1] = (byte)(((112 * r - 102 * g - 10 * b + 128) >> 8) + 128);
                     }
                 }
             }

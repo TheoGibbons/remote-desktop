@@ -16,11 +16,12 @@ using RemoteDesktopWin;
 // checks say SKIP and pass.
 internal static unsafe class H264Tests
 {
-    // How far a colour may come back from what was drawn, out of 255.
-    // TODO(next commit): H264Encoder converts with BT.601 numbers and its
-    // streams say BT.709, which alone moves pure green by 40. Until that is
-    // put right this can only tell one patch from another.
-    private const int ColourTolerance = 60;
+    // How far a colour may come back from what was drawn, out of 255, after
+    // being encoded and decoded. Coding a flat patch costs a step or three.
+    // Converting with one standard's numbers under a stream that names the
+    // other costs 40 on pure green, which is the fault this is here to catch.
+    private const int ColourTolerance = 8;
+    private static int _worstColour;
 
     public static void Run()
     {
@@ -29,6 +30,7 @@ internal static unsafe class H264Tests
         CheckConverterInBands();
         CheckFillerRemoval();
         CheckWhatCountsAsAKeyframe();
+        CheckEncoderColourNumbers();
 
         if (!H264Decoder.IsAvailable)
         {
@@ -50,6 +52,7 @@ internal static unsafe class H264Tests
         Console.WriteLine("  (streams for the decoder's checks come from: " + string.Join(" and ", kinds.Select(Clip.EncoderName)) + ")");
 
         CheckRoundTrips(kinds);
+        CheckColoursEitherSideOfTheGuess(kinds);
         Clip small = Clip.Make(kinds[0], 320, 240, 12) ?? throw new Exception("setup: no 320 x 240 stream");
         Clip turned = Clip.Make(kinds[0], 242, 322, 12) ?? throw new Exception("setup: no 242 x 322 stream");
         CheckFillerDoesNotHoldAPictureBack(small);
@@ -349,6 +352,7 @@ internal static unsafe class H264Tests
             int at = ((y + size / 2) * w + x + size / 2) * 4;
             int r = shot.Bgra[at + 2], g = shot.Bgra[at + 1], b = shot.Bgra[at];
             int off = Math.Max(Math.Abs(r - Patches[i].r), Math.Max(Math.Abs(g - Patches[i].g), Math.Abs(b - Patches[i].b)));
+            _worstColour = Math.Max(_worstColour, off);
             Check(off <= ColourTolerance,
                 $"{what}: the patch at the {Patches[i].name} ({Patches[i].r}, {Patches[i].g}, {Patches[i].b}) came back as ({r}, {g}, {b})");
         }
@@ -390,6 +394,86 @@ internal static unsafe class H264Tests
             Check(any, $"Some encoder on this PC makes a {w} x {h} stream to try");
         }
         Console.WriteLine($"PASS: {ran} streams made here decode to the pictures that went in, one for each access unit, tall, wide and padded sizes alike");
+    }
+
+    private static void CheckColoursEitherSideOfTheGuess(List<bool> kinds)
+    {
+        // What a phone shows of this PC's screen. A decoder turns the picture
+        // back into colours by the standard the stream names. Where a stream
+        // names none, Android guesses by size, BT.601 up to 720 x 576 and
+        // BT.709 above, and H264Decoder guesses the same way. So the colours
+        // must come back right at a size on each side of that line, whether
+        // or not the encoder wrote the name in.
+        _worstColour = 0;
+        var said = new List<string>();
+        foreach (bool hardware in kinds)
+        {
+            foreach (var (w, h) in new[] { (320, 240), (720, 576), (1280, 720) })
+            {
+                Clip? clip = Clip.Make(hardware, w, h, 3);
+                if (clip == null) continue;
+                using var decoder = NewDecoder();
+                var (result, shots) = Decode(decoder, clip.Units[0], 1);
+                Check(result == H264Decoded.Picture && shots.Count == 1, $"setup: {clip} decodes ({result} {decoder.LastFailure})");
+                CheckIsThePattern(shots[0], w, h, $"{clip}, colours");
+                var f = decoder.Format;
+                said.Add($"{w} x {h}: {(f.MatrixGiven ? f.Matrix.ToString() : "no standard named")}, {(f.RangeGiven ? (f.FullRange ? "full range" : "16 to 235") : "no range named")}");
+                // H264Encoder asks for BT.709, 16 to 235, and converts to that. An
+                // encoder may leave the name out, but must not write another.
+                Check(!f.MatrixGiven || f.Matrix == Nv12Matrix.Bt709, $"{clip}: the stream does not name another standard than the one its colours were made with");
+                Check(!f.RangeGiven || !f.FullRange, $"{clip}: the stream does not claim the full range");
+            }
+        }
+        Check(said.Count > 0, "Some stream was made to look at");
+        Console.WriteLine($"PASS: the colours that went into the encoder come back, small pictures and large (off by {_worstColour} of 255 at most; the streams say: {string.Join("; ", said.Distinct())})");
+    }
+
+    private static void CheckEncoderColourNumbers()
+    {
+        // The encoder's own step from the screen's colours to Y, U and V, with
+        // no codec in the way. BT.709, 16 to 235, worked out by hand:
+        //   Y = 16 + 219 (0.2126 R + 0.7152 G + 0.0722 B) / 255
+        //   U = 128 + 224 (B' - Y') / 1.8556 / 255,  V = 128 + 224 (R' - Y') / 1.5748 / 255
+        (int r, int g, int b, int y, int u, int v)[] known =
+        {
+            (255, 255, 255, 235, 128, 128), (0, 0, 0, 16, 128, 128), (128, 128, 128, 126, 128, 128),
+            (255, 0, 0, 63, 102, 240), (0, 255, 0, 173, 42, 26), (0, 0, 255, 32, 240, 118),
+            (255, 255, 0, 219, 16, 138), (0, 255, 255, 188, 154, 16), (230, 120, 40, 134, 82, 180),
+        };
+        const int block = 4;
+        int w = known.Length * block, h = block;
+        using var bitmap = new Bitmap(w, h, PixelFormat.Format32bppRgb);
+        using (var g = Graphics.FromImage(bitmap))
+        {
+            for (int i = 0; i < known.Length; i++)
+            {
+                using var brush = new SolidBrush(Color.FromArgb(known[i].r, known[i].g, known[i].b));
+                g.FillRectangle(brush, i * block, 0, block, block);
+            }
+        }
+        byte[] nv12 = new byte[w * h * 3 / 2];
+        H264Encoder.BgraToNv12(bitmap, nv12, w, h);
+        for (int i = 0; i < known.Length; i++)
+        {
+            var k = known[i];
+            int x = i * block + 1;
+            int y = nv12[w + x], u = nv12[w * h + (x & ~1)], v = nv12[w * h + (x & ~1) + 1];
+            // Whole-number weights: a step out at most.
+            Check(Math.Abs(y - k.y) <= 1 && Math.Abs(u - k.u) <= 1 && Math.Abs(v - k.v) <= 1,
+                $"The encoder codes ({k.r}, {k.g}, {k.b}) as BT.709 says, Y {k.y} U {k.u} V {k.v}; got Y {y} U {u} V {v}");
+
+            // And the viewer's converter, told BT.709, gives the colour back.
+            byte[] one = { (byte)y, (byte)y, 0, 0, (byte)y, (byte)y, 0, 0, (byte)u, (byte)v, 0, 0 };
+            byte[] bgra = new byte[16];
+            fixed (byte* s = one)
+            fixed (byte* d = bgra)
+            {
+                Nv12Converter.ToBgra(new Nv12Picture { Y = s, Uv = s + 8, Stride = 4, CodedWidth = 2, CodedHeight = 2, Width = 2, Height = 2, Matrix = Nv12Matrix.Bt709 }, d, 8);
+            }
+            Check(Math.Abs(bgra[2] - k.r) <= 3 && Math.Abs(bgra[1] - k.g) <= 3 && Math.Abs(bgra[0] - k.b) <= 3,
+                $"({k.r}, {k.g}, {k.b}) coded by the encoder and read back as BT.709 is itself again; got ({bgra[2]}, {bgra[1]}, {bgra[0]})");
+        }
+        Console.WriteLine("PASS: the encoder turns the screen's colours into the Y, U and V of the standard its stream names");
     }
 
     private static void CheckFillerDoesNotHoldAPictureBack(Clip clip)
