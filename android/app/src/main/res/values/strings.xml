@@ -125,6 +125,9 @@
     <string name="phone_viewer_wake_failed_notifications">%1$s didn\'t wake. Allow notifications for Remote Desktop on %1$s.</string>
     <string name="phone_viewer_wake_failed">%1$s didn\'t wake. Tap to try again.</string>
     <string name="phone_viewer_unlock_hidden">Android hides the unlock screen of %1$s from the picture. Taps and drags still reach it.</string>
+    <string name="phone_viewer_password">Open the keyboard above, type the password of %1$s and press Enter.</string>
+    <string name="phone_viewer_draw_pattern">Draw the pattern of %1$s.</string>
+    <string name="phone_viewer_enter_pin">Enter the PIN of %1$s.</string>
     <string name="phone_viewer_black">The screen of %1$s is off, or it is on its unlock screen. Taps and drags still reach an unlock screen.</string>
     <string name="nav_back">Back</string>
     <string name="nav_home">Home</string>

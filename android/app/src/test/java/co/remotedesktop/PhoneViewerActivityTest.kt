@@ -300,6 +300,47 @@ class PhoneViewerActivityTest {
     }
 
     @Test
+    fun theUnlockScreenIsDrawnWhereThePhoneSaysItIsAndADragLeavesATrail() {
+        open()
+        frame(Crypto.CH_VIDEO, jpeg())
+        // 360 x 800 picture; the grid is a 240 pixel square at (60, 440).
+        deliver(JSONObject("""{"type":"lock-state","from":"phone","screenOn":true,"locked":true,"entry":{"kind":"pattern","area":[0.1667,0.55,0.6667,0.3]},"message":"Draw your pattern"}"""))
+        assertEquals("The grid is drawn, so nothing is said about a hidden screen", View.GONE, caption.visibility)
+
+        // A finger drawn through the top row: the three dots are taken, and the touches still go to the phone.
+        val picture = PhoneScreenView::class.java.getDeclaredField("picture").apply { isAccessible = true }.get(screen) as android.graphics.RectF
+        fun at(fx: Float, fy: Float) = Pair(picture.left + fx * picture.width(), picture.top + fy * picture.height())
+        val start = SystemClock.uptimeMillis()
+        fun touch(action: Int, fx: Float, fy: Float, ms: Long) {
+            val (x, y) = at(fx, fy)
+            screen.dispatchTouchEvent(MotionEvent.obtain(start, start + ms, action, x, y, 0))
+        }
+        socket.messages.clear()
+        touch(MotionEvent.ACTION_DOWN, 0.2778f, 0.6f, 0)
+        for (step in 1..10) touch(MotionEvent.ACTION_MOVE, 0.2778f + 0.0444f * step, 0.6f, 40L * step)
+        idle()
+        assertEquals(setOf(0, 1, 2), screen.trailDots.toSet())
+        assertEquals(11, screen.trailLength)
+        assertTrue(sent("touch").isNotEmpty())
+        touch(MotionEvent.ACTION_UP, 0.7222f, 0.6f, 500)
+        idle()
+        assertEquals("The trail goes when the finger lifts", 0, screen.trailLength)
+        assertTrue(screen.trailDots.isEmpty())
+
+        // A password has nothing to draw: it is asked for in words, under the phone's own message.
+        deliver(JSONObject("""{"type":"lock-state","from":"phone","screenOn":true,"locked":true,"entry":{"kind":"password"},"message":"Wrong password"}"""))
+        assertEquals("Wrong password\nOpen the keyboard above, type the password of Pixel and press Enter.", caption.text.toString())
+
+        // Unlocked: nothing is drawn or said, and a drag leaves no trail.
+        lockState("phone", screenOn = true, locked = false)
+        assertEquals(View.GONE, caption.visibility)
+        touch(MotionEvent.ACTION_DOWN, 0.3f, 0.6f, 1000)
+        touch(MotionEvent.ACTION_MOVE, 0.5f, 0.6f, 1040)
+        assertEquals(0, screen.trailLength)
+        touch(MotionEvent.ACTION_UP, 0.5f, 0.6f, 1080)
+    }
+
+    @Test
     fun aPhoneThatNeverSaysHowItStandsIsExplainedByItsBlackPicture() {
         open()
         frame(Crypto.CH_VIDEO, jpeg(0x3366CC))

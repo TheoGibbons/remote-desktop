@@ -85,11 +85,16 @@ class PhoneViewerActivity : AppCompatActivity() {
             // Phones broadcast it, so only this one's counts.
             "screen-info" -> if (fromPeer) typing = msg.optBoolean("typing", false)
             "lock-state" -> if (fromPeer) LockCaption.parse(msg)?.let { state ->
-                if (state != lockState) {
+                val before = lockState
+                if (state != before) {
                     lockState = state
-                    // The picture on show was taken before this.
-                    blackWatch.forget()
-                    pictureBlack = false
+                    // The picture on show was taken before this. A new message
+                    // line alone, which a lock screen that is counting down
+                    // sends every second, changes nothing about the picture.
+                    if (before == null || before.screenOn != state.screenOn || before.locked != state.locked) {
+                        blackWatch.forget()
+                        pictureBlack = false
+                    }
                     updateCaption()
                 }
             }
@@ -223,11 +228,15 @@ class PhoneViewerActivity : AppCompatActivity() {
     }
 
     /** Says over the picture that the other phone is asleep, that it didn't
-     *  wake, or that it is on the unlock screen Android leaves out of the picture. */
+     *  wake, or that it is on the unlock screen Android leaves out of the
+     *  picture; and has that screen drawn when the other phone says what is on it. */
     private fun updateCaption() {
-        val text = LockCaption.text(lockState, pictureBlack)?.let { getString(it, peerName) }
+        val string = { id: Int -> getString(id, peerName) }
+        val text = LockCaption.caption(lockState, pictureBlack, string)
         caption.text = text
         caption.visibility = if (text == null) View.GONE else View.VISIBLE
+        // The unlock screen, which is not in the picture, drawn where the other phone says it is.
+        screen.showUnlock(lockState?.entry, LockCaption.heading(lockState, string))
     }
 
     /** Shown while this phone is off the relay. The other phone approves the
