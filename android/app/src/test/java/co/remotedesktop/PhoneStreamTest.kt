@@ -474,6 +474,12 @@ class PhoneStreamTest {
         assertNull(PhoneScreenCapture.ackedSeq("pc"))
     }
 
+    @Test
+    fun thePhonesConnectionIsMadeWithNagleOff() {
+        val client = connectionField("client").get(ConnectionManager) as okhttp3.OkHttpClient
+        assertTrue(client.socketFactory is NoDelaySocketFactory)
+    }
+
     private class RecordingSocket : WebSocket {
         class Frame(val type: Byte, val to: List<String>, val payload: ByteArray)
 

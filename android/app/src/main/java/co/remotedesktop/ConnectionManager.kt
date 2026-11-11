@@ -50,6 +50,8 @@ object ConnectionManager {
 
     private val client = OkHttpClient.Builder()
         .pingInterval(PING_INTERVAL_S, TimeUnit.SECONDS)
+        // Small packets go at once instead of waiting for the one before to be acknowledged.
+        .socketFactory(NoDelaySocketFactory())
         .build()
 
     private val main = Handler(Looper.getMainLooper())
