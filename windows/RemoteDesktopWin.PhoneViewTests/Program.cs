@@ -21,6 +21,7 @@ internal static class Program
         CheckBackgroundWindow();
         CheckFirstFit();
         CheckTurning();
+        CheckManyTurns();
         CheckSmallWorkArea();
         CheckStaysOnScreen();
         CheckThrottle();
@@ -305,6 +306,43 @@ internal static class Program
         Near(PhoneFit.ShownLongSide(2340, 1080, 650, 900), 650, "The same for a phone on its side");
         Check(PhoneFit.ShownLongSide(1080, 2340, 0, 0) == 0, "A host with no size shows nothing");
         Console.WriteLine("PASS: a phone that turns stays the same size on screen");
+    }
+
+    private static void CheckManyTurns()
+    {
+        // A window's size lands on whole pixels: two thirds of a unit apart at 150 % scaling.
+        static double Snap(double units) => Math.Floor(units * 1.5) / 1.5;
+
+        // The S26 as it streams: upright, and on its side at the same width limit.
+        (int W, int H) upright = (1080, 2340), sideways = (1080, 498);
+
+        double Turns(bool keep)
+        {
+            var window = PhoneFit.Fit(upright.W, upright.H, 0, FrameW, FrameH, new FitRect(200, 100, 400, 760), BigScreen);
+            double fitted = PhoneFit.ShownLongSide(upright.W, upright.H, window.Width - FrameW, window.Height - FrameH);
+            var shown = upright;
+            for (int turn = 0; turn < 40; turn++)
+            {
+                var next = shown == upright ? sideways : upright;
+                double hostW = Snap(window.Width) - FrameW, hostH = Snap(window.Height) - FrameH;
+                double measured = PhoneFit.ShownLongSide(shown.W, shown.H, hostW, hostH);
+                double longSide = keep ? PhoneFit.KeptLongSide(measured, fitted) : measured;
+                window = PhoneFit.Fit(next.W, next.H, longSide, FrameW, FrameH, window, BigScreen);
+                fitted = PhoneFit.ShownLongSide(next.W, next.H, window.Width - FrameW, window.Height - FrameH);
+                shown = next;
+            }
+            return fitted;
+        }
+
+        double start = 820 - FrameH;
+        Check(Turns(keep: false) < start - 10, "setup: measured from whole pixels, the long side shrinks turn by turn");
+        Near(Turns(keep: true), start, "A phone turned forty times is the size it started at");
+
+        Check(PhoneFit.KeptLongSide(781.2, 783.33) == 783.33, "A measurement a pixel or two short is the last fit's own long side");
+        Check(PhoneFit.KeptLongSide(650, 783.33) == 650, "A window the user made smaller keeps the size they chose");
+        Check(PhoneFit.KeptLongSide(900, 783.33) == 900, "And one they made larger");
+        Check(PhoneFit.KeptLongSide(650, 0) == 650, "With no fit to go by, the measurement stands");
+        Console.WriteLine("PASS: turning the phone back and forth doesn't shrink the window");
     }
 
     private static void CheckSmallWorkArea()

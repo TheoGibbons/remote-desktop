@@ -73,6 +73,7 @@ public partial class PhoneViewWindow : Window
     // round. They differ while the window is maximised or minimised.
     private (int W, int H)? _picture;
     private (int W, int H)? _fitted;
+    private double _fittedLongSide;     // the picture's long side as that fit drew it
 
     private static readonly Brush MenuOpenBrush = Frozen(Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
 
@@ -419,13 +420,16 @@ public partial class PhoneViewWindow : Window
         if (WindowState != WindowState.Normal) return;
 
         double hostW = PictureHost.ActualWidth, hostH = PictureHost.ActualHeight;
-        double longSide = _fitted is { } old ? PhoneFit.ShownLongSide(old.W, old.H, hostW, hostH) : 0;
+        double longSide = _fitted is { } old
+            ? PhoneFit.KeptLongSide(PhoneFit.ShownLongSide(old.W, old.H, hostW, hostH), _fittedLongSide) : 0;
+        double frameW = ActualWidth - hostW, frameH = ActualHeight - hostH;
         var work = _caption.WorkArea;
         var fit = PhoneFit.Fit(picture.W, picture.H, longSide,
-            frameW: ActualWidth - hostW, frameH: ActualHeight - hostH,
+            frameW, frameH,
             window: new FitRect(Left, Top, ActualWidth, ActualHeight),
             work: new FitRect(work.Left, work.Top, work.Width, work.Height));
         _fitted = picture;
+        _fittedLongSide = PhoneFit.ShownLongSide(picture.W, picture.H, fit.Width - frameW, fit.Height - frameH);
         Left = fit.Left;
         Top = fit.Top;
         Width = fit.Width;

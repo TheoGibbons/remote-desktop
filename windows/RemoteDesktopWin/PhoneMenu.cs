@@ -161,6 +161,21 @@ internal static class PhoneFit
         return Math.Max(pictureW, pictureH) * scale;
     }
 
+    /// <summary>How far the picture's long side, measured from the window, may
+    /// be from what the last fit gave it and still count as untouched.</summary>
+    public const double LongSideSlack = 3;
+
+    /// <summary>
+    /// The long side to carry over when the picture changes shape. A window's
+    /// size lands on whole pixels, so the long side measured back from it is a
+    /// pixel or two short of what the last fit asked for, and a phone turned
+    /// back and forth would shrink a little each time. If the measurement is
+    /// that close to the last fit's own long side, nobody has resized the
+    /// window since, and the fit's figure is kept.
+    /// </summary>
+    public static double KeptLongSide(double measured, double lastFitted) =>
+        lastFitted > 0 && Math.Abs(measured - lastFitted) <= LongSideSlack ? lastFitted : measured;
+
     /// <summary>
     /// Where the window goes for a picture of this shape.
     /// </summary>
