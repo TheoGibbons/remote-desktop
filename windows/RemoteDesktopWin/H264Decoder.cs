@@ -672,6 +672,37 @@ internal sealed unsafe class H264Decoder : IDisposable
     }
 
     /// <summary>
+    /// The parameter sets an access unit carries (its SPS and PPS units, start
+    /// codes and all), or null unless it has both. The viewer keeps the last
+    /// it saw, for a phone that sends them in a frame of their own or only
+    /// with its first keyframe.
+    /// </summary>
+    internal static byte[]? ParameterSets(ReadOnlySpan<byte> accessUnit)
+    {
+        if ((Scan(accessUnit) & (Units.Sps | Units.Pps)) != (Units.Sps | Units.Pps)) return null;
+        ReadOnlySpan<byte> startCode = stackalloc byte[] { 0, 0, 1 };
+        var sets = new byte[accessUnit.Length];
+        int written = 0, unitStart = 0, search = 0;
+        bool wanted = false;
+        while (true)
+        {
+            int found = accessUnit.Slice(search).IndexOf(startCode);
+            int next = found < 0 ? accessUnit.Length : search + found;
+            int boundary = found >= 0 && next > unitStart && accessUnit[next - 1] == 0 ? next - 1 : next;
+            if (wanted && boundary > unitStart)
+            {
+                accessUnit.Slice(unitStart, boundary - unitStart).CopyTo(sets.AsSpan(written));
+                written += boundary - unitStart;
+            }
+            if (found < 0) break;
+            unitStart = boundary;
+            wanted = next + 3 < accessUnit.Length && (accessUnit[next + 3] & 0x1F) is 7 or 8;
+            search = next + 3;
+        }
+        return sets.AsSpan(0, written).ToArray();
+    }
+
+    /// <summary>
     /// Copies an access unit, leaving out filler data (NAL units of type 12).
     /// An encoder holding a constant bitrate pads with them, and the decoder
     /// will not give up a picture whose access unit ends in one until the

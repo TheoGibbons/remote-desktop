@@ -95,6 +95,7 @@ internal sealed class PhoneFeed : IDisposable
     private bool? _canDecode;       // whether this Windows decodes H.264; null until found out
     private bool _givenUp;          // the decoder failed too often: JPEG only until the app is restarted
     private string _givenUpWhy = "";
+    private byte[]? _parameterSets; // the stream's last SPS and PPS, for a keyframe that comes without
     private H264Decoder? _decoder;  // made and used on the feed's thread, let go from any
     private readonly H264PictureHandler _onDecoded;
     private PhoneVideoPicture? _decodedInto;    // the feed's thread only
@@ -199,6 +200,7 @@ internal sealed class PhoneFeed : IDisposable
     {
         _video.Clear();
         _videoBytes = 0;
+        _parameterSets = null;
         Video.Clear();
     }
 
@@ -263,8 +265,16 @@ internal sealed class PhoneFeed : IDisposable
             {
                 if (!PhoneFrame.TryParse(data.AsSpan(1), out var header)) return;
                 int bytes = data.Length - 1 - PhoneFrame.HeaderSize;
-                var verdict = _stream.Take(header, bytes, now);
+                var picture = new ArraySegment<byte>(data, 1 + PhoneFrame.HeaderSize, bytes);
+                // What a video frame is, is read from the frame: the keyframe
+                // bit in its header is the phone's word for it.
+                byte[]? sets = null;
+                VideoKind? kind = header.Format == PhoneFrame.H264 && _stream.OffersH264 && header.Stream == _stream.Current
+                    ? LookAtVideo(ref picture, out sets) : null;
+                var verdict = _stream.Take(header, bytes, now, kind);
                 if (verdict == FrameVerdict.Refuse) return;
+                // Kept only from a frame that was taken: not from one played back.
+                if (sets != null) _parameterSets = sets;
                 _stats.Arrived(bytes, header, now);
                 ack = _acks.Received(header.Stream, header.Seq, now)?.Message(_phoneId);
                 switch (verdict)
@@ -275,18 +285,71 @@ internal sealed class PhoneFeed : IDisposable
                         break;
                     case FrameVerdict.Decode:
                     case FrameVerdict.Restart:
-                        QueueVideo(new VideoFrame(data, 1 + PhoneFrame.HeaderSize, bytes, header, verdict == FrameVerdict.Restart));
+                        QueueVideo(new VideoFrame(picture.Array!, picture.Offset, picture.Count, header, verdict == FrameVerdict.Restart));
                         break;
                     // Skip: it arrived, and that is all. Frames from before a
                     // break in the chain are still good and stay in the queue.
                 }
-                if (_stream.KeyframeRequestDue(now)) keyframe = _stream.KeyframeRequest(_phoneId);
+                keyframe = AskOrGiveUp(now);
             }
             else return;
             Monitor.Pulse(_gate);
         }
         if (ack != null) _send(ack);
         if (keyframe != null) _send(keyframe);
+    }
+
+    /// <summary>
+    /// Under the lock: what a frame of video holds. The parameter sets it
+    /// carries are handed back for keeping, and an IDR picture that comes
+    /// without any is given the ones kept, so that it is a keyframe the
+    /// decoder can start from. The phone is meant to send the two together;
+    /// one that hands on its encoder's parameter sets as a frame of their
+    /// own, or sends them only with its first keyframe, is shown all the same.
+    /// </summary>
+    private VideoKind LookAtVideo(ref ArraySegment<byte> picture, out byte[]? sets)
+    {
+        var units = H264Decoder.Scan(picture);
+        sets = H264Decoder.ParameterSets(picture);
+        if ((units & H264Decoder.Units.Slice) == 0)
+            return (units & (H264Decoder.Units.Sps | H264Decoder.Units.Pps)) != 0 ? VideoKind.ParameterSets : VideoKind.Ordinary;
+        if ((units & H264Decoder.Units.Idr) == 0) return VideoKind.Ordinary;
+        if ((units & H264Decoder.Units.Keyframe) == H264Decoder.Units.Keyframe) return VideoKind.Keyframe;
+        if (_parameterSets == null) return VideoKind.Ordinary;
+        var whole = new byte[_parameterSets.Length + picture.Count];
+        _parameterSets.CopyTo(whole, 0);
+        picture.AsSpan().CopyTo(whole.AsSpan(_parameterSets.Length));
+        picture = new ArraySegment<byte>(whole);
+        return VideoKind.Keyframe;
+    }
+
+    /// <summary>
+    /// Under the lock: the message to send about a keyframe, if one is due.
+    /// A request for one, at most once a second while one is waited for; or,
+    /// when the stream's rules say video is to be given up, the start-view
+    /// that asks the phone for JPEG.
+    /// </summary>
+    private JsonObject? AskOrGiveUp(long now)
+    {
+        if (_phoneId == null) return null;
+        if (_stream.KeyframeRequestDue(now)) return _stream.KeyframeRequest(_phoneId);
+        if (!_stream.GivenUp || _givenUp) return null;
+        return GiveUp(_stream.Unanswered >= PhoneVideoStream.UnansweredToGiveUp
+            ? "the phone sent no keyframe when asked" : "the decoder failed");
+    }
+
+    /// <summary>Under the lock: H.264 is given up, and the phone is to be told by the start-view this returns.</summary>
+    private JsonObject GiveUp(string why)
+    {
+        _givenUp = true;
+        _givenUpWhy = why;
+        _stream.OffersH264 = false;
+        _video.Clear();
+        _videoBytes = 0;
+        _decoder?.Dispose();
+        _decoder = null;
+        Video.Clear();
+        return StartView(_phoneId!, offerCodecs: true, h264: false);
     }
 
     /// <summary>Under the lock.</summary>
@@ -480,8 +543,8 @@ internal sealed class PhoneFeed : IDisposable
         if (_statsShown && _phoneId != null && _stats.PingDueIn(now) == 0)
             // The time is noted as it is handed to the socket, a line from here.
             ping = new JsonObject { ["type"] = "diagnostic-ping", ["to"] = _phoneId, ["nonce"] = _stats.Ping(now) };
-        // Asked again every second for as long as no keyframe has come.
-        JsonObject? keyframe = _phoneId != null && _stream.KeyframeRequestDue(now) ? _stream.KeyframeRequest(_phoneId) : null;
+        // Asked again every second for as long as no keyframe has come, and not for ever.
+        JsonObject? keyframe = AskOrGiveUp(now);
         work = new Work(picture, frame, ack, ping, keyframe);
         return picture != null || frame != null || ack != null || ping != null || keyframe != null;
     }
@@ -591,18 +654,10 @@ internal sealed class PhoneFeed : IDisposable
                         _stream.DecoderLost(failed: result == H264Decoded.Failed);
                         _video.Clear();
                         _videoBytes = 0;
-                        if (_stream.GivenUp)
-                        {
-                            // Twice: this PC is not going to decode this. JPEG from here on.
-                            _givenUp = true;
-                            _givenUpWhy = failure.Length > 0 ? failure : "the decoder failed";
-                            _stream.OffersH264 = false;
-                            _decoder?.Dispose();
-                            _decoder = null;
-                            Video.Clear();
-                            jpegOnly = StartView(_phoneId!, offerCodecs: true, h264: false);
-                        }
-                        else if (_stream.KeyframeRequestDue(now)) keyframe = _stream.KeyframeRequest(_phoneId!);
+                        // Twice, and this PC is not going to decode this: JPEG from here on.
+                        if (_stream.Failures >= PhoneVideoStream.FailuresToGiveUp)
+                            jpegOnly = GiveUp(failure.Length > 0 ? failure : "the decoder failed");
+                        else keyframe = AskOrGiveUp(now);
                         break;
                 }
             }

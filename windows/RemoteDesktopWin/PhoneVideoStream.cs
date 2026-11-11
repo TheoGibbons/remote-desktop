@@ -24,6 +24,17 @@ internal enum FrameVerdict
     Refuse,
 }
 
+/// <summary>What a frame of video holds, by its bytes and not by what its header claims.</summary>
+internal enum VideoKind
+{
+    /// <summary>A frame that leans on the one before it.</summary>
+    Ordinary,
+    /// <summary>A picture that needs nothing before it, with the parameter sets to decode it by.</summary>
+    Keyframe,
+    /// <summary>Parameter sets and no picture: nothing to decode or draw, and no break in the chain either.</summary>
+    ParameterSets,
+}
+
 /// <summary>
 /// A binary frame names no sender, and anyone holding the session key can
 /// make one. So a phone on a current app picks a random id for its stream and
@@ -40,9 +51,14 @@ internal enum FrameVerdict
 /// every second while none has come (<see cref="KeyframeRequestDue"/>). The
 /// chain is broken by a missing number, by a stream that this viewer comes
 /// into part way, by a decoder that failed, and by frames thrown away because
-/// the PC could not keep up. A decoder that has failed twice while a phone is
-/// viewed is given up (<see cref="GivenUp"/>): the viewer then offers JPEG
-/// only. All of it is decided here so that it can be tested without a
+/// the PC could not keep up. What is a keyframe is judged by what the frame
+/// holds, which the caller says (<see cref="VideoKind"/>): a header's
+/// keyframe bit is the phone's word and is not relied on. Video is given up
+/// (<see cref="GivenUp"/>), and the viewer then offers JPEG only, when the
+/// decoder has failed twice while a phone is viewed, and when five requests
+/// in a row have brought no keyframe though the phone went on sending: a
+/// phone that will not send one would otherwise leave the window frozen for
+/// good. All of it is decided here so that it can be tested without a
 /// decoder.</para>
 ///
 /// Fed in the order things arrive. Not safe to share between threads by
@@ -55,6 +71,10 @@ internal sealed class PhoneVideoStream
 
     /// <summary>This many decoder failures while a phone is viewed, and H.264 is given up.</summary>
     public const int FailuresToGiveUp = 2;
+
+    /// <summary>This many requests for a keyframe in a row that the phone
+    /// answered with more frames and no keyframe, and H.264 is given up.</summary>
+    public const int UnansweredToGiveUp = 5;
 
     private enum Wait
     {
@@ -70,6 +90,8 @@ internal sealed class PhoneVideoStream
     private uint? _lastSeq;
     private Wait _wait = Wait.ForTheFirst;
     private long? _askedAt;
+    private int _askedSinceKeyframe;    // requests since a keyframe last ended a wait
+    private bool _arrivedSinceAsk;      // the phone has sent video since the last request
     private readonly Queue<(long At, int Bytes)> _lastSecond = new();
     private long _lastSecondBytes;
 
@@ -92,8 +114,12 @@ internal sealed class PhoneVideoStream
     /// <summary>How often the decoder has failed while this phone has been viewed.</summary>
     public int Failures { get; private set; }
 
-    /// <summary>The decoder has failed too often: H.264 is no longer to be offered.</summary>
-    public bool GivenUp => Failures >= FailuresToGiveUp;
+    /// <summary>Requests for a keyframe, one after another, that the phone answered with frames and no keyframe.</summary>
+    public int Unanswered { get; private set; }
+
+    /// <summary>The decoder has failed too often, or the phone will not send
+    /// a keyframe: H.264 is no longer to be offered.</summary>
+    public bool GivenUp => Failures >= FailuresToGiveUp || Unanswered >= UnansweredToGiveUp;
 
     /// <summary>How many times a keyframe has been asked for while this phone has been viewed.</summary>
     public int KeyframesAsked { get; private set; }
@@ -127,7 +153,10 @@ internal sealed class PhoneVideoStream
     }
 
     /// <summary>A type 5 frame arrived, with <paramref name="bytes"/> of picture.</summary>
-    public FrameVerdict Take(PhoneFrameHeader header, int bytes, long nowMs)
+    /// <param name="kind">For video, what the frame holds, read from its
+    /// bytes. Left out, the header's keyframe bit is believed: for callers
+    /// that have no bytes to look at.</param>
+    public FrameVerdict Take(PhoneFrameHeader header, int bytes, long nowMs, VideoKind? kind = null)
     {
         if (Current is not { } current || header.Stream != current) return FrameVerdict.Refuse;
         bool gap = false;
@@ -143,16 +172,22 @@ internal sealed class PhoneVideoStream
         if (header.Format == PhoneFrame.Jpeg) return FrameVerdict.Draw;
         if (header.Format != PhoneFrame.H264 || !OffersH264) return FrameVerdict.Skip;
 
+        _arrivedSinceAsk = true;
+        var holds = kind ?? (header.Keyframe ? VideoKind.Keyframe : VideoKind.Ordinary);
         // A frame is missing: whatever follows it leans on a picture this viewer never had.
         if (gap) _wait = Wait.Asking;
+        // Parameter sets on their own change nothing: the feed keeps them for the keyframe they belong to.
+        if (holds == VideoKind.ParameterSets) return FrameVerdict.Skip;
         if (_wait == Wait.None) return FrameVerdict.Decode;
-        if (!header.Keyframe)
+        if (holds != VideoKind.Keyframe)
         {
             // Also a stream come into part way: its first frame here is no keyframe.
             _wait = Wait.Asking;
             return FrameVerdict.Skip;
         }
         _wait = Wait.None;
+        _askedSinceKeyframe = 0;
+        Unanswered = 0;
         return FrameVerdict.Restart;
     }
 
@@ -180,7 +215,13 @@ internal sealed class PhoneVideoStream
     public bool KeyframeRequestDue(long nowMs)
     {
         if (KeyframeRequestDueIn(nowMs) != 0) return false;
+        // The request before this one brought frames and no keyframe. (If it
+        // brought nothing at all, the connection is the trouble, not the phone.)
+        if (_askedSinceKeyframe > 0 && _arrivedSinceAsk) Unanswered++;
+        if (GivenUp) return false;
         _askedAt = nowMs;
+        _askedSinceKeyframe++;
+        _arrivedSinceAsk = false;
         KeyframesAsked++;
         return true;
     }
@@ -188,7 +229,7 @@ internal sealed class PhoneVideoStream
     /// <summary>How long until the next request is due: 0 when one is, null when none is waited for.</summary>
     public long? KeyframeRequestDueIn(long nowMs)
     {
-        if (_wait != Wait.Asking || Current == null || !OffersH264) return null;
+        if (_wait != Wait.Asking || Current == null || !OffersH264 || GivenUp) return null;
         return _askedAt is { } asked ? Math.Max(0, asked + KeyframeAskEveryMs - nowMs) : 0;
     }
 
@@ -230,6 +271,9 @@ internal sealed class PhoneVideoStream
         _lastSeq = null;
         _wait = Wait.ForTheFirst;
         _askedAt = null;
+        _askedSinceKeyframe = 0;
+        _arrivedSinceAsk = false;
+        Unanswered = 0;
         Failures = 0;
         KeyframesAsked = 0;
         Gaps = 0;

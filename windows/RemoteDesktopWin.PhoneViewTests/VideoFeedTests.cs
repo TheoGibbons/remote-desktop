@@ -19,6 +19,8 @@ internal static class VideoFeedTests
     {
         CheckWhenAFrameIsDecoded();
         CheckAskingForAKeyframe();
+        CheckKeyframesByWhatTheyHold();
+        CheckAPhoneThatSendsNoKeyframe();
         CheckGivingUp();
         CheckPictureHandOver();
         CheckOffer();
@@ -34,6 +36,8 @@ internal static class VideoFeedTests
             CheckFeedShowsVideo(clip);
             CheckFeedAfterALostFrame(clip, again);
             CheckFeedComingInPartWay(clip);
+            CheckFeedGoesByTheBytes(clip);
+            CheckFeedGivesUpOnAPhoneThatSendsNoKeyframe(clip);
             CheckFeedFallingBehind(clip, again);
             CheckFeedDecoderFailure(clip);
             CheckFeedWithoutADecoder(clip);
@@ -136,6 +140,105 @@ internal static class VideoFeedTests
         decoder.Overflowed();
         Check(decoder.WaitingForKeyframe && decoder.KeyframeRequestDue(1010), "Frames thrown away because the PC fell behind are asked about too");
         Console.WriteLine("PASS: a keyframe is asked for at once when the chain breaks, and once a second until it comes");
+    }
+
+    private static void CheckKeyframesByWhatTheyHold()
+    {
+        // The caller has looked at the bytes. The bit in the header is the phone's word, and is not gone by.
+        var stream = new PhoneVideoStream { OffersH264 = true };
+        stream.Announce(StreamA, false);
+        Check(stream.Take(Video(StreamA, 0, keyframe: false), 100, 0, VideoKind.Keyframe) == FrameVerdict.Restart,
+            "A frame that holds a keyframe starts the stream, though its header does not say so");
+        Check(stream.Take(Video(StreamA, 1, keyframe: true), 100, 10, VideoKind.Ordinary) == FrameVerdict.Decode,
+            "A frame that holds none is the next ordinary frame, whatever its header says");
+        Check(stream.Take(Video(StreamA, 3, keyframe: true), 100, 20, VideoKind.Ordinary) == FrameVerdict.Skip && stream.WaitingForKeyframe,
+            "After a gap a frame that only says it is a keyframe does not end the wait");
+        Check(stream.Take(Video(StreamA, 4, keyframe: false), 100, 30, VideoKind.Keyframe) == FrameVerdict.Restart && !stream.WaitingForKeyframe,
+            "A frame that is one does");
+
+        // Parameter sets in a frame of their own, as an Android encoder hands them out.
+        var split = new PhoneVideoStream { OffersH264 = true };
+        split.Announce(StreamA, false);
+        Check(split.Take(Video(StreamA, 0, keyframe: false), 20, 0, VideoKind.ParameterSets) == FrameVerdict.Skip, "Parameter sets alone are nothing to decode");
+        Check(!split.WaitingForKeyframe && split.KeyframeRequestDueIn(0) == null, "And no reason to ask for a keyframe: one is about to follow");
+        Check(split.Take(Video(StreamA, 1, keyframe: true), 100, 10, VideoKind.Keyframe) == FrameVerdict.Restart, "The keyframe behind them starts the stream");
+        Check(split.Take(Video(StreamA, 2, keyframe: false), 20, 20, VideoKind.ParameterSets) == FrameVerdict.Skip && !split.WaitingForKeyframe,
+            "Parameter sets in the middle of a healthy stream break nothing");
+        Check(split.Take(Video(StreamA, 3, keyframe: false), 100, 30, VideoKind.Ordinary) == FrameVerdict.Decode, "The frame after them is decoded");
+        Check(split.Take(Video(StreamA, 5, keyframe: false), 20, 40, VideoKind.ParameterSets) == FrameVerdict.Skip && split.WaitingForKeyframe,
+            "A gap in front of them is still a gap");
+
+        // The parameter sets of an access unit, for keeping.
+        byte[] unit = { 0, 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3, 0, 0, 1, 0x06, 9, 0, 0, 0, 1, 0x65, 7, 7 };
+        Check(H264Decoder.ParameterSets(unit) is { } sets && sets.AsSpan().SequenceEqual(new byte[] { 0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3 }),
+            "The SPS and PPS of an access unit are picked out, start codes and all");
+        Check(H264Decoder.ParameterSets(new byte[] { 0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x65, 3 }) == null, "An SPS without a PPS is not a pair to keep");
+        Check(H264Decoder.ParameterSets(new byte[] { 0, 0, 1, 0x41, 3 }) == null && H264Decoder.ParameterSets(ReadOnlySpan<byte>.Empty) == null,
+            "An ordinary frame has none");
+        Console.WriteLine("PASS: a keyframe is known by what the frame holds, not by the bit in its header");
+    }
+
+    private static void CheckAPhoneThatSendsNoKeyframe()
+    {
+        // The chain breaks, and the phone goes on sending frames that are no keyframe, whatever it is asked.
+        var stream = new PhoneVideoStream { OffersH264 = true };
+        stream.Announce(StreamA, false);
+        stream.Take(Video(StreamA, 0, keyframe: true), 100, 0);
+        uint seq = 2;
+        stream.Take(Video(StreamA, seq++, keyframe: false), 100, 1000);
+        int asked = 0;
+        long gaveUpAt = -1;
+        for (long now = 1000; now <= 9000 && gaveUpAt < 0; now += 250)
+        {
+            stream.Take(Video(StreamA, seq++, keyframe: false), 100, now);
+            if (stream.KeyframeRequestDue(now)) asked++;
+            if (stream.GivenUp) gaveUpAt = now;
+        }
+        Check(asked == PhoneVideoStream.UnansweredToGiveUp && gaveUpAt == 6000,
+            $"After five requests that brought frames and no keyframe, video is given up: asked {asked} times, gave up at {gaveUpAt}");
+        Check(stream.KeyframeRequestDueIn(7000) == null && !stream.KeyframeRequestDue(7000), "And nothing more is asked");
+        Check(stream.Failures == 0, "It is the phone that did not answer: no failure of the decoder is counted");
+
+        // A keyframe that comes in time wipes the slate.
+        var answered = new PhoneVideoStream { OffersH264 = true };
+        answered.Announce(StreamA, false);
+        answered.Take(Video(StreamA, 0, keyframe: true), 100, 0);
+        seq = 2;
+        for (int round = 0; round < 4; round++)
+        {
+            long start = 10_000 * (round + 1);
+            for (long now = start; now < start + 3000; now += 250)
+            {
+                answered.Take(Video(StreamA, seq++, keyframe: false), 100, now);
+                answered.KeyframeRequestDue(now);
+            }
+            Check(answered.Unanswered == 2 && !answered.GivenUp, $"setup: two requests unanswered so far in wait {round}");
+            answered.Take(Video(StreamA, seq++, keyframe: true), 100, start + 3000);
+            Check(answered.Unanswered == 0, "A keyframe that comes after the third request wipes the count");
+            seq++;   // the next frame will be found missing
+        }
+        Check(!answered.GivenUp, "A phone that answers late, time and again, is not given up");
+
+        // Nothing arrives at all: the connection is the trouble, and video is not given up for it.
+        var silent = new PhoneVideoStream { OffersH264 = true };
+        silent.Announce(StreamA, false);
+        silent.Take(Video(StreamA, 0, keyframe: true), 100, 0);
+        silent.Take(Video(StreamA, 2, keyframe: false), 100, 1000);
+        asked = 0;
+        for (long now = 1000; now <= 30_000; now += 500) if (silent.KeyframeRequestDue(now)) asked++;
+        Check(asked == 30 && !silent.GivenUp && silent.Unanswered <= 1, $"With nothing arriving, a keyframe is asked for every second and video is kept: asked {asked}, unanswered {silent.Unanswered}");
+
+        // A phone that starts a new stream every time and still sends no keyframe does not start the count afresh.
+        var restless = new PhoneVideoStream { OffersH264 = true };
+        ulong id = 1;
+        for (long now = 0; now <= 12_000 && !restless.GivenUp; now += 250)
+        {
+            if (now % 1500 == 0) restless.Announce(++id, false);
+            restless.Take(Video(id, (uint)now, keyframe: false), 100, now);
+            restless.KeyframeRequestDue(now);
+        }
+        Check(restless.GivenUp, "Starting stream after stream without a keyframe is given up as well");
+        Console.WriteLine("PASS: a phone that goes on sending and never sends a keyframe is given up after five requests, and a dead connection is not");
     }
 
     private static void CheckGivingUp()
@@ -413,6 +516,84 @@ internal static class VideoFeedTests
         rig.Frame(StreamA, 43, clip.Units[0]);
         Check(rig.Pump() == 1, "The true keyframe is shown");
         Pass("a stream come into part way, or with a false keyframe, waits for a true one");
+    }
+
+    private static void CheckFeedGoesByTheBytes(Clip clip)
+    {
+        byte[] key = clip.Units[0];
+        byte[] sets = H264Decoder.ParameterSets(key) ?? throw new Exception("setup: the keyframe's parameter sets");
+        byte[] bare = H264Tests.WithoutUnits(key, 7, 8);
+
+        // A phone that never sets the keyframe bit: its keyframes are keyframes all the same.
+        var unmarked = Viewing();
+        for (uint i = 0; i < 4; i++) unmarked.Frame(StreamA, i, clip.Units[(int)i], keyframe: false);
+        Check(unmarked.Pump() == 4 && unmarked.Count("request-keyframe") == 0, "A stream whose keyframe bit is never set is shown from its keyframe");
+
+        // A phone that sets it on everything: a frame that leans on a lost one is still not drawn.
+        var overmarked = Viewing();
+        overmarked.Frame(StreamA, 0, clip.Units[0], keyframe: true);
+        overmarked.Frame(StreamA, 1, clip.Units[1], keyframe: true);
+        overmarked.Frame(StreamA, 3, clip.Units[3], keyframe: true);
+        Check(overmarked.Pump() == 2 && overmarked.Feed.VideoState is { Waiting: true, Failures: 0 } && overmarked.Count("request-keyframe") == 1,
+            "A stream whose every frame claims to be a keyframe is still stopped at a gap, and no failure is counted for the claim");
+
+        // Parameter sets sent as a frame of their own, the keyframe behind them without any.
+        var split = Viewing();
+        split.Now = 1000;
+        split.Frame(StreamA, 0, sets);
+        Check(split.Pump() == 0 && split.Count("request-keyframe") == 0 && split.Count("frame-ack") == 1, "Parameter sets on their own are acknowledged, and nothing is asked");
+        split.Frame(StreamA, 1, bare);
+        split.Frame(StreamA, 2, clip.Units[1]);
+        split.Frame(StreamA, 3, clip.Units[2]);
+        Check(split.Pump() == 3 && split.Shown[0].Header.Seq == 1, "The keyframe that follows them without its own is shown, and the frames after it");
+        H264Tests.CheckPatches(split.Shown[^1].Bgra, clip.Width, clip.Height, clip.ReadAs, "from a phone that sends its parameter sets apart");
+        Check(split.Count("request-keyframe") == 0 && split.Feed.VideoState.Failures == 0, "Without a request and without a failure");
+
+        // Parameter sets only with the first keyframe: a later keyframe without them, after a gap.
+        var once = Viewing();
+        once.Now = 1000;
+        once.Frame(StreamA, 0, key);
+        once.Frame(StreamA, 1, clip.Units[1]);
+        once.Frame(StreamA, 3, clip.Units[3]);
+        Check(once.Pump() == 2 && once.Feed.VideoState.Waiting, "setup: a gap, and a keyframe waited for");
+        once.Frame(StreamA, 4, bare);
+        once.Frame(StreamA, 5, clip.Units[1]);
+        Check(once.Pump() == 2 && !once.Feed.VideoState.Waiting, "A keyframe without parameter sets is given the stream's last ones, and ends the wait");
+
+        // Without any ever seen, a bare IDR picture is no start: a keyframe is asked for.
+        var none = Viewing();
+        none.Now = 1000;
+        none.Frame(StreamA, 0, bare);
+        Check(none.Pump() == 0 && none.Feed.VideoState.Waiting && none.Count("request-keyframe") == 1, "An IDR picture with no parameter sets anywhere is not a start");
+        // And another stream's are not borrowed.
+        split.Info("7", IdB);
+        split.Frame(StreamB, 0, bare);
+        Check(split.Pump() == 0 && split.Feed.VideoState.Waiting, "Parameter sets are kept for their own stream only");
+        Pass("the feed goes by what a frame holds: unmarked keyframes, false ones, and parameter sets sent apart");
+    }
+
+    private static void CheckFeedGivesUpOnAPhoneThatSendsNoKeyframe(Clip clip)
+    {
+        var rig = Viewing();
+        rig.Now = 1000;
+        rig.Frame(StreamA, 0, clip.Units[0]);
+        rig.Frame(StreamA, 1, clip.Units[1]);
+        Check(rig.Pump() == 2, "setup: two pictures");
+        // A frame is lost, and the phone takes no notice of what it is asked.
+        uint seq = 3;
+        for (long now = 1100; now <= 8000 && !rig.Feed.VideoState.GivenUp; now += 100)
+        {
+            rig.Now = now;
+            rig.Frame(StreamA, seq++, clip.Units[1 + (int)(seq % 8)], keyframe: false);
+            rig.Pump();
+        }
+        Check(rig.Feed.VideoState is { GivenUp: true, Offered: false }, "A phone that sends on and never sends the keyframe it is asked for is given up");
+        Check(rig.Count("request-keyframe") == PhoneVideoStream.UnansweredToGiveUp, $"After five requests: {rig.Count("request-keyframe")}");
+        Check(rig.Now >= 6000 && rig.Now <= 6300, $"Six seconds after the first, not for ever: at {rig.Now}");
+        Check(rig.Of("start-view").SequenceEqual(["""{"type":"start-view","to":"7","codecs":["jpeg"]}"""]), "The phone is asked for JPEG");
+        Check(rig.Shown.Count == 2 && rig.Feed.VideoState.Failures == 0, "Nothing broken was shown meanwhile, and the decoder is not blamed");
+        Check(rig.Feed.StatsText().Contains("H.264 given up (the phone sent no keyframe when asked)"), "The readout says why:\n" + rig.Feed.StatsText());
+        Pass("a phone that never sends the keyframe it is asked for is asked for JPEG instead, after five requests");
     }
 
     private static void CheckFeedFallingBehind(Clip clip, Clip again)

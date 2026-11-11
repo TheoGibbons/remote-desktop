@@ -641,7 +641,10 @@ Android app does not send it yet. The header is as above, with these meanings:
 **The stream.** No B-frames and nothing out of order: frames are sent in the
 order they are decoded and each is shown as it is decoded. 8-bit 4:2:0,
 progressive. Every keyframe carries its SPS and PPS, also one the encoder
-makes without being asked. No filler data (NAL units of type 12): Windows'
+makes without being asked. (The PC goes by the bytes: it keeps the last SPS
+and PPS it saw in the stream, in a keyframe or in a frame of their own, and
+puts them in front of an IDR picture that comes without. A sender is not to
+count on that.) No filler data (NAL units of type 12): Windows'
 decoder holds a picture back when one follows it, and the PC takes them out
 if they come. Colours are BT.709, limited range (16 to 235), and the stream
 says so; a viewer converts by what the stream says, and for a stream that
@@ -670,7 +673,11 @@ until a keyframe comes, when:
   has thrown the waiting frames away.
 
 While it waits it shows the last good picture, decodes nothing, and still
-acknowledges every frame as it arrives, so the phone is not held back.
+acknowledges every frame as it arrives, so the phone is not held back. It
+does not wait for ever: when five requests in a row have brought frames and
+no keyframe, it takes it that this phone will not send one, and falls back to
+JPEG as below. Requests that bring nothing at all are not counted: then the
+connection is the trouble.
 
 **Falling back to JPEG.** If the PC's decoder fails twice while a phone is
 being viewed (an error, or a keyframe that gives no picture, which is how
