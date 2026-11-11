@@ -265,7 +265,7 @@ class SmoothRequestTest {
 
         // Asked again straight away, the phone's holder is left alone.
         receive("pc", "request-smooth")
-        assertEquals("unavailable: " + SmoothSharing.JUST_DECLINED, said(statuses("pc").last()))
+        assertEquals("unavailable: " + SmoothSharing.askAgainIn(SmoothSharing.REPEAT_WAIT_MS), said(statuses("pc").last()))
         assertNull(promptStart())
     }
 
@@ -362,6 +362,12 @@ class SmoothRequestTest {
         receive("pc", "stop-view")
         assertTrue(prompt.get().isFinishing)
         assertFalse(SmoothPrompt.pending)
+        // Back at once to ask again: it waits like anyone else.
+        view("pc")
+        receive("pc", "request-smooth")
+        assertEquals("unavailable: " + SmoothSharing.askAgainIn(SmoothSharing.REPEAT_WAIT_MS), said(statuses("pc").last()))
+        assertNull(promptStart())
+        socket.messages.removeAll { it.getString("type") == "smooth-status" && it.optString("state") == "unavailable" }
         // Nobody is told: the one that asked has gone, and the other never asked.
         assertEquals(listOf("prompting"), statuses().map(::said))
 
@@ -399,7 +405,11 @@ class SmoothRequestTest {
         assertEquals("declined: " + SmoothSharing.NOBODY_ANSWERED, said(statuses("pc").last()))
         assertEquals(2, statuses().size)
 
-        // Nobody refused, so asking again shows it again.
+        // Asked again at once, the phone's holder is left alone for a while; after that it is shown again.
+        receive("pc", "request-smooth")
+        assertEquals("unavailable: " + SmoothSharing.askAgainIn(SmoothSharing.REPEAT_WAIT_MS), said(statuses("pc").last()))
+        assertNull(promptStart())
+        later(SmoothSharing.REPEAT_WAIT_MS)
         receive("pc", "request-smooth")
         assertNotNull(promptStart())
     }

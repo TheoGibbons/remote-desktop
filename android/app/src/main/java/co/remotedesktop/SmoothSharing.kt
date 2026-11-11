@@ -19,7 +19,10 @@ package co.remotedesktop
  *    its screen without it. Otherwise stopping would leave every viewer
  *    with no picture, and no way to see the prompt that brings it back.
  *  - One prompt at a time. A second request while one is up joins the wait.
- *  - After someone declines, nobody may ask again for [repeatWaitMs].
+ *  - After a prompt has come and gone without a yes, however it went, nobody
+ *    may ask again for [repeatWaitMs]; twice that after the next one, and so
+ *    on up to [MAX_WAIT_MS]. The phone's owner is not to be nagged by a
+ *    viewer that keeps asking. A yes, or [FORGET_MS] of quiet, starts over.
  *  - A prompt is taken away after [answerMs] without an answer, when everyone
  *    who asked has stopped viewing, and when the screen turns off.
  *
@@ -85,7 +88,23 @@ internal class SmoothSharing(
     /** Who is owed the news that sharing started: the prompt was approved and the service is on its way. */
     private val starting = LinkedHashSet<String>()
     private var promptSince: Long? = null
-    private var declinedAt: Long? = null
+    /** How many prompts in a row have ended without a yes, and when the last of them did. */
+    private var refusals = 0
+    private var refusedAt: Long? = null
+
+    /** A prompt was on the phone's screen and went again without a yes. */
+    private fun refused(now: Long) {
+        if (refusedAt?.let { now - it >= FORGET_MS } == true) refusals = 0
+        refusals++
+        refusedAt = now
+    }
+
+    /** How long nobody may ask yet; null when anyone may. */
+    private fun waitLeft(now: Long): Long? {
+        val since = refusedAt ?: return null
+        val wait = (repeatWaitMs shl (refusals - 1).coerceIn(0, 16)).coerceAtMost(MAX_WAIT_MS)
+        return (since + wait - now).takeIf { it > 0 }
+    }
 
     /** Who is waiting for the prompt that is up. */
     val waitingFor: List<String> get() = waiting.toList()
@@ -110,7 +129,7 @@ internal class SmoothSharing(
                 waiting.add(from)
                 listOf(asking)
             }
-            declinedAt?.let { now - it < repeatWaitMs } == true -> no(JUST_DECLINED)
+            waitLeft(now) != null -> no(askAgainIn(waitLeft(now)!!))
             !phone.canShowPrompt -> no(CANNOT_SHOW)
             else -> {
                 waiting.clear()
@@ -142,13 +161,19 @@ internal class SmoothSharing(
         return when (outcome) {
             Outcome.GRANTED -> {
                 starting.addAll(asked)
+                refusals = 0
+                refusedAt = null
                 emptyList()
             }
             Outcome.DECLINED -> {
-                declinedAt = now
+                refused(now)
                 listOf(Tell(asked, DECLINED))
             }
-            Outcome.SCREEN_OFF -> listOf(ClosePrompt, Tell(asked, DECLINED, SCREEN_TURNED_OFF))
+            Outcome.SCREEN_OFF -> {
+                refused(now)
+                listOf(ClosePrompt, Tell(asked, DECLINED, SCREEN_TURNED_OFF))
+            }
+            // Nothing was put in front of anyone, so there is nothing to wait out.
             Outcome.NOT_SHOWN -> listOf(ClosePrompt, Tell(asked, UNAVAILABLE, CANNOT_SHOW))
         }
     }
@@ -160,6 +185,7 @@ internal class SmoothSharing(
         val asked = waiting.toList()
         waiting.clear()
         promptSince = null
+        refused(now)
         return listOf(ClosePrompt, Tell(asked, DECLINED, NOBODY_ANSWERED))
     }
 
@@ -168,12 +194,14 @@ internal class SmoothSharing(
      * taken away: it would otherwise stand on a phone that nobody is looking
      * at, for whoever picks it up next.
      */
-    fun viewersNow(viewing: Collection<String>): List<Step> {
+    fun viewersNow(viewing: Collection<String>, now: Long): List<Step> {
         starting.retainAll(viewing.toSet())
         if (!prompting) return emptyList()
         waiting.retainAll(viewing.toSet())
         if (waiting.isNotEmpty()) return emptyList()
         promptSince = null
+        // A viewer that asks, leaves and comes back to ask again waits like any other.
+        refused(now)
         return listOf(ClosePrompt)
     }
 
@@ -211,6 +239,10 @@ internal class SmoothSharing(
 
     companion object {
         const val REPEAT_WAIT_MS = 10_000L
+        /** The longest anyone is made to wait before asking again. */
+        const val MAX_WAIT_MS = 5 * 60_000L
+        /** After this long without a prompt that went unanswered or refused, the wait is the shortest again. */
+        const val FORGET_MS = 10 * 60_000L
         /** Long enough to find the prompt in a viewer's picture, scroll it and press it. */
         const val ANSWER_MS = 60_000L
 
@@ -234,7 +266,6 @@ internal class SmoothSharing(
         const val ANSWER_ON_PHONE = "The phone is asking. Someone has to approve it on the phone itself: " +
             "it has no picture to show until smooth video is on."
         const val WAITING_FOR_APPROVAL = "The phone is waiting for a new device to be approved."
-        const val JUST_DECLINED = "The prompt was just declined on the phone. Try again in a moment."
         const val CANNOT_SHOW = "The phone can't show its prompt. Turn on smooth screen sharing in its Permissions screen."
         const val DID_NOT_START = "The phone could not start sharing its screen."
         const val SCREEN_TURNED_OFF = "The phone's screen turned off before the prompt was answered."
@@ -243,6 +274,14 @@ internal class SmoothSharing(
         const val PHONE_LOCKED = "Smooth video ended because the phone was locked."
         /** While the notification stands in for the prompt. */
         const val TAP_NOTIFICATION = "Tap the notification on the phone to see the prompt."
+
+        /** Why a request is refused for now, with [leftMs] still to wait. */
+        fun askAgainIn(leftMs: Long): String {
+            val seconds = (leftMs + 999) / 1000
+            val time = if (seconds < 60) "$seconds second${if (seconds == 1L) "" else "s"}"
+                else ((seconds + 59) / 60).let { "$it minute${if (it == 1L) "" else "s"}" }
+            return "The phone was asked a moment ago and nobody said yes. Ask again in $time."
+        }
 
         /** `smooth` in `screen-info`: what a viewer's menu row can do. */
         fun offer(sharing: Boolean, canShowPrompt: Boolean, otherCapture: Boolean): String = when {

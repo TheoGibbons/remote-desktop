@@ -96,12 +96,106 @@ class SmoothSharingTest {
     fun afterARefusalNobodyAsksAgainForTenSeconds() {
         rules.request("pc", viewer, ready, now = 0)
         rules.answered(Outcome.DECLINED, now = 2_000)
-        assertEquals(listOf(tell("unavailable", SmoothSharing.JUST_DECLINED, "pc")),
+        assertEquals(listOf(tell("unavailable", "The phone was asked a moment ago and nobody said yes. Ask again in 10 seconds.", "pc")),
             rules.request("pc", viewer, ready, now = 2_001))
-        assertEquals(listOf(tell("unavailable", SmoothSharing.JUST_DECLINED, "phone")),
+        assertEquals(listOf(tell("unavailable", "The phone was asked a moment ago and nobody said yes. Ask again in 1 second.", "phone")),
             rules.request("phone", viewer, ready, now = 11_999))
         assertFalse(rules.prompting)
         assertEquals(listOf(tell("prompting", null, "pc"), ShowPrompt), rules.request("pc", viewer, ready, now = 12_000))
+    }
+
+    private fun refusedFor(rules: SmoothSharing, now: Long) =
+        (rules.request("pc", viewer, ready, now).singleOrNull() as? Tell)?.takeIf { it.state == "unavailable" }?.reason
+
+    /** Not only Cancel: a viewer could otherwise put the prompt up again the moment it had gone, for as long as it liked. */
+    @Test
+    fun everyWayAPromptGoesWithoutAYesIsFollowedByTheWait() {
+        val ends = mapOf<String, (SmoothSharing) -> Unit>(
+            "declined" to { it.answered(Outcome.DECLINED, now = 5_000) },
+            "nobody answered" to { it.tick(now = SmoothSharing.ANSWER_MS) },
+            "the screen turned off" to { it.answered(Outcome.SCREEN_OFF, now = 5_000) },
+            "whoever asked stopped viewing" to { it.viewersNow(emptyList(), now = 5_000) },
+        )
+        for ((how, end) in ends) {
+            val rules = SmoothSharing()
+            rules.request("pc", viewer, ready, now = 0)
+            end(rules)
+            val at = if (how == "nobody answered") SmoothSharing.ANSWER_MS else 5_000
+            assertEquals(how, SmoothSharing.askAgainIn(SmoothSharing.REPEAT_WAIT_MS - 1), refusedFor(rules, at + 1))
+            assertFalse(how, rules.prompting)
+            assertNull(how, refusedFor(rules, at + SmoothSharing.REPEAT_WAIT_MS))
+            assertTrue(how, rules.prompting)
+        }
+
+        // A prompt that never appeared was in nobody's way, and a yes is no refusal.
+        SmoothSharing().let {
+            it.request("pc", viewer, ready, now = 0)
+            it.answered(Outcome.NOT_SHOWN, now = 1)
+            assertNull(refusedFor(it, 2))
+        }
+        SmoothSharing().let {
+            it.request("pc", viewer, ready, now = 0)
+            it.answered(Outcome.GRANTED, now = 1)
+            it.ended(wasRunning = true, stoppedBy = null, locked = false, viewers = emptyList())
+            assertNull(refusedFor(it, 2))
+        }
+    }
+
+    @Test
+    fun theWaitGrowsWhenItHappensAgainAndIsNeverLongerThanFiveMinutes() {
+        var now = 0L
+        val waits = ArrayList<Long>()
+        repeat(8) {
+            // Asked the moment it is allowed, and refused each time.
+            assertNull(refusedFor(rules, now))
+            now += 1_000
+            rules.answered(Outcome.DECLINED, now)
+            var wait = 0L
+            while (refusedFor(rules, now + wait) != null) wait += 1_000
+            // The request that was let through has put the next prompt up.
+            assertTrue(rules.prompting)
+            waits += wait
+            now += wait
+        }
+        assertEquals(listOf(10L, 20L, 40L, 80L, 160L, 300L, 300L, 300L), waits.map { it / 1000 })
+    }
+
+    @Test
+    fun aYesOrTenQuietMinutesBringTheShortWaitBack() {
+        fun declineTwice(rules: SmoothSharing, from: Long): Long {
+            rules.request("pc", viewer, ready, from)
+            rules.answered(Outcome.DECLINED, from + 1)
+            rules.request("pc", viewer, ready, from + 1 + SmoothSharing.REPEAT_WAIT_MS)
+            rules.answered(Outcome.DECLINED, from + 2 + SmoothSharing.REPEAT_WAIT_MS)
+            return from + 2 + SmoothSharing.REPEAT_WAIT_MS
+        }
+
+        // Twice refused: twenty seconds.
+        var last = declineTwice(rules, 0)
+        assertEquals(SmoothSharing.askAgainIn(20_000), refusedFor(rules, last))
+        // Left alone for ten minutes, the next refusal counts as a first.
+        val later = last + SmoothSharing.FORGET_MS
+        assertNull(refusedFor(rules, later))
+        rules.answered(Outcome.DECLINED, later + 1)
+        assertEquals(SmoothSharing.askAgainIn(10_000), refusedFor(rules, later + 1))
+
+        // And so does one after a yes.
+        val other = SmoothSharing()
+        last = declineTwice(other, 0)
+        assertNull(refusedFor(other, last + 20_000))
+        other.answered(Outcome.GRANTED, last + 20_001)
+        other.ended(wasRunning = true, stoppedBy = null, locked = false, viewers = emptyList())
+        assertNull(refusedFor(other, last + 20_002))
+        other.answered(Outcome.DECLINED, last + 20_003)
+        assertEquals(SmoothSharing.askAgainIn(10_000), refusedFor(other, last + 20_003))
+    }
+
+    @Test
+    fun theWaitIsSaidInWords() {
+        assertEquals("The phone was asked a moment ago and nobody said yes. Ask again in 1 second.", SmoothSharing.askAgainIn(1))
+        assertEquals("The phone was asked a moment ago and nobody said yes. Ask again in 59 seconds.", SmoothSharing.askAgainIn(58_001))
+        assertEquals("The phone was asked a moment ago and nobody said yes. Ask again in 1 minute.", SmoothSharing.askAgainIn(60_000))
+        assertEquals("The phone was asked a moment ago and nobody said yes. Ask again in 5 minutes.", SmoothSharing.askAgainIn(299_000))
     }
 
     @Test
@@ -163,8 +257,8 @@ class SmoothSharingTest {
             // An answer that comes after that changes nothing: nothing is started.
             assertEquals(emptyList<Any>(), it.answered(Outcome.GRANTED, now = SmoothSharing.ANSWER_MS + 2))
             assertEquals(emptyList<Any>(), it.started())
-            // Nobody refused, so it can be asked for again at once.
-            assertEquals(ShowPrompt, it.request("pc", viewer, ready, now = SmoothSharing.ANSWER_MS + 3).last())
+            // It can be asked for again once the phone's holder has had a rest from it.
+            assertEquals(ShowPrompt, it.request("pc", viewer, ready, now = SmoothSharing.ANSWER_MS + SmoothSharing.REPEAT_WAIT_MS).last())
         }
     }
 
@@ -173,14 +267,14 @@ class SmoothSharingTest {
         rules.request("pc", viewer, ready, now = 0)
         rules.request("phone", viewer, ready, now = 1)
         // One of the two leaves: the other is still waiting.
-        assertEquals(emptyList<Any>(), rules.viewersNow(listOf("phone", "bystander")))
+        assertEquals(emptyList<Any>(), rules.viewersNow(listOf("phone", "bystander"), now = 2))
         assertTrue(rules.prompting)
         // The other leaves, though a device that never asked is still viewing.
-        assertEquals(listOf<Any>(ClosePrompt), rules.viewersNow(listOf("bystander")))
+        assertEquals(listOf<Any>(ClosePrompt), rules.viewersNow(listOf("bystander"), now = 3))
         assertFalse(rules.prompting)
         assertNull(rules.giveUpAt)
         // With no prompt up, viewers coming and going do nothing.
-        assertEquals(emptyList<Any>(), rules.viewersNow(emptyList()))
+        assertEquals(emptyList<Any>(), rules.viewersNow(emptyList(), now = 4))
     }
 
     @Test
@@ -188,7 +282,7 @@ class SmoothSharingTest {
         rules.request("pc", viewer, ready, now = 0)
         rules.request("phone", viewer, ready, now = 1)
         rules.answered(Outcome.GRANTED, now = 2)
-        rules.viewersNow(listOf("phone"))
+        rules.viewersNow(listOf("phone"), now = 3)
         assertEquals(listOf(tell("started", null, "phone")), rules.started())
     }
 

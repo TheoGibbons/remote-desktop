@@ -100,7 +100,9 @@ whoever is at the PC can click "Share screen" in the picture, or you can tap it
 on the phone. The app never answers the prompt itself. Only a device you have
 approved, that is viewing the phone at that moment, can ask, and a locked
 phone answers that it must be unlocked first. A prompt nobody answers goes
-away after a minute, and at once when the PC stops viewing. With the phone on
+away after a minute, and at once when the PC stops viewing. After a prompt
+has gone without a yes the PC cannot ask again for ten seconds, and for longer
+each time it happens again, up to five minutes. With the phone on
 its side the prompt's buttons are out of view until it is scrolled. Where a
 phone will not show the prompt from the background, a notification asks
 instead; tap it to see the prompt. The same row on the PC stops smooth sharing,

@@ -92,7 +92,7 @@ internal object SmoothPrompt {
     }
 
     /** Who is viewing has changed ([PhoneScreenCapture.refresh]). Main thread. */
-    fun viewersNow(viewing: Collection<String>) = run(rules.viewersNow(viewing))
+    fun viewersNow(viewing: Collection<String>) = run(rules.viewersNow(viewing, SystemClock.uptimeMillis()))
 
     /** [ScreenCaptureService] is up and has the screen. Main thread. */
     fun sharingStarted() = run(rules.started())

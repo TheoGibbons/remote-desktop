@@ -370,11 +370,13 @@ The activity is a plain `Activity` with the translucent platform theme, out of r
 - phone locked or asleep: `unavailable`, "Unlock the phone first.";
 - pictures held back because a device is waiting to be approved: `unavailable`, since nobody could see the prompt in a viewer;
 - a prompt is already up: `prompting`, and the sender waits for that one;
-- declined in the last 10 s: `unavailable`, saying so;
+- a prompt went without a yes a moment ago: `unavailable`, saying how long is left (10 s after the first, doubling to 5 minutes if it goes on; review, 2026-11-11);
 - otherwise the prompt is shown: `prompting`, then `started` or `declined`.
 
 Changed from the first plan, on what C2 showed:
-- **A repeat is answered, not ignored.** The plan dropped a repeat within 10 s. Now a request while a prompt is up joins it, and one within 10 s of a refusal is told why, so a viewer never has to guess from silence. Silence is kept for senders that may not ask.
+- **A repeat is answered, not ignored.** The plan dropped a repeat within 10 s. Now a request while a prompt is up joins it, and one made too soon after a prompt that got no yes is told why and how long to wait, so a viewer never has to guess from silence. Silence is kept for senders that may not ask.
+- **The wait follows every prompt that got no yes**, not only a refusal: one nobody answered, one the screen turned off under, one whose asker stopped viewing. As first built only Cancel or Back set it, so a viewer could put the prompt back up the moment it had gone, by asking again or by closing and opening its window. The wait doubles each time in a row, from 10 s to 5 minutes, and a yes or 10 quiet minutes bring it back to 10 s.
+- **Sharing that starts another way takes the prompt away**, and whoever asked is told `started`. As first built the prompt stayed up, and the viewer heard "Nobody answered" a minute later with smooth sharing on.
 - **A turned phone does not ask twice.** The activity handles the turn itself (`configChanges`), and if Android makes it anew all the same it remembers that it has asked.
 - **A prompt nobody answers is taken away after a minute**, and the viewer is told `declined`, "Nobody answered the prompt on the phone." C2 saw one stand for two minutes and more.
 - **It is taken away at once when every viewer that asked has stopped viewing**, and nobody is told. It would otherwise wait on an unattended phone for whoever picks it up next.
