@@ -77,9 +77,12 @@ public partial class PhoneViewWindow : Window
         _menuTimer = new DispatcherTimer(DispatcherPriority.Input);
         _menuTimer.Tick += (_, _) => { _menu.Tick(DateTime.UtcNow); ShowMenuState(); };
         MenuPopup.CustomPopupPlacementCallback = PlaceMenu;
+        // Resting on the button counts only while this is the active window.
+        _menu.WindowActive(IsActive, DateTime.UtcNow);
+        Activated += (_, _) => { _menu.WindowActive(true, DateTime.UtcNow); ShowMenuState(); };
         // The menu doesn't follow the window, so it goes when the window
         // moves, changes size or is left for another.
-        Deactivated += (_, _) => CloseMenu();
+        Deactivated += (_, _) => { _menu.WindowActive(false, DateTime.UtcNow); ShowMenuState(); };
         LocationChanged += (_, _) => CloseMenu();
         SizeChanged += (_, _) => CloseMenu();
         StateChanged += (_, _) =>
@@ -164,9 +167,8 @@ public partial class PhoneViewWindow : Window
 
     private void MenuButton_MouseEnter(object sender, MouseEventArgs e)
     {
-        // Passing over a window in the background shouldn't pop a menu up
-        // over whatever is being worked in. A click still opens it.
-        if (!IsActive) return;
+        // In a background window this opens nothing until the window is the
+        // active one (see MenuHover.WindowActive). A click still opens it.
         _menu.PointerOnButton(true, DateTime.UtcNow);
         ShowMenuState();
     }

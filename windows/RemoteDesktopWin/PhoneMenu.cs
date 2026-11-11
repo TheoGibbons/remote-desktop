@@ -22,6 +22,7 @@ internal sealed class MenuHover
     public static readonly TimeSpan ClickGrace = TimeSpan.FromMilliseconds(600);
 
     private bool _onButton, _onMenu, _dragging;
+    private bool _active = true;
     private DateTime? _openAt, _closeAt;
     private DateTime _openedAt;
 
@@ -35,8 +36,22 @@ internal sealed class MenuHover
         if (_onButton == on) return;
         bool wasOver = Over;
         _onButton = on;
-        _openAt = on && !IsOpen ? now + OpenDelay : null;
+        // Passing over a window in the background shouldn't pop a menu up
+        // over whatever is being worked in.
+        _openAt = on && !IsOpen && _active ? now + OpenDelay : null;
         PointerMoved(wasOver, now);
+    }
+
+    /// <summary>The window became the active one, or stopped being it. Resting
+    /// on the button only counts while it is active, so a pointer already
+    /// there when the window comes to the front starts its rest then. Leaving
+    /// the window closes the menu. A window that never says is taken as active.</summary>
+    public void WindowActive(bool active, DateTime now)
+    {
+        if (_active == active) return;
+        _active = active;
+        if (!active) Dismiss();
+        else if (_onButton && !IsOpen) _openAt = now + OpenDelay;
     }
 
     public void PointerOnMenu(bool on, DateTime now)
@@ -84,7 +99,7 @@ internal sealed class MenuHover
         if (_openAt is { } open && now >= open)
         {
             _openAt = null;
-            if (_onButton && !IsOpen) Open(now);
+            if (_onButton && _active && !IsOpen) Open(now);
         }
         if (_closeAt is { } close && now >= close && !_dragging) Dismiss();
     }
@@ -193,6 +208,12 @@ internal sealed class SendThrottle(TimeSpan interval)
 {
     private DateTime? _lastSent;
     private int? _sent, _held;
+
+    /// <summary>What was last sent no longer says what the phone has: its
+    /// value may have changed by other means. Call it when a drag starts and
+    /// when the phone reports its state, so the next value is sent even if it
+    /// is the one sent last.</summary>
+    public void Forget() => _sent = null;
 
     /// <summary>The slider moved to <paramref name="value"/>. Returns it if it
     /// should be sent now; otherwise it is held for <see cref="Finish"/>.</summary>

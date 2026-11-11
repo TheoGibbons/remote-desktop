@@ -18,11 +18,13 @@ internal static class Program
         CheckClicks();
         CheckDrag();
         CheckDismiss();
+        CheckBackgroundWindow();
         CheckFirstFit();
         CheckTurning();
         CheckSmallWorkArea();
         CheckStaysOnScreen();
         CheckThrottle();
+        CheckSecondDrag();
         CheckPhoneState();
     }
 
@@ -194,6 +196,57 @@ internal static class Program
         Console.WriteLine("PASS: Esc and leaving the window close the menu at once");
     }
 
+    private static void CheckBackgroundWindow()
+    {
+        var menu = new MenuHover();
+        menu.WindowActive(false, At(0));
+        menu.PointerOnButton(true, At(100));
+        Check(menu.NextDue == null, "Nothing is due for a pointer over a window in the background");
+        menu.Tick(At(5000));
+        Check(!menu.IsOpen, "Passing over a window in the background opens nothing");
+
+        // Alt+Tab to the window with the pointer already resting on the button.
+        menu.WindowActive(true, At(6000));
+        Check(menu.NextDue == At(6150), "The rest is counted from when the window came to the front");
+        menu.Tick(At(6149));
+        Check(!menu.IsOpen, "Not before the delay");
+        menu.Tick(At(6150));
+        Check(menu.IsOpen, "A pointer already on the button opens the menu once the window is active");
+
+        menu.WindowActive(false, At(7000));
+        Check(!menu.IsOpen && menu.NextDue == null, "Leaving the window closes the menu at once");
+        menu.Tick(At(9000));
+        Check(!menu.IsOpen, "And it stays closed while the window is in the background");
+        menu.WindowActive(true, At(10000));
+        menu.Tick(At(10150));
+        Check(menu.IsOpen, "Coming back with the pointer still there opens it again");
+
+        // The pointer left while the window was in the background.
+        menu.WindowActive(false, At(11000));
+        menu.PointerOnButton(false, At(11100));
+        menu.WindowActive(true, At(12000));
+        menu.Tick(At(13000));
+        Check(!menu.IsOpen && menu.NextDue == null, "Nothing opens if the pointer is no longer on the button");
+
+        // A click opens it whatever the window thinks it is.
+        var clicked = new MenuHover();
+        clicked.WindowActive(false, At(0));
+        clicked.Click(At(10));
+        Check(clicked.IsOpen, "A click opens the menu of a window in the background");
+
+        // Becoming active between the pointer arriving and the click.
+        var late = new MenuHover();
+        late.WindowActive(false, At(0));
+        late.PointerOnButton(true, At(100));
+        late.WindowActive(true, At(200));
+        late.Click(At(260));
+        Check(late.IsOpen && late.NextDue == null, "The click that brings the window forward opens the menu once");
+        late.Tick(At(350));
+        late.Click(At(400));
+        Check(late.IsOpen, "And the rest that was being counted doesn't turn the click into a close");
+        Console.WriteLine("PASS: resting on the button counts only while the window is active, from when it became active");
+    }
+
     // ---------------- window size ----------------
 
     // A frame like the real one: the invisible resize border either side and
@@ -324,6 +377,39 @@ internal static class Program
         Check(throttle.Offer(10, At(1020)) == null, "Back to the value last sent: nothing is owed");
         Check(throttle.Finish(At(1030)) == null, "So letting go sends nothing");
         Console.WriteLine("PASS: a dragged slider sends at most one value per interval, and always the last");
+    }
+
+    private static void CheckSecondDrag()
+    {
+        var throttle = new SendThrottle(TimeSpan.FromMilliseconds(100));
+        // The first drag ends on 9.
+        throttle.Forget();
+        Check(throttle.Offer(8, At(0)) == 8, "setup: the first drag sends");
+        Check(throttle.Offer(9, At(50)) == null, "setup: held");
+        Check(throttle.Finish(At(60)) == 9, "setup: the first drag ends on 9");
+
+        // The volume keys on the phone take it to 5, and the phone says so.
+        throttle.Forget();
+        // The second drag goes straight to 9, where the first one ended.
+        throttle.Forget();
+        Check(throttle.Offer(9, At(5000)) == 9, "A second drag that ends where the first did is still sent");
+        Check(throttle.Finish(At(5010)) == null, "Once");
+
+        // Within one drag nothing is forgotten: the value just sent isn't repeated.
+        Check(throttle.Offer(9, At(6000)) == null, "The same value again in the same drag is not sent twice");
+
+        // Forgetting keeps a value that is still waiting to go.
+        throttle.Forget();
+        Check(throttle.Offer(10, At(7000)) == 10, "setup: sent");
+        Check(throttle.Offer(11, At(7010)) == null, "setup: held");
+        throttle.Forget();
+        Check(throttle.Finish(At(7020)) == 11, "A held value survives the phone reporting in mid-drag");
+
+        // And the pacing carries on across it.
+        throttle.Forget();
+        Check(throttle.Offer(11, At(7050)) == null, "A new drag straight after still waits its turn");
+        Check(throttle.Finish(At(7060)) == 11, "And sends its value when let go");
+        Console.WriteLine("PASS: a second drag is sent even when it ends where the first one did");
     }
 
     // ---------------- what the phone says ----------------

@@ -68,7 +68,7 @@ The first recipe let `WindowChrome` own the whole window with `ResizeBorderThick
 What `WindowChrome` must be told, because it answers every hit test itself, measuring from the window's edges:
 
 - **The resize borders, sized to the system's frame** (`GetSystemMetricsForDpi` of `SM_CXSIZEFRAME` + `SM_CXPADDEDBORDER`, 11 px here). They then fall exactly on the invisible frame at the sides and bottom.
-- **The bar's metrics, from Windows.** The button bounds came back as 220 × 44 px (about 146 × 29 DIP), and 33 px tall maximised. That width is kept free on the right and that height is the bar's. They are read again on `SourceInitialized`, `Loaded`, `ContentRendered`, `StateChanged` and `DpiChanged`; before the window is shown they are not known.
+- **The bar's metrics, from Windows.** The button bounds came back as 220 × 44 px (about 146 × 29 DIP), and 33 px tall maximised. That width is kept free on the right and that height is the bar's. They are read again on `SourceInitialized`, `Loaded`, `ContentRendered`, `StateChanged` and `DpiChanged`; before the window is shown they are not known. WPF raises `DpiChanged` before it gives the window its new size, so they are read once more after it, when layout has settled.
 
 Not verified, because it can't be on this PC:
 
@@ -114,13 +114,13 @@ The alternative, writing the system rotation setting, needs a new "Modify system
 
 ## How the menu behaves
 
-- **Open:** pointer rests on `⋯` for 150 ms, or a click. Resting only counts while the window is the active one, so passing over a window in the background doesn't pop a menu up over other work.
+- **Open:** pointer rests on `⋯` for 150 ms, or a click. Resting only counts while the window is the active one, so passing over a window in the background doesn't pop a menu up over other work. If the window becomes active with the pointer already on `⋯`, the 150 ms start then.
 - **Close:** 350 ms after the pointer has left both the button and the menu; at once when the window loses focus, moves or resizes; on Esc; on a click on `⋯` once the menu has been open for 600 ms (a click sooner than that was meant to open it). A menu opened without the pointer on it, by a touch or by UI Automation, has nothing to leave and stays until one of the others closes it.
 - **Never closes during a slider drag,** even if the pointer leaves the menu.
 - **Never takes keyboard focus.** The window types into the phone whenever it is focused, so the `⋯` button and everything in the menu are `Focusable="False"`. Otherwise a click would move focus onto a button, and the next Space typed for the phone would press it. While the menu is open, Esc closes the menu instead of sending Back.
 - **Built as a WPF `Popup`,** not a `ContextMenu`: a context menu takes focus and mouse capture and closes on every click. `StaysOpen="True"`, `AllowsTransparency="True"`, placed under the button with right edges aligned. It looks like the app's other `⋯` menus (the `RdMenu` card: white, 10 px corners, soft shadow), with a button style that copies `RdMenuItem`.
 - **State (from Phase 2):** the window asks the phone for its state when it opens and each time the menu opens. Until the first answer, the phone-update rows are hidden behind one line: "Update Remote Desktop on this phone for volume, rotation and more." Phase 1 shows neither the rows nor the line: until Phase 2 is out there is no update that would bring them.
-- **Volume slider:** 0 to `volumeMax`, snapping to whole steps. Sends at most one message per 100 ms while dragging and always the final value. Ignores incoming state while dragging so the thumb doesn't jump back.
+- **Volume slider:** 0 to `volumeMax`, snapping to whole steps. Sends at most one message per 100 ms while dragging and always the final value. Ignores incoming state while dragging so the thumb doesn't jump back. What it last sent is forgotten when a drag starts and when the phone reports its state, so a drag that ends where the last one did is still sent.
 - **Rotation:** highlights what the phone reports. After choosing Portrait or Landscape, if the picture hasn't changed shape within 3 seconds, toast: "The phone didn't rotate. The app on screen may not allow it."
 - Right-click for Back and middle-click for Home stay as they are.
 

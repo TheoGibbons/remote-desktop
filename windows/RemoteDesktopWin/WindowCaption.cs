@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Shell;
+using System.Windows.Threading;
 
 namespace RemoteDesktopWin;
 
@@ -68,7 +69,13 @@ internal sealed class WindowCaption
         // The buttons are a different size maximised, and on a monitor with
         // different scaling. Their bounds are not known until the window is shown.
         window.StateChanged += (_, _) => Refresh();
-        window.DpiChanged += (_, _) => Refresh();
+        // WPF says the scaling changed before it gives the window its new
+        // size, so the buttons are measured again once that has happened.
+        window.DpiChanged += (_, _) =>
+        {
+            Refresh();
+            window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, Refresh);
+        };
         window.Loaded += (_, _) => Refresh();
         window.ContentRendered += (_, _) => Refresh();
     }
