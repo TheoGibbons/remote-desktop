@@ -199,11 +199,18 @@ class PhoneVideoTest {
         // The caller is told by the answer; nothing is reported a second time.
         assertTrue(failures.isEmpty())
 
-        // A phone with no encoder for the size at all.
+        // Nothing smaller is left to try, so video is given up, and not asked for again for a while.
+        assertTrue(video.gaveUp)
+        refuses = { false }
+        assertFalse(video.start(1080, 2340))
+        assertTrue(pipes.isEmpty())
+
+        // Ten minutes later it is tried again. A phone with no encoder for the size at all:
+        timer.advance(PhoneVideo.FORGET_MS)
+        assertFalse(video.gaveUp)
         encoders = emptyList()
         assertFalse(video.start(1080, 2340))
         assertEquals("This phone has no video encoder for its screen's size." to null, video.lastFailure)
-        // That was the second failure.
         assertTrue(video.gaveUp)
     }
 
@@ -378,9 +385,10 @@ class PhoneVideoTest {
         val pipe = running()
         var answered = pipe.drawn.size
         var asked = 0
+        val began = timer.now
         video.keyframe(byViewer = false)
         // Each time it is asked again, and each time an ordinary picture comes out.
-        for (round in 1..50) {
+        for (round in 1..200) {
             if (failures.isNotEmpty()) break
             timer.advance(40)
             while (answered < pipe.drawn.size) {
@@ -388,10 +396,39 @@ class PhoneVideoTest {
                 pipe.answer(pipe.drawn[answered++], keyframe = false)
             }
         }
-        assertEquals(PhoneVideo.KEY_TRIES, asked)
+        // On a still screen it is asked for a quarter of a second apart, not with every picture.
+        assertTrue("asked $asked times", asked in PhoneVideo.KEY_TRIES..PhoneVideo.KEY_TRIES + 2)
+        assertTrue(timer.now - began >= PhoneVideo.KEY_PATIENCE_MS)
+        assertTrue(timer.now - began < PhoneVideo.KEY_PATIENCE_MS + 1_000)
         // The ordinary pictures it made instead were sent all the same: they are part of the stream.
-        assertEquals(PhoneVideo.KEY_TRIES - 1, sent.size)
+        assertTrue(sent.size >= PhoneVideo.KEY_TRIES - 1)
         assertFailedOnce("The video encoder stopped working.", pipe)
+    }
+
+    @Test
+    fun manyIgnoredRequestsInAMomentAreNotYetAFailure() {
+        val pipe = running()
+        // A stream that needs a keyframe on a changing screen: every picture is asked to be
+        // one, and every picture that is not is turned away. Eight of them take a quarter of a second.
+        sendResult = VideoSent.NEEDS_KEYFRAME
+        var answered = pipe.drawn.size
+        video.keyframe(byViewer = false)
+        repeat(20) {
+            screenChanges()
+            timer.advance(34)
+            while (answered < pipe.drawn.size) pipe.answer(pipe.drawn[answered++], keyframe = false)
+        }
+        assertTrue("${pipe.drawn.count { it.keyframe }}", pipe.drawn.count { it.keyframe } > PhoneVideo.KEY_TRIES)
+        assertTrue(failures.isEmpty())
+        // The encoder was only slow to take the request in: from here on it does as it is asked.
+        sendResult = VideoSent.SENT
+        repeat(60) {
+            timer.advance(100)
+            while (answered < pipe.drawn.size) pipe.answer(pipe.drawn[answered++])
+        }
+        assertTrue(failures.isEmpty())
+        assertTrue(video.running)
+        assertTrue(sent.last { it.keyframe }.keyframe)
     }
 
     @Test
@@ -402,8 +439,10 @@ class PhoneVideoTest {
         val first = pipe.drawn.last()
         assertTrue(first.keyframe)
         pipe.answer(first, keyframe = false)
-        // Asked again by itself.
+        // Asked again by itself, a quarter of a second later.
         timer.advance(40)
+        assertSame(first, pipe.drawn.last())
+        timer.advance(PhoneVideo.KEY_RETRY_MS)
         val second = pipe.drawn.last()
         assertTrue(second.keyframe && second !== first)
         pipe.answer(second, keyframe = true)
@@ -413,24 +452,69 @@ class PhoneVideoTest {
     }
 
     @Test
-    fun afterTwoFailuresVideoIsGivenUp() {
+    fun anEncoderThatStartsAndThenFailsIsNextTriedAtASmallerSize() {
+        // It takes the full size, and then gives nothing: the S20's encoder may, for all anyone has seen.
         running().events.failed(IllegalStateException("one"))
         timer.advance()
+        assertEquals(1080 to 2340, pipes[0].width to pipes[0].height)
         assertFalse(video.gaveUp)
         assertTrue(video.usable)
 
-        // The next try starts a new encoder.
+        // The next try does not stumble over full size again.
         running().events.failed(IllegalStateException("two"))
         timer.advance()
+        assertEquals(810 to 1754, pipes[1].width to pipes[1].height)
+        assertFalse(video.gaveUp)
+
+        // Half size is the last there is.
+        val half = running()
+        assertEquals(540 to 1170, half.width to half.height)
+        // It works. A later start, after a turn say, stays at the size that works, however long after.
+        timer.advance(3 * PhoneVideo.FORGET_MS)
+        assertTrue(video.start(2340, 1080))
+        assertEquals(1170 to 540, pipe.width to pipe.height)
         assertEquals(2, failures.size)
+    }
+
+    @Test
+    fun whenEverySizeHasFailedVideoIsGivenUpAndTriedAgainTenMinutesLater() {
+        repeat(3) {
+            running().events.failed(IllegalStateException("failure $it"))
+            timer.advance()
+        }
+        assertEquals(3, failures.size)
+        assertEquals(listOf(1080, 810, 540), pipes.map { it.width })
+        assertTrue(pipes.all { it.closed == 1 })
         assertTrue(video.gaveUp)
         assertFalse(video.usable)
-        assertEquals(2, pipes.size)
-        assertTrue(pipes.all { it.closed == 1 })
 
-        // And then none is started, however often it is asked for.
+        // None is started, however often it is asked for.
         assertFalse(video.start(1080, 2340))
-        assertEquals(2, pipes.size)
+        timer.advance(PhoneVideo.FORGET_MS - 1_000)
+        assertFalse(video.start(1080, 2340))
+        assertEquals(3, pipes.size)
+        assertTrue(video.gaveUp)
+
+        // Ten minutes after the last failure it is all forgotten: full size again.
+        timer.advance(1_000)
+        assertFalse(video.gaveUp)
+        assertTrue(video.usable)
+        assertTrue(video.start(1080, 2340))
+        assertEquals(1080 to 2340, pipe.width to pipe.height)
+    }
+
+    @Test
+    fun anEncoderThatWillNotStartAtASizeCostsNoTry() {
+        // Refused at full size by every encoder: passed over within one start, as before.
+        refuses = { it.step == 0 }
+        val pipe = running()
+        assertEquals(810 to 1754, pipe.width to pipe.height)
+        assertTrue(failures.isEmpty())
+        // That one then fails while running: half size next.
+        pipe.events.failed(IllegalStateException("one"))
+        timer.advance()
+        assertEquals(540 to 1170, running().let { it.width to it.height })
+        assertFalse(video.gaveUp)
     }
 
     // ---------------- what is encoded, and what is sent ----------------

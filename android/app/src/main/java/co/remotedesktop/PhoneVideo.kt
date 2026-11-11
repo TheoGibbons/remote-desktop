@@ -110,18 +110,31 @@ internal class VideoLedger {
  * ([AnnexB]), and what counts as the encoder having failed.
  *
  * A failure of any kind ends video and is reported once, through [onFailed];
- * the caller then goes back to JPEG pictures. After [MAX_FAILURES] of them it
- * stays there ([gaveUp]) for as long as this object lives, which is one run
- * of the capture service.
+ * the caller then goes back to JPEG pictures.
  *
  * Counted as failure:
- * - no encoder starts, at any size;
  * - drawing throws, or the encoder reports an error;
  * - the screen gives no picture within [FIRST_PICTURE_MS] of being attached,
  *   while the phone's screen is on;
  * - three pictures or more go in and none comes out for [STALL_MS];
  * - a keyframe comes out with no parameter sets known;
- * - [KEY_TRIES] keyframes in a row are asked for and none is made.
+ * - a keyframe is asked for [KEY_TRIES] times or more over [KEY_PATIENCE_MS]
+ *   and none is made. It is asked for again [KEY_RETRY_MS] after an
+ *   ordinary picture came out in its place.
+ *
+ * **When video is tried again.** The picture is tried at full size, then at
+ * three quarters, then at half ([VideoSetup]). An encoder that will not
+ * start at a size is passed over at once, within one [start]. An encoder
+ * that starts and then fails takes its size with it: the next [start] begins
+ * at the next size down, since a size an encoder cannot really do is the
+ * likeliest reason. A size that failed stays failed for as long as this
+ * object lives, which is one run of the capture service: a phone whose
+ * encoder cannot do full size should not stumble over it again every few
+ * minutes. When no size is left, or nothing will start at all, video is
+ * given up ([gaveUp]) and pictures stay JPEGs. But not for good: [FORGET_MS]
+ * after the failure that did it, everything is forgotten and full size is
+ * tried again. A phone may have been short of encoders for a while (its
+ * camera in use), and the PC forgets its own failures after the same time.
  *
  * Every method is for the capture thread, which [timer] runs things on. The
  * encoder's callbacks come in on its own thread ([VideoPipe.Events]).
@@ -150,8 +163,11 @@ internal class PhoneVideo(
     class Frame(val bytes: ByteArray, val keyframe: Boolean, val repeat: Boolean, val resend: Boolean,
                 val width: Int, val height: Int, val capturedAtMs: Long)
 
-    /** One encoder, from the moment it starts until it is closed. What a closed one still says is ignored. */
-    private inner class Session : VideoPipe.Events {
+    /**
+     * One encoder, from the moment it starts until it is closed. What a closed one still says is ignored.
+     * @param step which of the sizes it encodes at (see [VideoSetup.Attempt.step]).
+     */
+    private inner class Session(val step: Int) : VideoPipe.Events {
         lateinit var pipe: VideoPipe
         val ledger = VideoLedger()
         @Volatile var parameterSets: ByteArray? = null
@@ -160,8 +176,9 @@ internal class PhoneVideo(
         var ended = false
         var sawPicture = false
         var lastKeyPtsUs = Long.MIN_VALUE
-        /** Keyframes asked for in a row without one coming out. The encoder's thread. */
+        /** Keyframes asked for in a row without one coming out, and when the first of them was. The encoder's thread. */
         var keyMisses = 0
+        var keyMissedSince = 0L
 
         override fun picture(capturedAtMs: Long) {
             if (current !== this) return
@@ -175,7 +192,8 @@ internal class PhoneVideo(
                 AnnexB.parameterSets(data)?.let { parameterSets = it }
                 return
             }
-            val entry = ledger.out(ptsUs, clock())
+            val now = clock()
+            val entry = ledger.out(ptsUs, now)
             val picture = AnnexB.picture(data, parameterSets)
             if (picture == null) {
                 failed(IllegalStateException("A keyframe came with no parameter sets"))
@@ -184,8 +202,12 @@ internal class PhoneVideo(
             var missed = false
             if (picture.keyframe) keyMisses = 0
             else if (entry?.draw?.keyframe == true) {
-                if (++keyMisses >= KEY_TRIES) {
-                    failed(IllegalStateException("No keyframe was made in $KEY_TRIES tries"))
+                if (keyMisses++ == 0) keyMissedSince = now
+                // By the clock as well as the count: a changing screen has it asked
+                // for with every picture, and eight of those go by in a quarter of a second.
+                if (keyMisses >= KEY_TRIES && now - keyMissedSince >= KEY_PATIENCE_MS) {
+                    failed(IllegalStateException(
+                        "No keyframe was made in $keyMisses tries over ${now - keyMissedSince} ms"))
                     return
                 }
                 missed = true
@@ -196,8 +218,10 @@ internal class PhoneVideo(
                     resend = entry?.draw?.resend ?: false, width = pipe.width, height = pipe.height,
                     capturedAtMs = ptsUs / 1000))
             }
-            // Asked for and not made, or made and not sent: it is asked for again.
-            if (missed || result == VideoSent.NEEDS_KEYFRAME) timer.post { keyframeLost(this, ptsUs) }
+            // Asked for and not made: it is asked for again, a little later.
+            if (missed) timer.post { keyframeMissed(this) }
+            // Made and not sent: asked for again at once.
+            else if (result == VideoSent.NEEDS_KEYFRAME) timer.post { keyframeLost(this, ptsUs) }
             else if (result == VideoSent.NOT_SENT) timer.post { pictureUnsent(this, ptsUs) }
         }
 
@@ -211,7 +235,9 @@ internal class PhoneVideo(
     private var sending = false
     private var shutDown = false
     private var lastPtsUs = 0L
-    private var failures = 0
+    /** The first size still to be tried ([VideoSetup.Attempt.step]), and when video last failed. */
+    @Volatile private var step = 0
+    @Volatile private var failedAt = 0L
     /** Whether [watchTask] is due to run. */
     private var watching = false
 
@@ -226,11 +252,13 @@ internal class PhoneVideo(
     /** The encoder that is running, for the caller to point the screen at. */
     val pipe: VideoPipe? get() = current?.pipe
 
-    /** Video has failed too often: pictures stay JPEGs from now on. Any thread. */
-    @Volatile var gaveUp = false
-        private set
+    /**
+     * Video has failed at every size, or would not start at all: pictures
+     * stay JPEGs, until [FORGET_MS] after the last failure. Any thread.
+     */
+    val gaveUp: Boolean get() = step >= VideoSetup.STEPS && clock() - failedAt < FORGET_MS
 
-    /** Whether video may be started: it has not failed too often, and the service is not ending. Capture thread. */
+    /** Whether video may be started: it has not been given up, and the service is not ending. Capture thread. */
     val usable: Boolean get() = !shutDown && !gaveUp
 
     /** Why the last [start] did not start, in words for the connection history, and the raw error. */
@@ -242,23 +270,26 @@ internal class PhoneVideo(
 
     /**
      * Starts encoding a screen mirrored at [sourceWidth] x [sourceHeight]:
-     * with the first encoder and size that will start. The caller then points
-     * the screen at [pipe].
+     * with the first encoder and size that will start, from the largest size
+     * that has not failed. The caller then points the screen at [pipe].
      *
-     * @return false when nothing started, which counts as a failure; [lastFailure] says why.
+     * @return false when nothing started. Video is then given up for a
+     * while ([gaveUp]); [lastFailure] says why.
      */
     fun start(sourceWidth: Int, sourceHeight: Int): Boolean {
         stop()
+        // Given up long enough ago: everything is forgotten, and full size is tried again.
+        if (step >= VideoSetup.STEPS && clock() - failedAt >= FORGET_MS) step = 0
         if (!usable) return false
         var error: Throwable? = null
         val attempts = try {
-            VideoSetup.attempts(sourceWidth, sourceHeight, encoders())
+            VideoSetup.attempts(sourceWidth, sourceHeight, encoders(), fromStep = step)
         } catch (e: RuntimeException) {
             error = e
             emptyList()
         }
         for (attempt in attempts) {
-            val session = Session()
+            val session = Session(attempt.step)
             try {
                 session.pipe = open(attempt, sourceWidth, sourceHeight, session)
             } catch (e: Exception) {
@@ -274,7 +305,8 @@ internal class PhoneVideo(
         }
         lastFailure = (if (attempts.isEmpty() && error == null) "This phone has no video encoder for its screen's size."
             else "The video encoder could not be started.") to error?.toString()
-        failed()
+        // Nothing smaller is left to try.
+        failedAt(VideoSetup.STEPS)
         return false
     }
 
@@ -351,6 +383,13 @@ internal class PhoneVideo(
         pacer.delay(clock(), room)?.let { timer.postDelayed(tickTask, it) }
     }
 
+    /** A keyframe was asked for and an ordinary picture came out: it is asked for again, a little later. */
+    private fun keyframeMissed(session: Session) {
+        if (current !== session) return
+        pacer.wantKeyframeFrom(clock() + KEY_RETRY_MS)
+        tick()
+    }
+
     /** A picture could not be sent, so the next one has to be a keyframe, unless one was drawn after it. */
     private fun keyframeLost(session: Session, ptsUs: Long) {
         if (current !== session || ptsUs < session.lastKeyPtsUs) return
@@ -390,18 +429,25 @@ internal class PhoneVideo(
     private fun fail(session: Session, reason: String, detail: String?) {
         if (current !== session) return
         stop()
-        failed()
+        // It started at this size and failed at it: the next try is at the next size down.
+        failedAt(session.step + 1)
         onFailed(reason, detail)
     }
 
-    private fun failed() {
-        if (++failures >= MAX_FAILURES) gaveUp = true
+    /** Video has failed just now, and [next] is the first size worth trying after it. */
+    private fun failedAt(next: Int) {
+        step = maxOf(step, next)
+        failedAt = clock()
     }
 
     companion object {
-        const val MAX_FAILURES = 2
         const val FIRST_PICTURE_MS = 3_000L
         const val STALL_MS = 2_000L
         const val KEY_TRIES = 8
+        const val KEY_PATIENCE_MS = 2_000L
+        const val KEY_RETRY_MS = 250L
+
+        /** How long after its last failure video is tried from the top again. The PC's rule is the same. */
+        const val FORGET_MS = 10 * 60_000L
     }
 }

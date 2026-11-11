@@ -94,6 +94,17 @@ internal class VideoPacer(
     }
 
     /**
+     * A keyframe is wanted, but not before [time]: one was asked for and an
+     * ordinary picture came out, and asking again with every picture would
+     * have a still screen encoded thirty times a second for nothing.
+     */
+    fun wantKeyframeFrom(time: Long) {
+        if (keyWanted) return
+        keyWanted = true
+        keyNotBefore = time
+    }
+
+    /**
      * The next picture drawn, for whatever reason, is to be a keyframe. No
      * picture is drawn for the sake of it: for when a picture went unsent
      * and there may be nobody to send another to.

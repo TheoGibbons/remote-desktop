@@ -194,13 +194,18 @@ class ScreenOutputsTest {
         assertTrue(target.drawing)
         assertEquals(0, openPipes)
 
-        // The second failure is the last try.
-        assertEquals("The video encoder could not be started.", point(video = true)!!.first)
+        // Nothing would start at any size, so video is given up: it is not even tried.
         assertTrue(video.gaveUp)
         refuse = false
         assertNull(point(video = true))
         assertEquals("reader 1080x2340", mirroredInto)
         assertTrue(pipes.isEmpty())
+
+        // Ten minutes later it is.
+        timer.advance(PhoneVideo.FORGET_MS)
+        assertNull(point(video = true))
+        assertEquals(1, openPipes)
+        assertTrue(mirroredInto === pipe)
     }
 
     @Test

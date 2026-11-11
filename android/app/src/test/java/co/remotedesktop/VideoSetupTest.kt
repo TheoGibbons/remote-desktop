@@ -43,6 +43,30 @@ class VideoSetupTest {
     }
 
     @Test
+    fun aSizeIsAskedAboutBothWaysRound() {
+        // As many encoders list themselves: up to 4096 wide and 2304 high, a picture on its side.
+        val sideways = VideoSetup.Encoder("hw", hardware = true, constantBitrate = true) { w, h -> w <= 4096 && h <= 2304 }
+        // An upright phone is 2,340 high. Read strictly it would be sent at three quarters size.
+        assertEquals(listOf(1080 to 2340, 810 to 1754, 540 to 1170),
+            VideoSetup.attempts(1080, 2340, listOf(sideways)).map { it.width to it.height })
+        assertEquals(2340 to 1080, VideoSetup.attempts(2340, 1080, listOf(sideways)).first().let { it.width to it.height })
+        // One that takes it neither way is still passed over.
+        val small = VideoSetup.Encoder("small", hardware = true, constantBitrate = true) { w, h -> w <= 1920 && h <= 1088 }
+        assertEquals(listOf(810 to 1754, 540 to 1170),
+            VideoSetup.attempts(1080, 2340, listOf(small)).map { it.width to it.height })
+    }
+
+    @Test
+    fun theSizesCanBeTakenUpPartOfTheWayDown() {
+        val hw = encoder("hw", hardware = true)
+        assertEquals(listOf(0, 1, 2), VideoSetup.attempts(1080, 2340, listOf(hw)).map { it.step })
+        assertEquals(listOf(810 to 1754, 540 to 1170),
+            VideoSetup.attempts(1080, 2340, listOf(hw), fromStep = 1).map { it.width to it.height })
+        assertEquals(listOf(2), VideoSetup.attempts(1080, 2340, listOf(hw), fromStep = 2).map { it.step })
+        assertTrue(VideoSetup.attempts(1080, 2340, listOf(hw), fromStep = VideoSetup.STEPS).isEmpty())
+    }
+
+    @Test
     fun anEncoderThatCannotDoASizeIsNotTriedAtIt() {
         val small = encoder("small-hw", hardware = true, upTo = 1920)
         assertEquals(listOf(810 to 1754, 540 to 1170),

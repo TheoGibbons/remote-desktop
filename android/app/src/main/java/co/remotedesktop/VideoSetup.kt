@@ -24,13 +24,22 @@ internal object VideoSetup {
     /** The picture at full size, then smaller, for an encoder that refuses or fails at the size before. */
     private val SCALES = listOf(1.0, 0.75, 0.5)
 
-    /** One of the phone's encoders. [takes] says whether it can do a size at [FPS] pictures a second. */
+    /** How many sizes there are to try: full size is step 0. */
+    val STEPS = SCALES.size
+
+    /**
+     * One of the phone's encoders. [takes] says whether it lists a size as
+     * one it can do at [FPS] pictures a second.
+     */
     class Encoder(val name: String, val hardware: Boolean, val constantBitrate: Boolean,
                   val takes: (width: Int, height: Int) -> Boolean)
 
-    /** One way of setting an encoder up. They are tried in turn until one starts. */
+    /**
+     * One way of setting an encoder up. They are tried in turn until one starts.
+     * @param step which of the sizes this is: 0 for full size.
+     */
     data class Attempt(val encoder: String, val width: Int, val height: Int, val bitrate: Int,
-                       val constantBitrate: Boolean)
+                       val constantBitrate: Boolean, val step: Int = 0)
 
     /** H.264 pictures have even sides. */
     fun even(side: Int): Int = (side and 1.inv()).coerceAtLeast(2)
@@ -40,21 +49,32 @@ internal object VideoSetup {
 
     /**
      * What to try for a screen mirrored at [width] x [height]: every size in
-     * turn, and at each size the hardware encoders before the software ones.
-     * Empty when the phone has nothing that will do, and then pictures stay JPEGs.
+     * turn from [fromStep] on, and at each size the hardware encoders before
+     * the software ones. Empty when the phone has nothing that will do, and
+     * then pictures stay JPEGs.
+     *
+     * An encoder is asked about a size both ways round. Many list their
+     * limits for a picture on its side (so wide, and at most so high) and
+     * yet encode the same picture upright; going by the list alone, a phone
+     * held upright would be sent smaller than it need be. If such an encoder
+     * really cannot do it, it says so when it is started, and the next is tried.
      */
-    fun attempts(width: Int, height: Int, encoders: List<Encoder>): List<Attempt> {
+    fun attempts(width: Int, height: Int, encoders: List<Encoder>, fromStep: Int = 0): List<Attempt> {
         val inOrder = encoders.filter { it.hardware } + encoders.filter { !it.hardware }
         val attempts = ArrayList<Attempt>()
-        for (scale in SCALES) {
+        for ((step, scale) in SCALES.withIndex()) {
+            if (step < fromStep) continue
             val w = even((width * scale).toInt())
             val h = even((height * scale).toInt())
             for (encoder in inOrder) {
                 if (!encoder.hardware && maxOf(w, h) > SOFTWARE_LONG_SIDE) continue
-                val takes = try { encoder.takes(w, h) } catch (_: RuntimeException) { false }
-                if (takes) attempts += Attempt(encoder.name, w, h, bitrate(w, h), encoder.constantBitrate)
+                if (takes(encoder, w, h) || takes(encoder, h, w))
+                    attempts += Attempt(encoder.name, w, h, bitrate(w, h), encoder.constantBitrate, step)
             }
         }
         return attempts
     }
+
+    private fun takes(encoder: Encoder, width: Int, height: Int): Boolean =
+        try { encoder.takes(width, height) } catch (_: RuntimeException) { false }
 }
