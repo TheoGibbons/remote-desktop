@@ -203,13 +203,16 @@ internal sealed unsafe class H264Decoder : IDisposable
             if (hr < 0) { why = $"no H.264 decoder (0x{hr:X8})"; return null; }
             mft = new IMFTransform(raw);
 
-            // Before the types, or they are not looked at.
-            var attributes = mft.Attributes;
-            // A picture out for every access unit in. Without it the decoder
-            // keeps some thirty pictures back, a second of delay.
-            attributes.Set(CodecApiLowLatencyMode, 1u);
-            attributes.Set(CodecApiMaxCodedWidth, (uint)maxCodedWidth);
-            attributes.Set(CodecApiMaxCodedHeight, (uint)maxCodedHeight);
+            // Before the types, or they are not looked at. Reading Attributes
+            // takes a reference on the store each time, which is ours to give back.
+            using (var attributes = mft.Attributes)
+            {
+                // A picture out for every access unit in. Without it the decoder
+                // keeps some thirty pictures back, a second of delay.
+                attributes.Set(CodecApiLowLatencyMode, 1u);
+                attributes.Set(CodecApiMaxCodedWidth, (uint)maxCodedWidth);
+                attributes.Set(CodecApiMaxCodedHeight, (uint)maxCodedHeight);
+            }
 
             // No size on the input type: the decoder takes it from the
             // stream, at the start and whenever it changes.

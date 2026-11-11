@@ -190,7 +190,9 @@ public sealed class H264Encoder : IDisposable
         int width, int height, int bitrate, int fps)
     {
         IMFMediaEventGenerator? events = null;
-        var attributes = mft.Attributes;
+        // Reading Attributes takes a reference on the store each time, which
+        // is ours to give back.
+        using var attributes = mft.Attributes;
         if (attributes != null)
         {
             // An async MFT stays locked until this is set, and every call on it
@@ -272,7 +274,12 @@ public sealed class H264Encoder : IDisposable
         {
             // Best effort: where it is ignored, the GOP length still bounds the
             // wait for a recovery point.
-            try { _mft.Attributes?.Set(CodecAvEncVideoForceKeyFrame, 1u); } catch { }
+            try
+            {
+                using var attributes = _mft.Attributes;
+                attributes?.Set(CodecAvEncVideoForceKeyFrame, 1u);
+            }
+            catch { }
         }
 
         BgraToNv12(frame, _nv12, Width, Height);
