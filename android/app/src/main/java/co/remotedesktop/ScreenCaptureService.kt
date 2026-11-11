@@ -21,11 +21,14 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
 import android.view.WindowManager
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
 /**
@@ -75,6 +78,26 @@ class ScreenCaptureService : Service() {
 
         fun setStreaming(on: Boolean) { instance?.updateStreaming(on) }
 
+        /** Whether an approved device is viewing this phone. Main thread. */
+        fun setViewed(on: Boolean) {
+            val service = instance ?: return
+            service.awake.viewed(on, SystemClock.uptimeMillis())
+            service.holdScreen()
+        }
+
+        /** A message from a device that is viewing, as it is passed on to be acted on. Any thread. */
+        fun viewerActed(msg: JSONObject) {
+            val service = instance ?: return
+            val lock = msg.optString("type") == "lock"
+            if (!lock && !InputAccessibilityService.wakesPhone(msg)) return
+            // Let go before the screen is turned off, not a moment after.
+            if (lock) service.releaseScreen()
+            service.main.post {
+                if (lock) service.awake.locked() else service.awake.input(SystemClock.uptimeMillis())
+                service.holdScreen()
+            }
+        }
+
         fun resendScreenInfo() {
             instance?.let { if (it.streaming && PhoneScreenCapture.maySendFrames(it)) it.sendScreenInfo() }
         }
@@ -87,6 +110,12 @@ class ScreenCaptureService : Service() {
     @Volatile private var streaming = false
     @Volatile private var streamGeneration = 0L
     private var reusableBitmap: Bitmap? = null
+
+    // Main thread. The screen is held on while the phone is viewed in smooth
+    // sharing, because a phone that sleeps and locks ends it (see KeepAwake).
+    private val main = Handler(Looper.getMainLooper())
+    private val awake = KeepAwake()
+    private var screenLock: PowerManager.WakeLock? = null
 
     private val maxFps = 10
     // Capture thread only. The screen produces a picture only when it changes,
@@ -150,6 +179,7 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         instance = null
+        releaseScreen()
         notifyStateChanged(this)
         streaming = false
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(displayListener)
@@ -158,6 +188,43 @@ class ScreenCaptureService : Service() {
         projection?.stop()
         captureThread?.quitSafely()
         super.onDestroy()
+    }
+
+    /**
+     * Takes, keeps or lets go of the screen as [awake] says. The lock times
+     * out by itself when a viewer has been idle long enough, so nothing has
+     * to come back here for that. Dimmed is enough: a viewer's touch
+     * brightens it as a finger would.
+     */
+    private fun holdScreen() {
+        val ms = awake.holdFor(SystemClock.uptimeMillis())
+        if (ms == null) {
+            releaseScreen()
+            return
+        }
+        try {
+            val lock = screenLock ?: run {
+                val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+                @Suppress("DEPRECATION")
+                power.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ON_AFTER_RELEASE,
+                    "remotedesktop:smooth").also {
+                    // Each take replaces the one before, and its time limit with it.
+                    it.setReferenceCounted(false)
+                    screenLock = it
+                }
+            }
+            lock.acquire(ms)
+        } catch (_: RuntimeException) {
+            // The phone sleeps on its own timeout, as it did before this existed.
+        }
+    }
+
+    private fun releaseScreen() {
+        try {
+            screenLock?.let { if (it.isHeld) it.release() }
+        } catch (_: RuntimeException) {
+            // Already let go by its time limit.
+        }
     }
 
     private fun updateStreaming(on: Boolean) {

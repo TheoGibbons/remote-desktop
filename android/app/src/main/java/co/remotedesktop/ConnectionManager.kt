@@ -570,7 +570,11 @@ object ConnectionManager {
             // The session key alone must not grant control.
             "tap", "swipe", "touch", "pinch", "back", "homebtn", "recents", "notifications", "text", "key",
             "quick-settings", "screenshot", "lock" ->
-                if (mayControl(from)) InputAccessibilityService.instance?.handle(msg)
+                if (mayControl(from)) {
+                    // A viewer's input keeps the screen on in smooth sharing, and its Lock lets go.
+                    if (PhoneScreenCapture.isViewing(from)) ScreenCaptureService.viewerActed(msg)
+                    InputAccessibilityService.instance?.handle(msg)
+                }
 
             // The rest of a viewer's menu. Not input: these never wake the phone.
             "volume", "get-phone-state" ->

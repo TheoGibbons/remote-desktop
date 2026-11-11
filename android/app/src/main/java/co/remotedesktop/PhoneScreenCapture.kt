@@ -111,6 +111,8 @@ object PhoneScreenCapture {
             forgetGone()
             // A screen turned for a viewer goes back to the phone's own way with the last of them.
             if (viewers.isEmpty()) InputAccessibilityService.instance?.releaseRotation()
+            // The screen is held on for smooth sharing only while someone is viewing.
+            ScreenCaptureService.setViewed(viewers.isNotEmpty())
             val active = maySendFrames(context)
             // No pictures for now, e.g. while a device waits to be approved. The stream is over.
             if (!active) pauseStream()
