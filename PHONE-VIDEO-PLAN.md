@@ -388,7 +388,9 @@ Android lets an app whose Accessibility service the system has bound start an ac
 **1.4 The menu row.** Built: `SmoothVideo` in `PhoneMenu.cs`, and the row in `PhoneViewWindow`.
 A *Smooth video* row in the viewer's `⋯` menu, shown when `screen-info` carries `smooth` from a phone this PC has approved, and greyed when it says `unavailable`. Its tooltip reads: "Asks the phone to share its screen as video. Approve the prompt on the phone; you can click it here. If the phone is on its side, scroll the prompt up to reach its button." Choosing it sends `request-smooth`. The prompt then appears in the picture and can be clicked like anything else. On, the row is ticked, and choosing it sends `stop-smooth`: Android 15+ blanks password fields and one-time codes during screen sharing, so there are moments to switch back. Each `smooth-status` is shown as a toast, in the phone's words where it gave some, and a phone that says nothing for 5 s is reported. Like everything in that menu, the row does not take keyboard focus.
 
-Not built: the same row in the phone's own viewer of another phone (`PhoneViewerActivity`). It ignores `smooth-status`.
+Not built:
+- The same row in the phone's own viewer of another phone (`PhoneViewerActivity`). It ignores `smooth-status`.
+- A row for a phone on Android 10 or earlier that is not yet sharing. Such a phone has no other way to show its screen, so it sends no picture and no `screen-info`, and the PC never learns that it could ask. Smooth sharing still has to be turned on at that phone, as before.
 
 **1.5 Keep the phone awake while it is viewed in smooth sharing.** Built: `KeepAwake` (a plain class) and a screen wake lock in `ScreenCaptureService`. Agreed by Theo on 2026-11-10, with the 10-minute limit.
 On Android 15 QPR1 and later, a phone that sleeps on its usual timeout and locks ends smooth sharing, and smooth sharing cannot be started again until the phone is unlocked and the prompt approved.

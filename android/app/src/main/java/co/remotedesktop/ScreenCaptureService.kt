@@ -143,6 +143,10 @@ class ScreenCaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundWithNotif()
         ConnectionManager.start(applicationContext)
+        // Already sharing. Android's prompt can be up twice, once asked for by a
+        // viewer and once from the Permissions screen, and both can be approved.
+        // A second capture beside the first would end them both.
+        if (instance === this) return START_NOT_STICKY
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED
         @Suppress("DEPRECATION")
