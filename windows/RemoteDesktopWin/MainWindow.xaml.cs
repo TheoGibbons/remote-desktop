@@ -748,7 +748,8 @@ public partial class MainWindow : Window
 
     private void OnJsonReceived(JsonNode msg)
     {
-        var type = msg["type"]?.GetValue<string>();
+        // On the socket thread nothing may throw: a type that is not text is no type.
+        var type = msg["type"] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
         // What a phone says about its stream is read here, on the socket
         // thread, where it is still in order with the frames behind it. The
         // window hears the rest of the message later, like any other.

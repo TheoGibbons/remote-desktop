@@ -363,57 +363,77 @@ public class WsClient : IDisposable
                 ms.Write(buffer, 0, result.Count);
             } while (!result.EndOfMessage);
 
-            var data = ms.ToArray();
-            if (result.MessageType == WebSocketMessageType.Binary)
-            {
-                if (data.Length < 1) continue;
-                byte frameType = data[0];
-                var payload = Crypto.Decrypt(_encKey, data[1..], frameType);
-                if (payload == null) continue; // drop undecryptable frames
-                var deliver = new byte[1 + payload.Length];
-                deliver[0] = frameType;
-                Buffer.BlockCopy(payload, 0, deliver, 1, payload.Length);
-                BinaryReceived?.Invoke(deliver);
-                continue;
-            }
-
-            var node = JsonNode.Parse(Encoding.UTF8.GetString(data));
-            if (node == null) continue;
-            var type = node["type"]?.GetValue<string>();
-
-            if (type == "enc")
-            {
-                var blob = Convert.FromBase64String(node["d"]?.GetValue<string>() ?? "");
-                var pt = Crypto.Decrypt(_encKey, blob, Crypto.ChJson);
-                if (pt == null) continue;
-                var inner = JsonNode.Parse(Encoding.UTF8.GetString(pt));
-                if (inner == null) continue;
-                var from = node["from"]?.GetValue<string>();
-                if (from != null) inner["from"] = from;
-                JsonReceived?.Invoke(inner);
-                continue;
-            }
-
-            // Cleartext server messages.
-            if (type == "welcome")
-            {
-                MyId = node["id"]?.GetValue<string>();
-                RelayAddressesBinary = node["binaryTo"] is JsonValue routes &&
-                    routes.TryGetValue<bool>(out var yes) && yes;
-                _backoffMs = MinBackoffMs; // joined the session: this URL is working
-                StateChanged?.Invoke("connected");
-            }
-            else if (type == "error")
-            {
-                // The relay sends this immediately before closing, so hold on to it:
-                // it is more specific than the close code that follows.
-                var code = node["code"]?.GetValue<string>();
-                var message = node["message"]?.GetValue<string>();
-                _lastCloseReason = string.IsNullOrWhiteSpace(message) ? code : $"{code}: {message}";
-            }
-            JsonReceived?.Invoke(node);
+            Dispatch(ms.ToArray(), result.MessageType == WebSocketMessageType.Binary);
         }
     }
+
+    /// <summary>
+    /// Takes one whole message off the socket: decrypts it and hands it on.
+    /// Never throws. One message that can't be read, or that something
+    /// downstream chokes on, is one message lost. Let out of here it would
+    /// end the receive loop, and with it the connection: any device in the
+    /// session could then knock this PC off the relay at will.
+    /// </summary>
+    internal void Dispatch(byte[] data, bool binary)
+    {
+        try { Handle(data, binary); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Skipped a message: {ex.Message}"); }
+    }
+
+    private void Handle(byte[] data, bool binary)
+    {
+        if (binary)
+        {
+            if (data.Length < 1) return;
+            byte frameType = data[0];
+            var payload = Crypto.Decrypt(_encKey, data[1..], frameType);
+            if (payload == null) return; // drop undecryptable frames
+            var deliver = new byte[1 + payload.Length];
+            deliver[0] = frameType;
+            Buffer.BlockCopy(payload, 0, deliver, 1, payload.Length);
+            BinaryReceived?.Invoke(deliver);
+            return;
+        }
+
+        // null, a number and a list are JSON too, and none is a message.
+        if (JsonNode.Parse(Encoding.UTF8.GetString(data)) is not JsonObject node) return;
+        var type = Text(node["type"]);
+        var from = Text(node["from"]);
+
+        if (type == "enc")
+        {
+            var blob = Convert.FromBase64String(Text(node["d"]) ?? "");
+            var pt = Crypto.Decrypt(_encKey, blob, Crypto.ChJson);
+            if (pt == null) return;
+            if (JsonNode.Parse(Encoding.UTF8.GetString(pt)) is not JsonObject inner) return;
+            if (from != null) inner["from"] = from;
+            JsonReceived?.Invoke(inner);
+            return;
+        }
+
+        // Cleartext server messages.
+        if (type == "welcome")
+        {
+            MyId = Text(node["id"]);
+            RelayAddressesBinary = node["binaryTo"] is JsonValue routes &&
+                routes.TryGetValue<bool>(out var yes) && yes;
+            _backoffMs = MinBackoffMs; // joined the session: this URL is working
+            StateChanged?.Invoke("connected");
+        }
+        else if (type == "error")
+        {
+            // The relay sends this immediately before closing, so hold on to it:
+            // it is more specific than the close code that follows.
+            var code = Text(node["code"]);
+            var message = Text(node["message"]);
+            _lastCloseReason = string.IsNullOrWhiteSpace(message) ? code : $"{code}: {message}";
+        }
+        JsonReceived?.Invoke(node);
+    }
+
+    /// <summary>A field's text, or null if it is missing or not text.</summary>
+    private static string? Text(JsonNode? node) =>
+        node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     /// <summary>
     /// Why the relay hung up. It rejects connections with application close codes

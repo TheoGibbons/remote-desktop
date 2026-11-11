@@ -141,6 +141,32 @@ internal static class PrivacyLifecycleTests
             // A malformed message is dropped, not rethrown into the socket loop.
             Invoke(host, "OnJson", new JsonObject { ["type"] = 5, ["from"] = peer });
             Console.WriteLine("PASS: clipboard requests need an approved peer and the control switch, and bad messages are dropped");
+
+            // Messages as they come off the socket, on a thread that is not
+            // the window's. None of these may get out as an exception: the
+            // receive loop would end, and the PC would drop off the relay
+            // each time any device in the session sent one.
+            // The control switch stays off, so the clip-get at the end is refused and presses no keys.
+            sent.Clear();
+            foreach (var text in new[]
+            {
+                "null", "5", "[1]", "\"x\"", "{", "", "{\"type\":5}", "{\"type\":[\"welcome\"]}", "{\"type\":\"enc\"}",
+                "{\"type\":\"enc\",\"d\":5}", "{\"type\":\"enc\",\"d\":\"not base64!\"}", "{\"type\":\"enc\",\"d\":\"AAAA\"}",
+                "{\"type\":\"enc\",\"d\":\"AAAA\",\"from\":7}",
+            })
+                OffSocket(text, binary: false);
+            // Encrypted with the session key, as an unapproved device in the session can, and still no message.
+            foreach (var inner in new[] { "null", "[1]", "7", "not json", "{\"type\":5}", "{\"type\":{\"a\":1}}", "{\"type\":\"screen-info\",\"stream\":5}",
+                         "{\"type\":\"fs-begin\",\"xferId\":\"x\"}", "{\"type\":\"peer-joined\"}", "{\"type\":\"screen-info\",\"width\":\"wide\"}" })
+                OffSocket(Sealed(inner, "unapproved"), binary: false);
+            foreach (var frame in new[] { Array.Empty<byte>(), new byte[] { 1 }, new byte[] { 2, 0, 0 }, new byte[] { 5, 1, 2, 3 }, new byte[40],
+                         Frame(2, new byte[2]), Frame(3, new byte[3]), Frame(5, new byte[5]), Frame(1, new byte[4]) })
+                OffSocket(frame, binary: true);
+            // And the next good one is still heard.
+            OffSocket(Sealed("{\"type\":\"clip-get\",\"reqId\":\"6\"}", peer), binary: false);
+            if (sent.Count != 1 || sent[0]["reqId"]?.GetValue<string>() != "6")
+                throw new Exception("A message that makes no sense stopped the ones after it");
+            Console.WriteLine("PASS: a message that makes no sense is skipped on the socket's thread, and the next one is heard");
         }
         finally
         {
@@ -152,6 +178,37 @@ internal static class PrivacyLifecycleTests
             host.Close();
             foreach (Window window in app.Windows.Cast<Window>().ToArray()) window.Close();
             Directory.Delete(storage, recursive: true);
+        }
+
+        // What the relay hands this PC: an envelope round a message encrypted with the session key.
+        byte[] Sealed(string inner, string from) => System.Text.Encoding.UTF8.GetBytes(new JsonObject
+        {
+            ["type"] = "enc",
+            ["from"] = from,
+            ["d"] = Convert.ToBase64String(Crypto.Encrypt(Field<byte[]>(ws, "_encKey"), System.Text.Encoding.UTF8.GetBytes(inner), Crypto.ChJson)),
+        }.ToJsonString());
+
+        byte[] Frame(byte type, byte[] payload) => [type, .. Crypto.Encrypt(Field<byte[]>(ws, "_encKey"), payload, type)];
+
+        // Hands a message to the socket client on another thread, as the
+        // receive loop does, and lets the window deal with what it posts.
+        void OffSocket(object message, bool binary)
+        {
+            var data = message as byte[] ?? System.Text.Encoding.UTF8.GetBytes((string)message);
+            var done = Task.Run(() => ws.Dispatch(data, binary));
+            while (!done.IsCompleted) Pump(5);
+            if (done.IsFaulted) throw new Exception("A message got out of the socket client as an exception", done.Exception);
+            Pump(20);
+        }
+
+        void Pump(int ms)
+        {
+            var frame = new System.Windows.Threading.DispatcherFrame();
+            var timer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Background)
+                { Interval = TimeSpan.FromMilliseconds(ms) };
+            timer.Tick += (_, _) => { timer.Stop(); frame.Continue = false; };
+            timer.Start();
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
         }
 
         void ExpectPrivate(string action)
