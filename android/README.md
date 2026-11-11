@@ -31,6 +31,13 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+A debug build installs beside the release app, not over it. It has its own id
+(`co.remotedesktop.debug`), its own name ("Remote Desktop (debug)") and a
+`-debug` version. Android treats it as a separate app, so on the PC it shows up
+as a separate device with its own identity, and it has to be approved on its
+own. The accessibility service and the other permissions are also separate:
+turn them on for the debug app too.
+
 Public APKs and Play App Bundles use the Gradle `release` build and must be signed. Tagged GitHub
 releases provide the signing values through secrets, compile the production
 relay URL into the app's first-run default, and verify both signatures. The APK

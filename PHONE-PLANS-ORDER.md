@@ -14,21 +14,21 @@ They were written separately on the same day and overlap. This file says what or
 
 One plan at a time, one commit per step, working tree clean between steps.
 
-| # | Step | From | Can be released after it? |
-|---|------|------|---------------------------|
-| 0 | Debug build installs beside the release app (`.debug` id) | Video 0.1 | Nothing for users in it |
-| 1 | Title bar, menu, window fit, `RemoteDesktopWin.PhoneViewTests` | Menu Phase 1 | Yes. Windows only, works with phones on v1.0.53. |
-| 2 | Phone state, volume, Quick settings, Screenshot, Lock | Menu Phase 2 | Yes |
-| 3 | Rotation, and smooth sharing following a turned phone | Menu Phase 3 | Yes |
-| 4 | Docs | Menu Phase 4 | Release |
-| 5 | Wake, `lock-state`, captions, notifications row | Unlock Phase 1 | Yes. No new permission. |
-| 6 | Read the unlock screen, draw the grid or keys on Windows | Unlock Phase 2 | With step 7 |
-| 7 | The same overlay in the phone viewer, docs | Unlock Phase 3 | Release of its own (see below) |
-| 8 | Type `5` frames, readout, baseline, small fixes, idle mirroring, acknowledgements | Video Phase 0, less 0.1 and the rotation half of 0.6 | Yes |
-| 9 | Smooth sharing from the PC | Video Phase 1, after check C2 | Yes |
-| 10 | H.264 | Video Phase 2, after checks C1 and C3 | Yes |
-| 11 | Accessibility pictures through the encoder | Video 4.1 | Yes |
-| 12 | Bitrate steps, then the optional items | Video Phase 3, rest of 4 | Yes |
+| # | Step | From | Can be released after it? | Status |
+|---|------|------|---------------------------|--------|
+| 0 | Debug build installs beside the release app (`.debug` id) | Video 0.1 | Nothing for users in it | Built: debug build is `co.remotedesktop.debug`; not installed on a phone. |
+| 1 | Title bar, menu, window fit, `RemoteDesktopWin.PhoneViewTests` | Menu Phase 1 | Yes. Windows only, works with phones on v1.0.53. |  |
+| 2 | Phone state, volume, Quick settings, Screenshot, Lock | Menu Phase 2 | Yes |  |
+| 3 | Rotation, and smooth sharing following a turned phone | Menu Phase 3 | Yes |  |
+| 4 | Docs | Menu Phase 4 | Release |  |
+| 5 | Wake, `lock-state`, captions, notifications row | Unlock Phase 1 | Yes. No new permission. |  |
+| 6 | Read the unlock screen, draw the grid or keys on Windows | Unlock Phase 2 | With step 7 |  |
+| 7 | The same overlay in the phone viewer, docs | Unlock Phase 3 | Release of its own (see below) |  |
+| 8 | Type `5` frames, readout, baseline, small fixes, idle mirroring, acknowledgements | Video Phase 0, less 0.1 and the rotation half of 0.6 | Yes |  |
+| 9 | Smooth sharing from the PC | Video Phase 1, after check C2 | Yes |  |
+| 10 | H.264 | Video Phase 2, after checks C1 and C3 | Yes |  |
+| 11 | Accessibility pictures through the encoder | Video 4.1 | Yes |  |
+| 12 | Bitrate steps, then the optional items | Video Phase 3, rest of 4 | Yes |  |
 
 Why this order:
 

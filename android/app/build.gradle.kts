@@ -40,6 +40,13 @@ android {
     }
 
     buildTypes {
+        // A debug build installs beside the release app as its own app: its own
+        // id, name and data, so it never replaces the one that is in use.
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            resValue("string", "app_name", "Remote Desktop (debug)")
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
@@ -47,6 +54,7 @@ android {
     }
     buildFeatures {
         buildConfig = true
+        resValues = true
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
