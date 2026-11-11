@@ -21,14 +21,19 @@ import java.util.concurrent.CopyOnWriteArrayList
  * random id, which each viewer is told in a `screen-info` addressed to it
  * before the first frame. With any viewer that has not, everyone gets the
  * bare type 1 JPEG older apps know. See PROTOCOL.md, "Phone frames".
+ *
+ * A stream is JPEG or H.264 from start to end ([StreamFormat]). H.264 comes
+ * from [ScreenCaptureService] while smooth sharing is on and every viewer
+ * can draw it ([sendVideo]); everything else is JPEG ([send]).
  */
 object PhoneScreenCapture {
     /** How the screen is captured, as `screen-info` and `diagnostic-pong` name it. */
     const val ACCESSIBILITY = "accessibility"
     const val SCREEN_SHARE = "screen-share"
 
-    /** The one format this app sends so far, as `codecs` and `codec` name it. */
+    /** What pictures are sent as, as `codecs` and `codec` name it. */
     const val JPEG = "jpeg"
+    const val H264 = "h264"
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -179,6 +184,20 @@ object PhoneScreenCapture {
     private var capture: String? = null
     private var size: Pair<Int, Int>? = null
 
+    /** What the stream's pictures are: [JPEG] or [H264]. */
+    private var codec = JPEG
+
+    /**
+     * An H.264 stream may only go on with a keyframe: it has just started,
+     * or a picture of it could not be sent. Every other picture builds on
+     * the one before it, so until a keyframe comes nothing else is sent.
+     */
+    private var needKey = false
+
+    /** The last keyframe of an H.264 stream: its number, and when it went. */
+    private var lastKeySeq = -1L
+    private var lastKeyAt = 0L
+
     /** What each viewer that offered `codecs` was last told about the stream. */
     private val told = HashMap<String, String>()
 
@@ -201,8 +220,15 @@ object PhoneScreenCapture {
         id
     }
 
+    /** Asks the capture service for a keyframe, or for the screen to be encoded again. Replaced in tests. */
+    internal var askKeyframe: (byViewer: Boolean) -> Unit = { ScreenCaptureService.keyframeWanted(it) }
+    internal var askResend: () -> Unit = { ScreenCaptureService.resendWanted() }
+
     private const val TYPE_1 = "type 1"
     private const val PAUSED = "paused"
+
+    /** How long a keyframe is given to reach a viewer before its asking for one is believed. */
+    private const val KEYFRAME_ON_ITS_WAY_MS = 1_000L
 
     /** The soonest the newest picture is looked at again after a try to send it again found no room. */
     private const val RESEND_CHECK_MS = 100L
@@ -214,19 +240,33 @@ object PhoneScreenCapture {
      * viewer asks, and when the size changes. A viewer on an older app sizes
      * its window on every one, so it is sent no others.
      *
+     * @param video whether what follows is H.264, if every viewer can draw it.
+     * @param always false to tell only the viewers this is news to: those
+     * that offered `codecs`, when the stream is not the one they were told of.
      * @return whether it was said; false when the gate has closed, and the
      * caller still owes it.
      */
-    fun sendScreenInfo(context: Context, width: Int, height: Int, capture: String): Boolean {
+    fun sendScreenInfo(context: Context, width: Int, height: Int, capture: String,
+                       video: Boolean = false, always: Boolean = true): Boolean {
         if (!maySendFrames(context)) return false
         val to = recipients()
         synchronized(streamLock) {
-            val word = settle(to, capture) ?: return false
+            val word = settle(to, capture, video) ?: return false
             size = width to height
-            for (viewer in to) tell(viewer, word, always = true)
+            for (viewer in to) tell(viewer, word, always)
             return true
         }
     }
+
+    /** What each of [to] offered to draw. */
+    private fun offers(to: List<String>) = to.map { viewers[it].orEmpty() }
+
+    /**
+     * Whether pictures would go as H.264 if the phone had it to send: there
+     * is a viewer, and every viewer lists it. [ScreenCaptureService] makes
+     * video while this is so.
+     */
+    fun videoWanted(): Boolean = StreamFormat.of(offers(recipients()), video = true) == StreamFormat.H264
 
     /**
      * Sends one JPEG of the screen to whoever is viewing: as a type 5 frame
@@ -251,7 +291,7 @@ object PhoneScreenCapture {
             // may be over, and then nobody is waiting for it. Or a newer picture went in the
             // instant before this, and the older one sent after it would be what the viewer is left with.
             if (repeatOf != null && last !== repeatOf) return false
-            val word = settle(to, capture) ?: return false
+            val word = settle(to, capture, video = false) ?: return false
             if (repeatOf != null && last !== repeatOf) return false
             size = width to height
             for (viewer in to) tell(viewer, word, always = false)
@@ -271,6 +311,76 @@ object PhoneScreenCapture {
             scheduleResend(now)
             return sent
         }
+    }
+
+    /**
+     * Sends one H.264 picture, a whole access unit, to whoever is viewing,
+     * as a type 5 frame of the current stream. Unlike a JPEG it is never
+     * held back for a full queue: the pictures after it are built on it, so
+     * the time to hold back was before it was encoded ([hasRoom]).
+     *
+     * It is not sent when the gate is closed, or when some viewer cannot
+     * draw H.264: then nobody is being sent video just now, and what comes
+     * next is a new stream. And it is not sent when the stream may only go on
+     * with a keyframe and this is not one: after a stream starts, and after
+     * a picture that the socket would not take.
+     *
+     * @param repeat the same screen as the picture before.
+     * @param resend it was made because the picture before went unacknowledged.
+     * @param capturedAt when the screen was captured, on the uptime clock.
+     */
+    internal fun sendVideo(context: Context, unit: ByteArray, keyframe: Boolean, repeat: Boolean, resend: Boolean,
+                           width: Int, height: Int, capturedAt: Long): VideoSent {
+        if (!maySendFrames(context)) return VideoSent.NOT_SENT
+        val to = recipients()
+        synchronized(streamLock) {
+            if (StreamFormat.of(offers(to), video = true) != StreamFormat.H264) return VideoSent.NOT_SENT
+            val word = settle(to, SCREEN_SHARE, video = true) ?: return VideoSent.NOT_SENT
+            size = width to height
+            for (viewer in to) tell(viewer, word, always = false)
+            if (needKey && !keyframe) return VideoSent.NEEDS_KEYFRAME
+            val now = SystemClock.uptimeMillis()
+            val header = PhoneFrame.Header(stream, nextSeq, keyframe, format = PhoneFrame.H264, repeat = repeat,
+                width = width, height = height, captureMs = capturedAt and 0xFFFFFFFFL)
+            if (!ConnectionManager.sendBinary(Crypto.CH_PHONE, PhoneFrame.build(header, unit), to, always = true)) {
+                // It took no number, so no viewer counts a gap. But the next picture was built on it.
+                needKey = true
+                return VideoSent.NEEDS_KEYFRAME
+            }
+            needKey = false
+            if (keyframe) {
+                lastKeySeq = nextSeq
+                lastKeyAt = now
+            }
+            inFlight.sent(nextSeq, now, to, repeat = resend)
+            nextSeq++
+            noteSent(now)
+            scheduleResend(now)
+            return VideoSent.SENT
+        }
+    }
+
+    /**
+     * `request-keyframe` from a device that is viewing: it lost a frame of
+     * the H.264 stream, or its decoder failed. The next picture encoded is a
+     * keyframe, at most one a second for all viewers together
+     * ([VideoPacer]).
+     *
+     * Dropped when it names a stream other than the one being sent, since a
+     * new stream starts with a keyframe anyway. Dropped too while a keyframe
+     * sent in the last second has not been acknowledged by that viewer: the
+     * request and the keyframe have crossed on the way.
+     */
+    fun onKeyframeRequest(peerId: String, msg: JSONObject) {
+        val named = msg.optString("stream")
+        synchronized(streamLock) {
+            if (stream == 0L || codec != H264) return
+            if (named.isNotEmpty() && PhoneFrame.parseStream(named) != stream) return
+            val onItsWay = lastKeySeq >= 0 && (inFlight.ackedBy(peerId) ?: -1) < lastKeySeq &&
+                SystemClock.uptimeMillis() - lastKeyAt < KEYFRAME_ON_ITS_WAY_MS
+            if (onItsWay) return
+        }
+        askKeyframe(true)
     }
 
     /** Whether every viewer acknowledges what it receives, which is while a type 5 stream is running. */
@@ -312,7 +422,9 @@ object PhoneScreenCapture {
     private val resend = Runnable {
         val context = appContext ?: return@Runnable
         val picture = synchronized(streamLock) {
-            val kept = last?.takeIf { stream != 0L && it.stream == stream } ?: return@Runnable
+            if (stream == 0L) return@Runnable
+            val kept = last?.takeIf { it.stream == stream }
+            if (kept == null && codec != H264) return@Runnable
             val now = SystemClock.uptimeMillis()
             if (!inFlight.resendDue(now) || !ConnectionManager.hasRoomForVideo() || !inFlight.hasRoom(now)) {
                 scheduleResend(now)
@@ -320,7 +432,10 @@ object PhoneScreenCapture {
             }
             kept
         }
-        send(context, picture.jpeg, picture.width, picture.height, picture.capturedAt, picture.capture,
+        // No H.264 picture can be sent a second time: the screen as it is now is encoded again,
+        // as a keyframe, since whatever came after a lost picture could not be drawn either.
+        if (picture == null) askResend()
+        else send(context, picture.jpeg, picture.width, picture.height, picture.capturedAt, picture.capture,
             repeatOf = picture)
     }
 
@@ -329,24 +444,33 @@ object PhoneScreenCapture {
         stream = 0L
         inFlight.reset()
         last = null
+        needKey = false
+        lastKeySeq = -1
         main.removeCallbacks(resend)
     }
 
     /**
      * Chooses the format again for the viewers there are now, and starts or
      * ends the stream to match. A stream starts when pictures can first go as
-     * type 5, and anew when the way the screen is captured changes; it ends
-     * when a viewer that knows only type 1 is among them.
+     * type 5, and anew when the way the screen is captured changes or the
+     * pictures change between JPEG and H.264; it ends when a viewer that
+     * knows only type 1 is among them.
      *
+     * @param video whether the sender has H.264 in hand. It still goes as
+     * JPEG's stream, or none, if some viewer cannot draw it.
      * @return what viewers are to be told, or null when there is nobody to send to.
      */
-    private fun settle(to: List<String>, capture: String): String? {
+    private fun settle(to: List<String>, capture: String, video: Boolean): String? {
         if (to.isEmpty()) return null
-        if (!to.all { JPEG in viewers[it].orEmpty() }) endStream()
-        else if (stream == 0L || this.capture != capture) {
+        val format = StreamFormat.of(offers(to), video)
+        if (format == StreamFormat.TYPE_1) endStream()
+        else if (stream == 0L || this.capture != capture || codec != format.codec) {
             endStream()
             stream = newStreamId()
             nextSeq = 0
+            codec = format.codec ?: JPEG
+            // An H.264 stream starts with a keyframe, whatever the encoder was in the middle of.
+            needKey = format == StreamFormat.H264
         }
         this.capture = capture
         return if (stream == 0L) TYPE_1 else PhoneFrame.streamHex(stream)
@@ -363,6 +487,10 @@ object PhoneScreenCapture {
         val smooth = appContext?.let { SmoothPrompt.offer(it) }
         val key = "$word $capture $smooth"
         if (!always && (!offered || told[viewer] == key)) return
+        // A viewer that comes to an H.264 stream part of the way through cannot draw
+        // anything until a keyframe comes, so one is made for it.
+        if (offered && told[viewer] != key && word != TYPE_1 && word != PAUSED && codec == H264 && nextSeq > 0)
+            askKeyframe(false)
         if (offered) told[viewer] = key
         val msg = JSONObject().put("type", "screen-info")
         size?.let { (width, height) -> msg.put("width", width).put("height", height) }
@@ -373,7 +501,7 @@ object PhoneScreenCapture {
             when (word) {
                 TYPE_1 -> Unit
                 PAUSED -> msg.put("paused", true)
-                else -> msg.put("stream", word).put("codec", JPEG)
+                else -> msg.put("stream", word).put("codec", codec)
             }
         }
         ConnectionManager.sendJson(msg.put("to", viewer))
@@ -432,12 +560,14 @@ object PhoneScreenCapture {
     fun pong(nonce: Long, queueBytes: Long): JSONObject = synchronized(streamLock) {
         val now = SystemClock.uptimeMillis()
         val lastSecond = noteSent()
+        val video = stream != 0L && codec == H264
         JSONObject().put("type", "diagnostic-pong")
             .put("nonce", nonce)
             .put("hostTimeMs", now)
             .put("hostQueueBytes", queueBytes)
-            .put("codec", JPEG)
+            .put("codec", if (video) H264 else JPEG)
             .put("capture", if (ScreenCaptureService.isRunning) SCREEN_SHARE else ACCESSIBILITY)
             .put("fps", lastSecond)
+            .apply { if (video) ScreenCaptureService.videoBitrate?.let { put("bitrate", it) } }
     }
 }

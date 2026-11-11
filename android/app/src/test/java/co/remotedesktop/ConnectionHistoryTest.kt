@@ -273,6 +273,43 @@ class ConnectionHistoryTest {
         }
     }
 
+    @Test
+    fun videoGoingBackToPicturesIsALineInTheHistoryAndNoConnectionProblem() {
+        val now = ShadowSystem.currentTimeMillis()
+        val drop = ConnectionLog.Entry(ConnectionLog.Kind.LOST, now - 5_000, "The connection was cut",
+            "SocketException: Connection reset", "Wi-Fi", durationMs = 55_000)
+        fun video(at: Long) = ConnectionLog.Entry(ConnectionLog.Kind.VIDEO, at, "The video encoder stopped working.",
+            "android.media.MediaCodec\$CodecException: Error 0xffffffe0")
+        ConnectionLog.add(drop)
+        ConnectionLog.add(video(now - 1_000))
+        // The phone is still offline for the reason it was; the video line says nothing about that.
+        assertEquals(drop, ConnectionLog.currentProblem())
+        assertEquals(drop, ConnectionLog.lastDrop())
+        ConnectionLog.add(ConnectionLog.Entry(ConnectionLog.Kind.CONNECTED, now - 500, network = "Wi-Fi"))
+        ConnectionLog.add(video(now))
+        assertNull(ConnectionLog.currentProblem())
+
+        // It is kept across a restart like the rest.
+        ConnectionLog::class.java.getDeclaredField("file").apply { isAccessible = true }.set(ConnectionLog, null)
+        ConnectionLog.init(context)
+        assertEquals(video(now), ConnectionLog.entries().first())
+
+        val at = java.time.Instant.parse("2026-11-01T09:56:25Z").toEpochMilli()
+        assertEquals("2026-11-01 02:56:25 MST (09:56:25 UTC)  Smooth video went back to pictures. " +
+            "The video encoder stopped working. [android.media.MediaCodec\$CodecException: Error 0xffffffe0]",
+            ConnectionLog.toText(listOf(video(at)), TimeZone.getTimeZone("America/Phoenix")))
+
+        val controller = Robolectric.buildActivity(ConnectionHistoryActivity::class.java).setup()
+        try {
+            val texts = texts(controller.get().findViewById<LinearLayout>(R.id.historyGroup))
+            assertEquals("Smooth video went back to pictures", texts.first())
+            assertTrue(texts.contains("The video encoder stopped working."))
+            assertTrue(texts.contains("android.media.MediaCodec\$CodecException: Error 0xffffffe0"))
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
     private fun texts(group: ViewGroup): List<String> {
         val out = mutableListOf<String>()
         fun walk(v: android.view.View) {

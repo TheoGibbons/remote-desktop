@@ -355,12 +355,15 @@ object ConnectionManager {
      *  phone's screen, 2 = file chunk). With [to], a relay that supports it
      *  delivers the frame only to those peers; otherwise, and on older
      *  relays, it is broadcast. */
-    fun sendBinary(frameType: Byte, payload: ByteArray, to: Collection<String>? = null): Boolean {
+    fun sendBinary(frameType: Byte, payload: ByteArray, to: Collection<String>? = null,
+                   always: Boolean = false): Boolean {
         val socket = ws ?: return false
         // Don't queue unboundedly if the link is slower than the frame rate.
         // Video is skipped much sooner: a newer picture replaces it anyway.
+        // Not so an H.264 picture ([always]): the ones after it are built on it,
+        // so it was held back before it was encoded and is never skipped after.
         val video = frameType == Crypto.CH_VIDEO || frameType == Crypto.CH_PHONE
-        if (socket.queueSize() > if (video) VIDEO_QUEUE_LIMIT else 6_000_000L) return false
+        if (!always && socket.queueSize() > if (video) VIDEO_QUEUE_LIMIT else 6_000_000L) return false
         val blob = Crypto.encrypt(encKey, payload, frameType)
         val route = if (!to.isNullOrEmpty() && relayAddressesBinary) addressHeader(to) else null
         val wire = ByteArray(1 + (route?.size ?: 0) + blob.size)
@@ -603,6 +606,8 @@ object ConnectionManager {
             // About the pictures this phone is sending, so only from a device it is sending them to.
             "frame-ack" ->
                 if (mayControl(from) && PhoneScreenCapture.isViewing(from)) PhoneScreenCapture.onFrameAck(from, msg)
+            "request-keyframe" ->
+                if (mayControl(from) && PhoneScreenCapture.isViewing(from)) PhoneScreenCapture.onKeyframeRequest(from, msg)
             "diagnostic-ping" ->
                 if (mayControl(from) && PhoneScreenCapture.isViewing(from))
                     sendJson(PhoneScreenCapture.pong(msg.optLong("nonce", -1), ws?.queueSize() ?: 0).put("to", from))

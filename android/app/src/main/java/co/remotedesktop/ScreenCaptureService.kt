@@ -36,11 +36,19 @@ import java.io.ByteArrayOutputStream
  * granted once per service start (an Android platform requirement); after
  * that, streaming starts/stops instantly on start-view/stop-view messages.
  *
+ * Pictures leave as JPEGs, or as H.264 while every viewer can draw it
+ * ([PhoneScreenCapture.videoWanted]). The screen is mirrored into an image
+ * reader for the one and into a video encoder for the other
+ * ([ScreenOutputs], [PhoneVideo]). If the encoder cannot be started, or
+ * fails, pictures go on as JPEGs and the connection history says why.
+ *
  * Threads: the service's own calls and [updateStreaming] run on the main
  * thread. Pictures arrive, wait their turn and are encoded on the capture
  * thread, which is also where the stream is given a new shape when the screen
- * turns ([followScreen]) and where mirroring is stopped while nobody views
- * ([mirror]); the pacer and the bitmap belong to it. The image
+ * turns ([followScreen]), where the mirror is pointed at the reader or the
+ * encoder ([point]) and where mirroring is stopped while nobody views
+ * ([mirror]); the pacer, the bitmap and everything of the video's but the
+ * encoder's own output belong to it. The image
  * reader is swapped there and closed on the main thread when sharing stops,
  * so [CaptureTarget] makes the two take turns.
  */
@@ -119,6 +127,28 @@ class ScreenCaptureService : Service() {
         fun resendScreenInfo() {
             instance?.let { if (it.streaming && PhoneScreenCapture.maySendFrames(it)) it.sendScreenInfo() }
         }
+
+        /**
+         * The next H.264 picture should be a keyframe: [byViewer] when a
+         * viewer asked, and then at most one a second is made. Any thread.
+         */
+        fun keyframeWanted(byViewer: Boolean) {
+            instance?.run { captureHandler?.post { video.keyframe(byViewer) } }
+        }
+
+        /** The last H.264 picture went unacknowledged: the screen goes again, as a keyframe. Any thread. */
+        fun resendWanted() {
+            instance?.run { captureHandler?.post { video.resend() } }
+        }
+
+        /** Bits a second the video encoder is aiming at, while it runs. */
+        val videoBitrate: Int? get() = instance?.video?.bitrate
+
+        /**
+         * Where encoded pictures go in place of the viewers, for a check on
+         * a real phone that writes the stream to a file. Null in the app.
+         */
+        @Volatile internal var videoSink: ((PhoneVideo.Frame) -> VideoSent)? = null
     }
 
     private var projection: MediaProjection? = null
@@ -128,6 +158,45 @@ class ScreenCaptureService : Service() {
     @Volatile private var streaming = false
     @Volatile private var streamGeneration = 0L
     private var reusableBitmap: Bitmap? = null
+
+    // Whether pictures are to be H.264, as [updateStreaming] last found the viewers.
+    private val wish = VideoWish()
+    // Capture thread: the try at video the encoder was last started for, and
+    // whether the screen is mirrored at all.
+    private var tried = 0
+    private var mirrorOn = true
+
+    private val video = PhoneVideo(
+        encoders = PhoneVideoEncoder::encoders,
+        open = { attempt, width, height, events ->
+            PhoneVideoEncoder(attempt, width, height, checkNotNull(captureHandler), events)
+        },
+        timer = object : PhoneVideo.Timer {
+            override fun post(task: Runnable) { captureHandler?.post(task) }
+            override fun postDelayed(task: Runnable, delayMs: Long) { captureHandler?.postDelayed(task, delayMs) }
+            override fun remove(task: Runnable) { captureHandler?.removeCallbacks(task) }
+        },
+        clock = SystemClock::uptimeMillis,
+        hasRoom = PhoneScreenCapture::hasRoom,
+        send = { frame ->
+            videoSink?.invoke(frame) ?: PhoneScreenCapture.sendVideo(this, frame.bytes, frame.keyframe,
+                frame.repeat, frame.resend, frame.width, frame.height, frame.capturedAtMs)
+        },
+        onFailed = ::videoFailed,
+        screenOn = { (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive },
+    )
+    private val outputs = ScreenOutputs(target, video, object : ScreenOutputs.Display<ImageReader> {
+        override fun toReader(reader: ImageReader?) {
+            virtualDisplay?.surface = reader?.surface
+        }
+
+        override fun toVideo(pipe: VideoPipe) {
+            virtualDisplay?.surface = (pipe as PhoneVideoEncoder).surface
+        }
+    }) { pacer.clear() }
+
+    /** Whether pictures are to be H.264 now: the viewers can all draw it, and this try at it has not failed. */
+    private fun videoMode() = wish.wanted && !video.gaveUp
 
     // The screen is held on while the phone is viewed in smooth sharing,
     // because a phone that sleeps and locks ends it (see KeepAwake).
@@ -141,7 +210,7 @@ class ScreenCaptureService : Service() {
     private val pacer = FramePacer<Image>(1000L / maxFps, retryMs = 100L) { it.close() }
     @Volatile private var captureHandler: Handler? = null
     private val catchUp = Runnable {
-        if (!streaming) pacer.clear()
+        if (!streaming || videoMode()) pacer.clear()
         else pacer.retry(SystemClock.uptimeMillis(), PhoneScreenCapture.hasRoom())?.let(::encodeAndSend)
         scheduleCatchUp()
     }
@@ -153,6 +222,8 @@ class ScreenCaptureService : Service() {
     // moment whenever any device joins the session.
     private val idle = Runnable { if (!streaming) mirror(false) }
     private val resume = Runnable { mirror(true) }
+    // A pause in the pictures: the encoder, if there is one, is kept and nothing is drawn into it.
+    private val pause = Runnable { point() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -212,6 +283,9 @@ class ScreenCaptureService : Service() {
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(displayListener)
         // Waits for a change of shape that is under way; none starts after it.
         target.close { virtualDisplay?.release() }
+        // The encoder and its OpenGL context are let go of on the thread they belong to,
+        // which then ends; nothing of the video's is started after this.
+        captureHandler?.post { outputs.close() }
         projection?.stop()
         captureThread?.quitSafely()
         super.onDestroy()
@@ -256,33 +330,75 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    /**
+     * Pictures are to go out, or to stop. Called again whenever the viewers
+     * change, since that is also when H.264 may become what they all can
+     * draw, or stop being it.
+     */
     private fun updateStreaming(on: Boolean) {
-        if (streaming == on) return
+        val change = wish.update(on, on && PhoneScreenCapture.videoWanted())
+        if (!change.any) return
+        if (change.started || change.stopped) streamGeneration++
         streaming = on
-        streamGeneration++
         val handler = captureHandler
+        handler?.removeCallbacks(idle)
         if (on) {
-            sendScreenInfo()
+            // When only the format changes, viewers on older apps have nothing new to hear.
+            sendScreenInfo(always = change.started)
             // Attaching makes Android draw the screen once straight away, so a
             // viewer has a picture without waiting for something to change.
-            handler?.removeCallbacks(idle)
             handler?.post(resume)
         } else {
-            handler?.removeCallbacks(idle)
+            handler?.post(pause)
             handler?.postDelayed(idle, IDLE_MS)
         }
     }
 
-    /** Starts or stops Android drawing the screen into the reader. Capture thread only. */
+    /** Starts or stops Android drawing the screen into the reader or the encoder. Capture thread only. */
     private fun mirror(on: Boolean) {
-        val display = virtualDisplay ?: return
-        try {
-            if (target.draw(on) { reader -> display.surface = reader?.surface } && !on) pacer.clear()
+        mirrorOn = on
+        point()
+    }
+
+    /**
+     * Points the mirror at what it should be drawn into now: the encoder
+     * while pictures are to be H.264, the reader otherwise, nothing while
+     * nobody views. Capture thread only.
+     */
+    private fun point() {
+        if (virtualDisplay == null) return
+        val (w, h) = outSize()
+        tried = wish.tried()
+        val wasVideo = video.running
+        val failure = try {
+            outputs.point(mirrorOn, videoMode(), streaming, w, h)
         } catch (e: RuntimeException) {
             // E.g. the projection stopped at that moment.
-            Log.w("ScreenCaptureService", "Could not ${if (on) "start" else "stop"} mirroring", e)
+            Log.w("ScreenCaptureService", "Could not point the mirror", e)
+            return
         }
+        if (failure != null) videoFailed(failure.first, failure.second)
+        // An encoder that would only start at a smaller size: the viewers were told the full one.
+        else if (video.running && !wasVideo && video.size != videoSize(w, h) &&
+            streaming && PhoneScreenCapture.maySendFrames(this)) sendScreenInfo()
     }
+
+    /**
+     * Video has failed, or would not start. Pictures go on as JPEGs: the
+     * viewers are told of the new stream, and the reader is given the screen,
+     * which makes Android draw it at once. Capture thread only.
+     */
+    private fun videoFailed(reason: String, detail: String?) {
+        wish.failed(tried)
+        Log.w("ScreenCaptureService", "Video failed: $reason ${detail.orEmpty()}")
+        ConnectionLog.add(ConnectionLog.Entry(ConnectionLog.Kind.VIDEO, System.currentTimeMillis(), reason, detail))
+        if (instance !== this) return
+        point()
+        if (streaming && PhoneScreenCapture.maySendFrames(this)) sendScreenInfo()
+    }
+
+    /** The size H.264 is sent at for a screen mirrored at [w] x [h], unless the encoder wants it smaller. */
+    private fun videoSize(w: Int, h: Int) = VideoSetup.even(w) to VideoSetup.even(h)
 
     private fun screenSize(): Triple<Int, Int, Int> {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -297,9 +413,11 @@ class ScreenCaptureService : Service() {
         return StreamSize.of(w, h)
     }
 
-    private fun sendScreenInfo() {
+    private fun sendScreenInfo(always: Boolean = true) {
         val (w, h) = outSize()
-        PhoneScreenCapture.sendScreenInfo(this, w, h, PhoneScreenCapture.SCREEN_SHARE)
+        val asVideo = videoMode()
+        val (sentW, sentH) = if (asVideo) video.size ?: videoSize(w, h) else w to h
+        PhoneScreenCapture.sendScreenInfo(this, sentW, sentH, PhoneScreenCapture.SCREEN_SHARE, asVideo, always)
     }
 
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -320,6 +438,8 @@ class ScreenCaptureService : Service() {
         val display = virtualDisplay ?: return
         val (w, h) = outSize()
         val (_, _, dpi) = screenSize()
+        // An encoder cannot change size: video at the old shape ends before the mirror takes the new one.
+        val videoStopped = outputs.turning(w, h)
         val changed = try {
             target.replace(w, h,
                 attach = { reader ->
@@ -334,8 +454,10 @@ class ScreenCaptureService : Service() {
             Log.w("ScreenCaptureService", "Could not follow the screen's new shape", e)
             false
         }
-        if (!changed) return
+        if (!changed && !videoStopped) return
         reusableBitmap = null
+        // Video starts again at the new shape, and its first picture is a keyframe.
+        point()
         // The viewer needs the new shape before the first picture in it.
         if (streaming && PhoneScreenCapture.maySendFrames(this)) sendScreenInfo()
     }
@@ -363,7 +485,8 @@ class ScreenCaptureService : Service() {
             // Any key holder can decrypt frames, and older relays broadcast
             // them to the whole session — never send while an unapproved
             // device is present. Resumes automatically once it is approved or leaves.
-            if (!streaming || !PhoneScreenCapture.maySendFrames(this)) {
+            // Nor while pictures are to be H.264: the reader is about to give way to the encoder.
+            if (!streaming || videoMode() || !PhoneScreenCapture.maySendFrames(this)) {
                 image.close()
                 pacer.clear()
                 return@setOnImageAvailableListener
@@ -385,7 +508,7 @@ class ScreenCaptureService : Service() {
     private fun encodeAndSend(image: Image) {
         try {
             val token = streamGeneration
-            if (!streaming || !PhoneScreenCapture.maySendFrames(this)) return
+            if (!streaming || videoMode() || !PhoneScreenCapture.maySendFrames(this)) return
             val plane = image.planes[0]
             val rowPadding = plane.rowStride - plane.pixelStride * image.width
             val bmpW = image.width + rowPadding / plane.pixelStride

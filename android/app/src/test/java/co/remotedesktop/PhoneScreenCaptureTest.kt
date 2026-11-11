@@ -53,7 +53,7 @@ class ShadowPhoneCaptureConnection {
     @Implementation fun sendJson(message: JSONObject) {
         if (message.optString("type") == "screen-info") info.add(message)
     }
-    @Implementation fun sendBinary(channel: Byte, bytes: ByteArray, to: Collection<String>?): Boolean {
+    @Implementation fun sendBinary(channel: Byte, bytes: ByteArray, to: Collection<String>?, always: Boolean): Boolean {
         assertEquals(Companion.channel, channel)
         frames.add(bytes)
         recipients.add(to)

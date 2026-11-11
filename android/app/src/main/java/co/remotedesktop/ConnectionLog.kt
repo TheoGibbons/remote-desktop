@@ -40,6 +40,8 @@ object ConnectionLog {
         /** Closed on purpose on this phone: retry, a settings change, or turned off. */
         STOPPED,
         NETWORK,
+        /** Smooth sharing went back from video to pictures; the reason says why. Nothing about the connection. */
+        VIDEO,
     }
 
     data class Entry(
@@ -84,7 +86,7 @@ object ConnectionLog {
 
     /** The most recent drop or failed attempt, unless a connection has succeeded since. */
     @Synchronized
-    fun currentProblem(): Entry? = entries.lastOrNull { it.kind != Kind.NETWORK }
+    fun currentProblem(): Entry? = entries.lastOrNull { it.kind != Kind.NETWORK && it.kind != Kind.VIDEO }
         ?.takeIf { it.kind == Kind.LOST || it.kind == Kind.FAILED }
 
     /** The most recent drop or failed attempt, however long ago. */
@@ -170,6 +172,7 @@ object ConnectionLog {
         Kind.FAILED -> if (e.count > 1) "Couldn't connect (${e.count} tries)" else "Couldn't connect"
         Kind.STOPPED -> "Disconnected on this phone"
         Kind.NETWORK -> "Network: ${e.reason}"
+        Kind.VIDEO -> "Smooth video went back to pictures"
     }
 
     /** One line per entry, as given (newest first), with UTC alongside this
