@@ -230,6 +230,9 @@ publish alongside the relay.
   Notifications; the phone's media volume, with mute; **Rotation**, which holds
   the phone's screen in portrait or landscape while you view it; Quick
   settings; Screenshot, which then pops up on the PC; and Lock screen
+- ✅ **Smooth video** in that menu asks the phone to share its screen as video.
+  Android's prompt appears in the picture, to be clicked there or tapped on
+  the phone; the same row switches back
 - ✅ Type into the phone with the PC's keyboard (Android 13 and later): Enter,
   Backspace, arrows and Ctrl shortcuts included, Esc for Back, and Ctrl+V pastes
   the PC's clipboard

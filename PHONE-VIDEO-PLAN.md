@@ -1,6 +1,6 @@
 # Faster phone viewing from the PC
 
-Written 2026-11-10 against v1.0.53 (`30009c4`), then checked against the code by an independent review and revised the same day (the review log is the last section). Built so far: all of Phase 0 (step 0.1 first, the rest on 2026-11-11), whose text below now describes what was built. What Phase 0 still lacks is on a phone and by hand: see the end of that phase and section 11. Everything after Phase 0 is still a plan.
+Written 2026-11-10 against v1.0.53 (`30009c4`), then checked against the code by an independent review and revised the same day (the review log is the last section). Built so far: all of Phase 0 (step 0.1 first, the rest on 2026-11-11) and Phase 1 (2026-11-11), whose text below now describes what was built. What they still lack is on a phone and by hand: see the end of each phase and section 11. Everything after Phase 1 is still a plan.
 
 Theo answered the open questions on 2026-11-10; section 12 records the answers, and they changed the order of work (section 3) and added Phase U, which has since become a plan of its own.
 
@@ -200,10 +200,10 @@ Decrypted payload, integers big-endian. The associated data for encryption is th
 | `screen-info` | phone → each viewer | Addressed to each viewer rather than broadcast. New fields: `stream` (16 hex digits; left out when there is no type `5` stream), `codec` (`"jpeg"` or `"h264"`, with `stream`), `capture` (`"accessibility"` or `"screen-share"`), `paused` (true when nothing is being sent for now; see D7). Sent again whenever one of them changes, but only to viewers that sent `codecs`; older viewers get it exactly when they do today, with only the fields it has today, because a v1.0.53 PC resets its window size on every one. | 0, built |
 | `frame-ack` | viewer → phone | New. `stream`, `seq`: the highest sequence number received of that stream. At most one per 30 ms. A frame that arrives inside the 30 ms is acknowledged when they are up, so the last frame of a burst is always acknowledged; step 0.7 would otherwise wait on it for nothing. | 0, built |
 | `diagnostic-ping` / `diagnostic-pong` | viewer ↔ phone | Phones now answer. The pong carries `nonce`, `hostTimeMs` (the clock `captureMs` uses, in full, read as the ping is handled), `hostQueueBytes`, `codec`, `capture`, `fps` (sent in the last second) and `bitrate` (current target, H.264 only; not sent until Phase 2). | 0, built |
-| `screen-info` | phone → each viewer | New field `smooth`: `"on"`, `"available"` or `"unavailable"`. A Phase 0 phone never sends it, so a newer PC shows no button the phone can't act on. | 1 |
-| `request-smooth` | viewer → phone | New. Asks the phone to show its screen-sharing prompt. | 1 |
-| `stop-smooth` | viewer → phone | New. Ends smooth sharing; Accessibility viewing takes over. | 1 |
-| `smooth-status` | phone → viewer | New. `state`: `prompting`, `started`, `declined`, `ended` or `unavailable`, with a human-readable `reason` for the last two, e.g. "the phone was locked" or "Unlock the phone first". | 1 |
+| `screen-info` | phone → each viewer | New field `smooth`: `"on"`, `"available"` or `"unavailable"`, for viewers that sent `codecs`. A Phase 0 phone never sends it, so a newer PC shows no row the phone can't act on. | 1, built |
+| `request-smooth` | viewer → phone | New. Asks the phone to show its screen-sharing prompt. | 1, built |
+| `stop-smooth` | viewer → phone | New. Ends smooth sharing; Accessibility viewing takes over. | 1, built |
+| `smooth-status` | phone → viewer | New. `state`: `prompting`, `started`, `declined`, `ended` or `unavailable`. `reason`, where there is one, is a whole sentence that the viewer shows as it is, e.g. "Unlock the phone first." or "Smooth video ended because the phone was locked." | 1, built |
 | `request-keyframe` | viewer → phone | Phones now honour it, at most one a second in total across viewers. | 2 |
 
 **Who may send them.** The phone acts on `frame-ack`, `diagnostic-ping`, `request-keyframe`, `request-smooth` and `stop-smooth` only from a peer that is currently viewing it. That already means approved, control switched on, and the *Allow other phones* rule passed. They join the list in `PROTOCOL.md` of messages dropped otherwise. A dropped request gets no answer, so a viewer gives up waiting for `smooth-status` after 5 s and says the phone didn't answer.
@@ -356,51 +356,62 @@ What it means for the phases below:
 
 ### Phase 1. Smooth sharing from the PC
 
-Run check C2 (section 7) first.
+Built on 2026-11-11, after check C2 (section 7), whose answers were all yes. The text below describes what was built. Where it differs from the plan as first written, it says so.
 
-**1.1 Ask for the whole screen.**
-`PermissionsActivity.kt:98` calls `createScreenCaptureIntent()` with no arguments. On Android 14+ that offers "a single app", and a single-app share breaks tap positions, which are fractions of the whole screen. Use `createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())` on API 34+, from one helper that Permissions and step 1.2 share. Android's documentation warns that a manufacturer can override this, so C2 checks it on the Samsungs.
+**1.1 Ask for the whole screen.** Built: `ScreenShare.consentIntent`, used by the Permissions screen and by step 1.2.
+`createScreenCaptureIntent()` with no arguments offers "a single app" first on Android 14+, and a single-app share breaks tap positions, which are fractions of the whole screen. On API 34+ the helper passes `MediaProjectionConfig.createConfigForDefaultDisplay()`. On the S26 the prompt then comes up on "Share entire screen" with the other choice greyed out (C2).
 
-**1.2 Show the prompt on request.**
-New `ScreenShareRequestActivity`: a plain `Activity` (as `ReceivedFileActivity` and `CopyToPcActivity` are) with the translucent platform theme, out of recents, in its own task. It must **not** be `noHistory`: Android never delivers an activity result to a `noHistory` activity, and the result is the consent. It launches the consent intent, starts `ScreenCaptureService` with the result, and finishes itself in the result callback.
+**1.2 Show the prompt on request.** Built: `SmoothSharing` (every rule, a plain class), `SmoothPrompt` (carries them out) and `ScreenShareRequestActivity`.
+The activity is a plain `Activity` with the translucent platform theme, out of recents, in its own task. It is **not** `noHistory`: Android never delivers an activity result to a `noHistory` activity, and the result is the consent. It launches the consent intent and hands the result to `SmoothPrompt`, which starts `ScreenCaptureService`.
 
-`ConnectionManager` handles `request-smooth` (5.2 says from whom):
-- phone locked: `smooth-status unavailable`, "Unlock the phone first";
+`ConnectionManager` passes `request-smooth` to `SmoothPrompt` with four facts about the sender, and `SmoothSharing` decides:
+- sender not approved, control off, a phone while *Allow other phones* is off, or not viewing: nothing happens and nothing is answered;
 - already sharing: `started`;
-- otherwise start the activity from the Accessibility service and send `prompting`, then `started` or `declined`.
+- phone locked or asleep: `unavailable`, "Unlock the phone first.";
+- pictures held back because a device is waiting to be approved: `unavailable`, since nobody could see the prompt in a viewer;
+- a prompt is already up: `prompting`, and the sender waits for that one;
+- declined in the last 10 s: `unavailable`, saying so;
+- otherwise the prompt is shown: `prompting`, then `started` or `declined`.
 
-One prompt at a time; a repeat request within 10 s is ignored. Declining, backing out and the screen turning off while the prompt is up must each end in a `smooth-status`.
+Changed from the first plan, on what C2 showed:
+- **A repeat is answered, not ignored.** The plan dropped a repeat within 10 s. Now a request while a prompt is up joins it, and one within 10 s of a refusal is told why, so a viewer never has to guess from silence. Silence is kept for senders that may not ask.
+- **A turned phone does not ask twice.** The activity handles the turn itself (`configChanges`), and if Android makes it anew all the same it remembers that it has asked.
+- **A prompt nobody answers is taken away after a minute**, and the viewer is told `declined`, "Nobody answered the prompt on the phone." C2 saw one stand for two minutes and more.
+- **It is taken away at once when every viewer that asked has stopped viewing**, and nobody is told. It would otherwise wait on an unattended phone for whoever picks it up next.
+- **The screen turning off takes it away too**, with `declined` and the reason.
 
-Android lets an app whose service the system has bound, as it binds the Accessibility service, start an activity with no window open. If a phone blocks it anyway (C2), fall back to a notification, "Your PC is asking for smooth video. Tap to allow", which is always allowed to open the activity.
+Android lets an app whose Accessibility service the system has bound start an activity with no window open (C2: `BAL_ALLOW_TOKEN`). Where that fails, a notification asks instead ("… is asking for smooth video. Tap to see Android's prompt, and choose there."), and the viewer is told `prompting` with "Tap the notification on the phone to see the prompt." That happens when the Accessibility service is off, and when the activity has not appeared two seconds after it was started, since a start Android refuses fails without a word. With notifications off as well, the answer is `unavailable`.
 
-**1.3 Stop on request, and say why it ended.**
-`stop-smooth` stops `ScreenCaptureService`. Whenever smooth sharing ends, the phone sends `smooth-status ended` with a reason: "stopped from the PC", "stopped on the phone", or "the phone was locked" when the lock screen is up at that moment. Android's `onStop` gives no reason itself.
+**1.3 Stop on request, and say why it ended.** Built.
+`stop-smooth`, from a sender that may ask, stops `ScreenCaptureService`. Whenever smooth sharing ends, every viewer on a current app is sent `smooth-status ended` with a reason: "Smooth video was stopped from *name*.", "Smooth video was stopped on the phone.", or "Smooth video ended because the phone was locked." when the lock screen is up at that moment. Android's `onStop` gives no reason itself. Reasons are whole sentences in the phone's words, and a viewer shows them as they are.
 
-**1.4 The menu row.**
-A *Smooth video* row in the viewer's `⋯` menu, shown when `screen-info` carries `smooth`, and greyed with the reason when it says `unavailable`. Off, its tooltip reads: "Asks the phone to share its screen as video. Approve the prompt on the phone; you can click it here." Choosing it sends `request-smooth`. The prompt then appears in the picture and can be clicked like anything else. On, the row is ticked, and choosing it sends `stop-smooth`: Android 15+ blanks password fields and one-time codes during screen sharing, so there are moments to switch back. When smooth sharing ends by itself, the viewer says why in a toast. Like everything in that menu, the row must not take keyboard focus, because the window types into the phone whenever it has focus.
+**1.4 The menu row.** Built: `SmoothVideo` in `PhoneMenu.cs`, and the row in `PhoneViewWindow`.
+A *Smooth video* row in the viewer's `⋯` menu, shown when `screen-info` carries `smooth` from a phone this PC has approved, and greyed when it says `unavailable`. Its tooltip reads: "Asks the phone to share its screen as video. Approve the prompt on the phone; you can click it here. If the phone is on its side, scroll the prompt up to reach its button." Choosing it sends `request-smooth`. The prompt then appears in the picture and can be clicked like anything else. On, the row is ticked, and choosing it sends `stop-smooth`: Android 15+ blanks password fields and one-time codes during screen sharing, so there are moments to switch back. Each `smooth-status` is shown as a toast, in the phone's words where it gave some, and a phone that says nothing for 5 s is reported. Like everything in that menu, the row does not take keyboard focus.
 
-**1.5 Keep the phone awake while it is viewed in smooth sharing.** Agreed by Theo on 2026-11-10, with the 10-minute limit.
-On Android 15 QPR1 and later, a phone that sleeps on its usual timeout and locks ends smooth sharing, and smooth sharing cannot be started again until the phone is unlocked and the prompt approved. So a session would drop back to Accessibility viewing whenever the person stops clicking for a minute, and the person would have to unlock the phone from the viewer and approve the prompt all over again.
-- While at least one viewer is viewing in smooth sharing, hold the screen on, dimmed if the phone allows: a screen wake lock held by `ScreenCaptureService` (the `WAKE_LOCK` permission is already declared for `ScreenWaker`).
-- Let go when the last such viewer stops, disconnects or loses approval.
-- Let go when a viewer sends the menu plan's `lock`.
-- Also let go after 10 minutes without any input from a viewer. Input means taps, drags, typing and the navigation buttons, not acknowledgements, pings or menu state requests. The PC sends `stop-view` only when its window closes, so without a limit a forgotten or minimised viewer would keep an unattended phone awake and unlocked for good.
-- If C2 shows a wake lock no longer holds the screen on, use a 1×1 Accessibility overlay window of its own with `FLAG_KEEP_SCREEN_ON`.
+Not built: the same row in the phone's own viewer of another phone (`PhoneViewerActivity`). It ignores `smooth-status`.
 
-**1.6 Docs.** `PROTOCOL.md`: the three new messages, `smooth`, and the list of gated messages. `android/README.md`: the Smooth screen sharing row and the paragraphs on it, what Android 15+ blanks, and keeping awake. `windows/README.md` and `README.md`: the button.
+**1.5 Keep the phone awake while it is viewed in smooth sharing.** Built: `KeepAwake` (a plain class) and a screen wake lock in `ScreenCaptureService`. Agreed by Theo on 2026-11-10, with the 10-minute limit.
+On Android 15 QPR1 and later, a phone that sleeps on its usual timeout and locks ends smooth sharing, and smooth sharing cannot be started again until the phone is unlocked and the prompt approved.
+- While at least one approved device is viewing and smooth sharing is running, the service holds a dimmed screen wake lock. A short pause in the pictures (a device joining the session) does not let go.
+- It lets go when the last viewer stops, disconnects or loses approval.
+- It lets go when a viewer sends the menu plan's `lock`, before the screen is turned off, and does not take hold again until a viewer's next input.
+- It lets go after 10 minutes without input from a viewer: the lock is taken with that time limit, and each input takes it again. Input is what wakes a sleeping phone (`InputAccessibilityService.wakesPhone`), not acknowledgements, pings or menu state requests.
+- C2 found the wake lock accepted and counted by Android 17, so the 1×1 overlay fallback was not built. What nobody has seen is the screen staying on past its timeout: the S26 was on its charger with "stay awake while charging" on.
 
-**Tests.**
-- `request-smooth` and `stop-smooth` from a peer that is not viewing do nothing;
-- a locked phone answers `unavailable`;
-- a second request while one is open is ignored;
-- Permissions and the request activity ask for the whole screen on API 34+;
-- each way the prompt can end produces one `smooth-status`;
-- the screen is held on only while a viewer is in smooth sharing, and released when the last one leaves and after 10 idle minutes;
-- PC: the row appears only when the phone sends `smooth`; no answer within 5 s is reported.
+**1.6 Docs.** Written. `PROTOCOL.md`: "Smooth sharing on request" (the three messages, `smooth`, who may send, keeping awake). `android/README.md`, `windows/README.md` and `README.md`: the row, the prompt, what ends it.
 
-**On the S26** (Android 17; see section 8 for the S20): the prompt appears with no app window open; it is visible in Accessibility viewing; a click in the viewer presses its button; smooth sharing starts and the viewer switches; choosing the row again switches back; locking the phone ends it and the viewer says so; the phone stays awake for five idle minutes while viewed and sleeps normally after the viewer closes.
+**Tests.** Built.
+- `SmoothSharingTest` (plain): all fifteen kinds of sender that lack one or more of the four things are refused, whatever state the phone is in, and cannot join or disturb a prompt that is up; each answer above; one prompt at a time; the 10 s after a refusal; every way a prompt ends is told once; a prompt goes when those who asked have; the reasons for the end.
+- `SmoothRequestTest` (the app carrying it out): a stranger, an approved device that is not viewing or has stopped, a phone with other phones shut out, a device whose approval was taken back, any device with control off, each get no prompt, no notification and no answer; the prompt asks for the whole screen; approving starts the service; a turn does not ask twice; the viewer stopping, the screen turning off and a minute passing each take the prompt away; the notification fallback; `smooth` in `screen-info` only for a viewer that sent `codecs`.
+- `KeepAwakeTest`: held only while viewed, let go after 10 idle minutes and by `lock`, taken again on input.
+- `PhoneScreenCaptureTest`: Permissions asks for the whole screen on API 34+, and not before.
+- PC, `PhoneViewTests`: the row appears only when the phone sends `smooth`, asks and stops, reports no answer after 5 s, and has words for every state. `PrivacyTests`: the same through the real window, and a phone this PC has not approved gets no row and no say.
 
-**Done when** a PC user can go from opening the viewer to smooth sharing without touching an unlocked phone, or with one tap on the phone if C2 shows the prompt can't be clicked remotely.
+**On the S26** (Android 17), on the rig, 2026-11-11: the row asked; the prompt appeared with no app window open and showed in the picture; a tap sent as the viewer's own pressed *Share screen*; smooth sharing started, the viewer was told and its readout said "Smooth sharing"; the row again stopped it and the toast said from which PC; *Cancel* gave "declined", and asking again at once was refused with the reason; a prompt left alone went after 60 s; a prompt went when the viewer closed; a turn while the prompt was up left one prompt and the same activity; a second request while one was up showed no second prompt; the wake lock was held while viewed, let go when the viewer closed and taken again when it came back.
+
+Not seen there: the phone locking (it ends the sharing and is the reason for 1.5), the screen actually staying on past its timeout, the ten idle minutes, the notification fallback, and a real mouse click on the prompt (the rig has no mouse; the tap went through the relay as the viewer's). The S20 has seen none of it.
+
+**Done when** a PC user can go from opening the viewer to smooth sharing without touching an unlocked phone. On the S26 that is so.
 
 ### Phase 2. Video instead of JPEGs
 
@@ -629,7 +640,7 @@ The PC updates itself when idle, and phones only when their owner installs the u
 | Windows refuses pictures taller than 2304 px | Low, but unverified; C1 settles it | Raise the decoder's size attributes; failing that, sideways encoding (D9) |
 | The Windows decoder holds frames back despite low-latency mode | Low | C1 measures it. If so, look at the stream's frame-order signalling, and try the Baseline profile on the phone. |
 | A phone's hardware encoder misbehaves (odd sizes, ignored settings, holds a frame back) | Medium across all Android phones. The S20's Exynos encoder is not tried before release (section 8). | Size fallback, then JPEG. Two failures keep the session on JPEG. The repeats flush a held frame. |
-| The consent prompt can't be started or clicked remotely on some Android version | Medium | Notification fallback. At worst one tap on the phone, which is still less than today. |
+| The consent prompt can't be started or clicked remotely on some Android version | Medium. Not so on the S26 with Android 17 (C2). | Notification fallback, built. At worst one tap on the phone, which is still less than today. |
 | Smooth sharing ends at every lock on Android 15+ | Certain | Falls back to Accessibility viewing by itself; the viewer says why and the menu row can start it again. Step 1.5 stops the phone locking from its own timeout while it is in use. |
 | Android 15+ blanks sensitive content (password fields, one-time codes) during screen sharing | Certain on those versions | Switching back from the menu row (1.4), and a note in the README. |
 | A phone kept awake and unlocked longer than its owner expects | Follows from 1.5 | Only in smooth sharing, only while viewed, and released after 10 minutes without input. Agreed by Theo (section 12). |

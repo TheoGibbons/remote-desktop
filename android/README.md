@@ -76,7 +76,7 @@ Permissions**:
 | Row | Enables | Permission |
 |-----|---------|------------|
 | **Screen view and control (Accessibility)** | Default phone viewing on Android 11+, plus taps/swipes | Accessibility service toggle; normally persists across reboots |
-| **Smooth screen sharing (optional)** | Smoother phone viewing while enabled | MediaProjection consent, required again after reboot or the capture session ends |
+| **Smooth screen sharing (optional)** | Smoother phone viewing while enabled. A PC that is viewing can also ask for it from its menu | MediaProjection consent, required again after reboot or the capture session ends |
 | **File access** | PC can browse this phone's files | All-files access (Android 11+) |
 | **Notifications** | Waking this phone's screen for a viewer, and pairing requests while the app is in the background | Notification permission (asked at first launch on Android 13+) |
 
@@ -91,7 +91,28 @@ content cannot be captured. Capture failures replace the previous picture with
 Enable **Smooth screen sharing** for the existing faster stream (up to 10 FPS).
 It takes over from Accessibility until stopped, then default viewing resumes
 automatically. It follows the screen when the phone turns. While nobody is
-viewing, the screen is not mirrored at all.
+viewing, the screen is not mirrored at all. The phone asks Android for the
+whole screen, so the prompt comes up on "Share entire screen".
+
+A PC that is viewing the phone can ask for it too: **Smooth video** in the
+menu of its phone window. Android's prompt then appears on the phone, and
+whoever is at the PC can click "Share screen" in the picture, or you can tap it
+on the phone. The app never answers the prompt itself. Only a device you have
+approved, that is viewing the phone at that moment, can ask, and a locked
+phone answers that it must be unlocked first. A prompt nobody answers goes
+away after a minute, and at once when the PC stops viewing. With the phone on
+its side the prompt's buttons are out of view until it is scrolled. Where a
+phone will not show the prompt from the background, a notification asks
+instead; tap it to see the prompt. The same row on the PC stops smooth sharing,
+and the PC is told why whenever it ends: stopped from a device, stopped on the
+phone, or the phone was locked.
+
+Android 15 and later end smooth sharing when the phone locks, and blank
+password fields and one-time codes while it is on. So while a device is
+viewing in smooth sharing the phone keeps its screen on (it may dim). It lets
+go when the last viewer leaves, when a viewer chooses Lock screen, and after
+ten minutes without a tap, a drag, typing or a navigation button from a
+viewer. Ordinary viewing never keeps the phone awake.
 
 Either way, a viewer on a current app says when each picture has arrived, and
 the phone sends the next one only when the viewers have caught up. On a slow

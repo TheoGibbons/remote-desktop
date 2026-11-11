@@ -72,7 +72,8 @@ viewer: when its title-bar menu opens and closes, how the window is sized round
 the phone's picture and follows a phone that turns, how its volume slider paces
 what it sends and which of the phone's answers it shows, which rows the menu
 offers for what a phone says about itself, when it says a phone didn't
-rotate, what is said and drawn over a locked phone's picture, which of the
+rotate, how the Smooth video row asks, waits and reports, what is said and
+drawn over a locked phone's picture, which of the
 frames that arrive are the phone's own and how they are acknowledged, and how
 the Stats readout works out how old a picture is. They need no window, phone
 or relay.
@@ -219,7 +220,18 @@ unapproved device is present in the session, streaming and file serving pause.
     or take the figure after the ±), the round trip to the phone, and how many
     pictures were lost on the way. **Shift+F8** copies the last minute of
     those figures as text. A phone whose app is older shows no delay: it does
-    not say when its pictures were taken.
+    not say when its pictures were taken. **Smooth video** in the menu asks
+    the phone to share its screen as video, which is smoother than ordinary
+    viewing. Android shows a prompt on the phone; it appears in the picture,
+    so click **Share screen** there, or tap it on the phone. With the phone on
+    its side, scroll the prompt up to reach its button. The row is ticked
+    while smooth video is on; choose it again to go back, for example when
+    Android blanks a password field. A toast says what happened: the prompt
+    was declined, nobody answered it within a minute, the phone must be
+    unlocked first, or why smooth video ended (Android 15 and later end it
+    when the phone locks). While you view in smooth video the phone keeps its
+    screen on, until ten minutes pass without a click or a key from you. The
+    row is missing for a phone whose app is older.
 - **Browse files** → a file explorer to download from / upload to the selected
   device (a PC or a phone), titled with its name. Each device gets its own
   window, so files can go to two phones at once, and each window's status line
