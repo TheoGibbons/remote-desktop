@@ -23,6 +23,8 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.DisplayMetrics
+import android.util.Log
+import android.view.Display
 import android.view.WindowManager
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -31,10 +33,22 @@ import java.io.ByteArrayOutputStream
  * Foreground service holding the MediaProjection. The projection consent is
  * granted once per service start (an Android platform requirement); after
  * that, streaming starts/stops instantly on start-view/stop-view messages.
+ *
+ * Threads: the service's own calls and [updateStreaming] run on the main
+ * thread. Pictures arrive, wait their turn and are encoded on the capture
+ * thread, which is also where the stream is given a new shape when the screen
+ * turns ([followScreen]); the image reader, the pacer and the bitmap belong
+ * to it once capture has started.
  */
 class ScreenCaptureService : Service() {
 
     companion object {
+        /** The size a screen is streamed at: its own shape, no wider than [maxWidth]. */
+        internal fun streamSize(screenWidth: Int, screenHeight: Int, maxWidth: Int): Pair<Int, Int> {
+            val scale = if (screenWidth > maxWidth) maxWidth.toDouble() / screenWidth else 1.0
+            return Pair((screenWidth * scale).toInt().coerceAtLeast(1), (screenHeight * scale).toInt().coerceAtLeast(1))
+        }
+
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_RESULT_DATA = "resultData"
         private const val CHANNEL_ID = "capture"
@@ -104,15 +118,24 @@ class ScreenCaptureService : Service() {
             return START_NOT_STICKY
         }
 
+        captureThread = HandlerThread("capture").also { it.start() }
+        val handler = Handler(captureThread!!.looper)
+        captureHandler = handler
+
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projection = mpm.getMediaProjection(resultCode, data)
         projection?.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
                 stopSelf()
             }
-        }, null)
 
-        setupCapture()
+            // Android 14 and later say when what is captured changes size, which a turn does.
+            override fun onCapturedContentResize(width: Int, height: Int) = followScreen()
+        }, handler)
+
+        setupCapture(handler)
+        // Every version says when the display changes; a turn is one of the changes.
+        (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).registerDisplayListener(displayListener, handler)
         instance = this
         notifyStateChanged(this)
         return START_NOT_STICKY
@@ -122,6 +145,7 @@ class ScreenCaptureService : Service() {
         instance = null
         notifyStateChanged(this)
         streaming = false
+        (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(displayListener)
         virtualDisplay?.release()
         imageReader?.close()
         projection?.stop()
@@ -146,8 +170,7 @@ class ScreenCaptureService : Service() {
 
     private fun outSize(): Pair<Int, Int> {
         val (w, h, _) = screenSize()
-        val scale = if (w > maxWidth) maxWidth.toDouble() / w else 1.0
-        return Pair((w * scale).toInt(), (h * scale).toInt())
+        return streamSize(w, h, maxWidth)
     }
 
     private fun sendScreenInfo() {
@@ -158,17 +181,63 @@ class ScreenCaptureService : Service() {
         )
     }
 
-    private fun setupCapture() {
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY) followScreen()
+        }
+    }
+
+    /**
+     * The screen may have turned. If its shape is no longer the stream's, the
+     * stream takes the new one: otherwise the picture would sit letterboxed
+     * inside the old shape, and taps, which go by the screen as it now is,
+     * would land in the wrong place. Capture thread only.
+     */
+    private fun followScreen() {
+        if (instance !== this) return
+        val display = virtualDisplay ?: return
+        val old = imageReader ?: return
+        val handler = captureHandler ?: return
+        val (w, h) = outSize()
+        if (old.width == w && old.height == h) return
+        try {
+            val (_, _, dpi) = screenSize()
+            val reader = newReader(w, h, handler)
+            display.resize(w, h, dpi)
+            display.surface = reader.surface
+            imageReader = reader
+            // A picture still waiting its turn is the old shape, and the old reader's.
+            pacer.clear()
+            old.close()
+            reusableBitmap = null
+            // The viewer needs the new shape before the first picture in it.
+            if (streaming && PhoneScreenCapture.maySendFrames(this)) sendScreenInfo()
+        } catch (e: RuntimeException) {
+            // E.g. the projection stopped while the screen was turning.
+            Log.w("ScreenCaptureService", "Could not follow the screen's new shape", e)
+        }
+    }
+
+    private fun setupCapture(handler: Handler) {
         val (w, h) = outSize()
         val (_, _, dpi) = screenSize()
 
-        captureThread = HandlerThread("capture").also { it.start() }
-        val handler = Handler(captureThread!!.looper)
-        captureHandler = handler
+        imageReader = newReader(w, h, handler)
+        virtualDisplay = projection!!.createVirtualDisplay(
+            "remote-desktop",
+            w, h, dpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader!!.surface,
+            null, handler
+        )
+    }
 
+    private fun newReader(w: Int, h: Int, handler: Handler): ImageReader {
         // Three buffers: one kept by the pacer, two for acquireLatestImage.
-        imageReader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3)
-        imageReader!!.setOnImageAvailableListener({ reader ->
+        val made = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3)
+        made.setOnImageAvailableListener({ reader ->
             val image = try { reader.acquireLatestImage() } catch (_: IllegalStateException) { null }
                 ?: return@setOnImageAvailableListener
             // Any key holder can decrypt frames, and older relays broadcast
@@ -182,14 +251,7 @@ class ScreenCaptureService : Service() {
             pacer.offer(image, SystemClock.uptimeMillis(), ConnectionManager.hasRoomForVideo())?.let(::encodeAndSend)
             scheduleCatchUp()
         }, handler)
-
-        virtualDisplay = projection!!.createVirtualDisplay(
-            "remote-desktop",
-            w, h, dpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader!!.surface,
-            null, handler
-        )
+        return made
     }
 
     private fun scheduleCatchUp() {
