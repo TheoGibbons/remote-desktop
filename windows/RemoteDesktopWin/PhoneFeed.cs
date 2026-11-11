@@ -108,6 +108,7 @@ internal sealed class PhoneFeed : IDisposable
     private readonly H264PictureHandler _onDecoded;
     private PhoneVideoPicture? _decodedInto;    // the feed's thread only
     private long _decodedTag;                   // the feed's thread only: the number the decoder put on that picture
+    private Exception? _convertTrouble;         // the feed's thread only: what went wrong turning a picture into colours
     // The feed's thread only: the headers of the frames handed to the
     // decoder whose pictures have not come out, oldest first. A picture is
     // matched to its frame by the number the decoder gives back with it, not
@@ -132,6 +133,11 @@ internal sealed class PhoneFeed : IDisposable
 
     /// <summary>For tests: called with each decoder the feed makes, on the feed's thread.</summary>
     internal Action<H264Decoder>? DecoderMade;
+
+    /// <summary>For tests: called on the feed's thread as a decoded picture's
+    /// colours are about to be converted, which is the feed's own work and
+    /// not the decoder's.</summary>
+    internal Action? Converting;
 
     /// <summary>For tests: called on the feed's thread when a frame has been
     /// through the decoder and before anything is made of the result, which
@@ -460,6 +466,8 @@ internal sealed class PhoneFeed : IDisposable
         {
             if (from != _phoneId) return;
             _stats.Pong(nonce, hostTime, Number(pong["hostQueueBytes"]) ?? 0, _nowMs());
+            // Said by a phone that is sending video; one that is not leaves it out.
+            _stats.TargetBitrate = Number(pong["bitrate"]) is > 0 and var bitrate ? bitrate : null;
         }
     }
 
@@ -738,6 +746,16 @@ internal sealed class PhoneFeed : IDisposable
             tag = _decodedTag;
             _decodedInto = null;
         }
+        if (_convertTrouble is { } trouble)
+        {
+            // The decoder did its part; it was turning the picture into
+            // colours that went wrong, here. That picture is lost and the
+            // decoder is not blamed: the next frame draws over it.
+            _convertTrouble = null;
+            Debug.WriteLine($"Phone feed: {trouble.Message}");
+            if (picture != null) Video.Return(picture);
+            picture = null;
+        }
         double ms = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
         // Whose picture it is: the frame the decoder says, which is not
         // always the one that was going in when it came out.
@@ -768,7 +786,7 @@ internal sealed class PhoneFeed : IDisposable
                 {
                     case H264Decoded.Picture:
                         // The time is the decoder's own only when the picture came with its frame.
-                        if (next != null) _stats.Decoded(ms, now);
+                        if (next != null && picture != null) _stats.Decoded(ms, now);
                         show = picture != null && header != null;
                         break;
                     case H264Decoded.NeedsKeyframe:
@@ -815,12 +833,23 @@ internal sealed class PhoneFeed : IDisposable
     /// here, while its memory is still good.</summary>
     private unsafe void OnDecoded(in Nv12Picture decoded)
     {
-        // Two pictures from one call: one was owed. The newer is the one to show.
-        if (_decodedInto != null) Video.Return(_decodedInto);
-        var picture = Video.Rent(decoded.Width, decoded.Height);
-        fixed (byte* target = picture.Bgra) Nv12Converter.ToBgra(decoded, target, picture.Stride);
-        _decodedInto = picture;
-        _decodedTag = decoded.Tag;
+        // Nothing is thrown through the decoder: what goes wrong here is
+        // this class's trouble, noted for DecodeVideo to deal with.
+        try
+        {
+            // Two pictures from one call: one was owed. The newer is the one to show.
+            if (_decodedInto != null) Video.Return(_decodedInto);
+            _decodedInto = null;
+            Converting?.Invoke();
+            var picture = Video.Rent(decoded.Width, decoded.Height);
+            fixed (byte* target = picture.Bgra) Nv12Converter.ToBgra(decoded, target, picture.Stride);
+            _decodedInto = picture;
+            _decodedTag = decoded.Tag;
+        }
+        catch (Exception ex)
+        {
+            _convertTrouble = ex;
+        }
     }
 
     public void Dispose()

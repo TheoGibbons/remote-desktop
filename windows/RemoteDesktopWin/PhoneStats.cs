@@ -92,6 +92,11 @@ internal sealed class PhoneStats
         Trim(nowMs);
     }
 
+    /// <summary>The bitrate the phone says its encoder is aiming at, in bits
+    /// a second: <c>bitrate</c> in its <c>diagnostic-pong</c>, which it sends
+    /// only with video. Null when it has not said.</summary>
+    public long? TargetBitrate { get; set; }
+
     /// <summary>A line about the video itself, when there is something to
     /// say: that a keyframe is waited for, or that H.264 was given up.</summary>
     public string? Video { get; set; }
@@ -216,6 +221,8 @@ internal sealed class PhoneStats
             text.AppendLine($"Delay {second.DelayLatest} ms · average {second.DelayAverage} · worst {second.DelayWorst} (± {clock.Value.PlusMinus} ms)");
         text.Append("Round trip ").Append(pong is { } p ? $"{p.RoundTrip} ms" : "not known")
             .Append(" · phone's queue ").AppendLine(pong is { } q ? $"{Kb(q.QueueBytes)} KB" : "not known");
+        if (TargetBitrate is { } target)
+            text.Append("Phone's encoder aims at ").Append((target / 1000).ToString(CultureInfo.InvariantCulture)).AppendLine(" kbit/s");
         // Of the last second, or of the last pictures there were if that second had none.
         var decode = DecodeTime(nowMs - 1000, nowMs + 1)
             ?? (_decoded.Count > 0 ? DecodeTime(_decoded.Last().At - 1000, nowMs + 1) : null);
@@ -272,6 +279,7 @@ internal sealed class PhoneStats
         _pings.Clear();
         _decoded.Clear();
         Video = null;
+        TargetBitrate = null;
         _pingedAt = null;
         _capture = _codec = null;
         _size = default;

@@ -41,6 +41,7 @@ internal static class VideoFeedTests
             CheckFeedFallingBehind(clip, again);
             CheckFeedDecoderFailure(clip);
             CheckFeedWaitsForALatePicture(clip);
+            CheckFeedsOwnTroubleIsNotTheDecoders(clip);
             CheckFeedWithoutADecoder(clip);
             CheckFeedTurnedPhoneAndNewStreams(clip, turned);
             CheckFeedWhileAFrameIsDecoded(clip);
@@ -365,6 +366,9 @@ internal static class VideoFeedTests
         Check(stats.History(10_000).Contains("decode average / worst (ms) 5.2 / 9.2") && stats.History(10_000).Contains("Waiting for a keyframe"),
             "The copied figures have the decoding time too");
         Check(!new PhoneStats().Text(0).Contains("Decode"), "A readout with nothing decoded says nothing of it");
+        Check(!stats.Text(10_000).Contains("aims at"), "Nor of a bitrate the phone has not told");
+        stats.TargetBitrate = 3_000_000;
+        Check(stats.Text(10_000).Contains(Environment.NewLine + "Phone's encoder aims at 3000 kbit/s" + Environment.NewLine), "The bitrate the phone's encoder aims at is shown when the phone says it:\n" + stats.Text(10_000));
         Console.WriteLine("PASS: the readout names the codec and shows how long a picture takes to decode");
     }
 
@@ -496,6 +500,15 @@ internal static class VideoFeedTests
         string text = rig.Feed.StatsText();
         Check(text.StartsWith("Smooth sharing · H264 · 320 × 240") && text.Contains("Decode "), "The readout names the codec and the decoding time:\n" + text);
         rig.Feed.Drawn(rig.Shown[^1].Header);
+        // The phone's answer to a ping says what its encoder is aiming at.
+        rig.Feed.ShowStats(true);
+        rig.Pump();
+        string ping = rig.Of("diagnostic-ping")[^1];
+        long nonce = JsonNode.Parse(ping)!["nonce"]!.GetValue<long>();
+        rig.Feed.OnPong(new JsonObject { ["type"] = "diagnostic-pong", ["from"] = "7", ["nonce"] = nonce, ["hostTimeMs"] = 5000,
+            ["hostQueueBytes"] = 0, ["codec"] = "h264", ["capture"] = "screen-share", ["fps"] = 30, ["bitrate"] = 2_400_000 });
+        Check(rig.Feed.StatsText().Contains("Phone's encoder aims at 2400 kbit/s"), "The readout shows the bitrate from the phone's pong:\n" + rig.Feed.StatsText());
+        rig.Feed.ShowStats(false);
 
         // A JPEG stream through the same feed is drawn as it always was.
         rig.Info("7", IdB, codec: "jpeg");
@@ -815,6 +828,28 @@ internal static class VideoFeedTests
         rig.Now = 2000;
         Check(rig.PumpOnce() == 0 && !rig.Feed.VideoState.Owed, "A picture owed to a window that has closed is forgotten");
         Pass("a picture the decoder gives late is shown when it comes, under its own frame's number, and is no failure");
+    }
+
+    private static void CheckFeedsOwnTroubleIsNotTheDecoders(Clip clip)
+    {
+        // Something goes wrong in the feed's own handling of a decoded
+        // picture, twice. The decoder did nothing wrong, and video is kept.
+        var rig = Viewing();
+        rig.Now = 1000;
+        int fail = 0;
+        rig.Feed.Converting = () => { if (fail-- > 0) throw new InvalidOperationException("made up"); };
+        rig.Frame(StreamA, 0, clip.Units[0]);
+        Check(rig.Pump() == 1, "setup: a picture");
+        fail = 2;
+        rig.Frame(StreamA, 1, clip.Units[1]);
+        rig.Frame(StreamA, 2, clip.Units[2]);
+        Check(rig.Pump() == 0, "A picture the feed could not turn into colours is not shown");
+        Check(rig.Feed.VideoState is { Failures: 0, GivenUp: false, Waiting: false } && rig.Count("request-keyframe") == 0 && rig.Count("start-view") == 0,
+            "It is not counted against the decoder, no keyframe is asked for, and video is not given up");
+        rig.Frame(StreamA, 3, clip.Units[3]);
+        Check(rig.Pump() == 1 && rig.Shown[^1].Header.Seq == 3 && H264Tests.FrameShownIn(rig.Shown[^1].Bgra, clip.Width, clip.Height) == 3,
+            "The next frame is shown, built on the ones the decoder did decode");
+        Pass("trouble in the feed's own handling of a picture is not taken for a failure of the decoder");
     }
 
     private static void CheckFeedWithoutADecoder(Clip clip)
