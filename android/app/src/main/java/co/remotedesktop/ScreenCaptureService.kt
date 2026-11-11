@@ -153,9 +153,9 @@ class ScreenCaptureService : Service() {
         /**
          * An encoder stopped answering and took the video's thread with it.
          * Video is not tried again while this process lives: whatever stuck
-         * is still in it.
+         * is still in it. The Accessibility service's video goes by it too.
          */
-        private val videoWedged = AtomicBoolean()
+        internal val videoWedged = AtomicBoolean()
 
         /**
          * Where encoded pictures go in place of the viewers, for a check on
@@ -192,8 +192,12 @@ class ScreenCaptureService : Service() {
         clock = SystemClock::uptimeMillis,
         hasRoom = PhoneScreenCapture::hasRoom,
         send = { frame ->
-            videoSink?.invoke(frame) ?: PhoneScreenCapture.sendVideo(this, frame.bytes, frame.keyframe,
-                frame.repeat, frame.resend, frame.width, frame.height, frame.capturedAtMs)
+            videoSink?.invoke(frame)
+                // Sharing has ended, and the encoder has not been let go of yet. The Accessibility
+                // service's pictures may be going by now, and one of these would end their stream.
+                ?: if (instance !== this) VideoSent.NOT_SENT
+                else PhoneScreenCapture.sendVideo(this, frame.bytes, frame.keyframe,
+                    frame.repeat, frame.resend, frame.width, frame.height, frame.capturedAtMs)
         },
         // It says so on its own thread; what follows is the capture thread's to do.
         onFailed = { reason, detail -> captureHandler?.post { outputs.failed(reason, detail) } },

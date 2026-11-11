@@ -37,6 +37,8 @@ class PhoneH264StreamTest {
     private val keyUnit = byteArrayOf(0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 3)
     private val unit = byteArrayOf(0, 0, 0, 1, 0x41, 4)
     private lateinit var previousIds: () -> Long
+    private lateinit var previousAskKeyframe: (Boolean) -> Unit
+    private lateinit var previousAskResend: () -> Unit
     private var ids = 0xA0L
     /** What the capture service was asked for: "key", "key by viewer", "resend". */
     private val asked = mutableListOf<String>()
@@ -85,6 +87,8 @@ class PhoneH264StreamTest {
             .get(PhoneScreenCapture) as MutableCollection<*>).clear()
         previousIds = PhoneScreenCapture.newStreamId
         PhoneScreenCapture.newStreamId = { ++ids }
+        previousAskKeyframe = PhoneScreenCapture.askKeyframe
+        previousAskResend = PhoneScreenCapture.askResend
         PhoneScreenCapture.askKeyframe = { byViewer -> asked += if (byViewer) "key by viewer" else "key" }
         PhoneScreenCapture.askResend = { asked += "resend" }
     }
@@ -94,8 +98,8 @@ class PhoneH264StreamTest {
         PhoneScreenCapture.onViewStopped()
         idle()
         PhoneScreenCapture.newStreamId = previousIds
-        PhoneScreenCapture.askKeyframe = { ScreenCaptureService.keyframeWanted(it) }
-        PhoneScreenCapture.askResend = { ScreenCaptureService.resendWanted() }
+        PhoneScreenCapture.askKeyframe = previousAskKeyframe
+        PhoneScreenCapture.askResend = previousAskResend
         captureContext.set(PhoneScreenCapture, previous.remove("capture"))
         authField("allPeersTrusted").set(PeerAuth, previous.remove("allPeersTrusted"))
         for ((name, value) in previous) connectionField(name).set(ConnectionManager, value)
@@ -263,10 +267,11 @@ class PhoneH264StreamTest {
     }
 
     @Test
-    fun accessibilityViewingStaysJpegWhateverTheViewersOffer() {
+    fun screenshotsThatGoAsJpegsAreAJpegStreamWhateverTheViewersOffer() {
         startView("pc")
         socket.clear()
-        // Its pictures are JPEGs, and that is what the stream is said to be.
+        // The Accessibility service's encoder has failed, say, and its pictures are JPEGs:
+        // that is what the stream is said to be. (AccessibilityVideoTest has them as video.)
         PhoneScreenCapture.sendScreenInfo(context, 1080, 2340, PhoneScreenCapture.ACCESSIBILITY)
         assertEquals("jpeg", infos().single().getString("codec"))
         assertTrue(picture(PhoneScreenCapture.ACCESSIBILITY))

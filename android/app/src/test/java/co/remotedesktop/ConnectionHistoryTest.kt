@@ -295,14 +295,14 @@ class ConnectionHistoryTest {
         assertEquals(video(now), ConnectionLog.entries().first())
 
         val at = java.time.Instant.parse("2026-11-01T09:56:25Z").toEpochMilli()
-        assertEquals("2026-11-01 02:56:25 MST (09:56:25 UTC)  Smooth video went back to pictures. " +
+        assertEquals("2026-11-01 02:56:25 MST (09:56:25 UTC)  Video went back to pictures. " +
             "The video encoder stopped working. [android.media.MediaCodec\$CodecException: Error 0xffffffe0]",
             ConnectionLog.toText(listOf(video(at)), TimeZone.getTimeZone("America/Phoenix")))
 
         val controller = Robolectric.buildActivity(ConnectionHistoryActivity::class.java).setup()
         try {
             val texts = texts(controller.get().findViewById<LinearLayout>(R.id.historyGroup))
-            assertEquals("Smooth video went back to pictures", texts.first())
+            assertEquals("Video went back to pictures", texts.first())
             assertTrue(texts.contains("The video encoder stopped working."))
             assertTrue(texts.contains("android.media.MediaCodec\$CodecException: Error 0xffffffe0"))
         } finally {

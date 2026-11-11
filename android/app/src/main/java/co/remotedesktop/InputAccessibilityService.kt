@@ -126,6 +126,23 @@ class InputAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= 30) screenCapture?.resendScreenInfo()
     }
 
+    /**
+     * For screenshots that go out as video: the next picture should be a
+     * keyframe ([byViewer] when a viewer asked, and then at most one a
+     * second is made). Any thread.
+     */
+    fun keyframeWanted(byViewer: Boolean) {
+        if (Build.VERSION.SDK_INT >= 30) screenCapture?.keyframeWanted(byViewer)
+    }
+
+    /** The last video picture went unacknowledged: the screen goes again, as a keyframe. Any thread. */
+    fun resendWanted() {
+        if (Build.VERSION.SDK_INT >= 30) screenCapture?.resendWanted()
+    }
+
+    /** Bits a second the video encoder is aiming at, while screenshots go out as video. */
+    val videoBitrate: Int? get() = if (Build.VERSION.SDK_INT >= 30) screenCapture?.videoBitrate else null
+
     override fun onServiceConnected() {
         instance = this
         if (Build.VERSION.SDK_INT >= 30) screenCapture?.close()

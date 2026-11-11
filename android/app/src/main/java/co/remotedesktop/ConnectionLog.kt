@@ -40,7 +40,7 @@ object ConnectionLog {
         /** Closed on purpose on this phone: retry, a settings change, or turned off. */
         STOPPED,
         NETWORK,
-        /** Smooth sharing went back from video to pictures; the reason says why. Nothing about the connection. */
+        /** Pictures that were going out as video went back to JPEGs; the reason says why. Nothing about the connection. */
         VIDEO,
     }
 
@@ -172,7 +172,7 @@ object ConnectionLog {
         Kind.FAILED -> if (e.count > 1) "Couldn't connect (${e.count} tries)" else "Couldn't connect"
         Kind.STOPPED -> "Disconnected on this phone"
         Kind.NETWORK -> "Network: ${e.reason}"
-        Kind.VIDEO -> "Smooth video went back to pictures"
+        Kind.VIDEO -> "Video went back to pictures"
     }
 
     /** One line per entry, as given (newest first), with UTC alongside this

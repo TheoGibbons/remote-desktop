@@ -23,8 +23,9 @@ import java.util.concurrent.CopyOnWriteArrayList
  * bare type 1 JPEG older apps know. See PROTOCOL.md, "Phone frames".
  *
  * A stream is JPEG or H.264 from start to end ([StreamFormat]). H.264 comes
- * from [ScreenCaptureService] while smooth sharing is on and every viewer
- * can draw it ([sendVideo]); everything else is JPEG ([send]).
+ * from whichever of the two is capturing, [ScreenCaptureService] or
+ * [AccessibilityScreenCapture], while every viewer can draw it and its
+ * encoder works ([sendVideo]); everything else is JPEG ([send]).
  */
 object PhoneScreenCapture {
     /** How the screen is captured, as `screen-info` and `diagnostic-pong` name it. */
@@ -225,9 +226,19 @@ object PhoneScreenCapture {
         id
     }
 
-    /** Asks the capture service for a keyframe, or for the screen to be encoded again. Replaced in tests. */
-    internal var askKeyframe: (byViewer: Boolean) -> Unit = { ScreenCaptureService.keyframeWanted(it) }
-    internal var askResend: () -> Unit = { ScreenCaptureService.resendWanted() }
+    /**
+     * Asks whichever is capturing for a keyframe, or for the screen to be
+     * encoded again: smooth sharing while it is on, and the Accessibility
+     * service's screenshots otherwise. Replaced in tests.
+     */
+    internal var askKeyframe: (byViewer: Boolean) -> Unit = { byViewer ->
+        if (ScreenCaptureService.isRunning) ScreenCaptureService.keyframeWanted(byViewer)
+        else InputAccessibilityService.instance?.keyframeWanted(byViewer)
+    }
+    internal var askResend: () -> Unit = {
+        if (ScreenCaptureService.isRunning) ScreenCaptureService.resendWanted()
+        else InputAccessibilityService.instance?.resendWanted()
+    }
 
     private const val TYPE_1 = "type 1"
     private const val PAUSED = "paused"
@@ -268,7 +279,7 @@ object PhoneScreenCapture {
 
     /**
      * Whether pictures would go as H.264 if the phone had it to send: there
-     * is a viewer, and every viewer lists it. [ScreenCaptureService] makes
+     * is a viewer, and every viewer lists it. Whichever is capturing makes
      * video while this is so.
      */
     fun videoWanted(): Boolean = StreamFormat.of(offers(recipients()), video = true) == StreamFormat.H264
@@ -337,9 +348,10 @@ object PhoneScreenCapture {
      * @param repeat the same screen as the picture before.
      * @param resend it was made because the picture before went unacknowledged.
      * @param capturedAt when the screen was captured, on the uptime clock.
+     * @param capture how the screen was captured: [SCREEN_SHARE] or [ACCESSIBILITY].
      */
     internal fun sendVideo(context: Context, unit: ByteArray, keyframe: Boolean, repeat: Boolean, resend: Boolean,
-                           width: Int, height: Int, capturedAt: Long): VideoSent {
+                           width: Int, height: Int, capturedAt: Long, capture: String = SCREEN_SHARE): VideoSent {
         val open = maySendFrames(context)
         val to = recipients()
         synchronized(streamLock) {
@@ -349,7 +361,7 @@ object PhoneScreenCapture {
                 if (stream != 0L && codec == H264) needKey = true
                 return VideoSent.NOT_SENT
             }
-            val word = settle(to, SCREEN_SHARE, video = true) ?: return VideoSent.NOT_SENT
+            val word = settle(to, capture, video = true) ?: return VideoSent.NOT_SENT
             size = width to height
             for (viewer in to) tell(viewer, word, always = false)
             if (needKey && !keyframe) return VideoSent.NEEDS_KEYFRAME
@@ -582,6 +594,9 @@ object PhoneScreenCapture {
             .put("codec", if (video) H264 else JPEG)
             .put("capture", if (ScreenCaptureService.isRunning) SCREEN_SHARE else ACCESSIBILITY)
             .put("fps", lastSecond)
-            .apply { if (video) ScreenCaptureService.videoBitrate?.let { put("bitrate", it) } }
+            .apply {
+                if (video) (ScreenCaptureService.videoBitrate ?: InputAccessibilityService.instance?.videoBitrate)
+                    ?.let { put("bitrate", it) }
+            }
     }
 }
