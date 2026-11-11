@@ -677,10 +677,16 @@ for that. A viewer that comes into a running stream is sent a keyframe.
   that has not changed, and on the keyframe made because the last frame went
   unacknowledged, which for video is the screen encoded again.
 - If its encoder fails, the phone goes on in JPEG: `screen-info` with a new
-  id and `codec: "jpeg"`, not paused. After two failures in one run of smooth
-  sharing it stays on JPEG, whatever viewers offer.
-- A frame the socket itself would not take gets no `seq`, and the next frame
-  sent is a keyframe.
+  id and `codec: "jpeg"`, not paused. The next time pictures start, or the
+  viewers next come to agree on video, it tries video again at three quarters
+  size, then at half; with no size left it stays on JPEG, whatever viewers
+  offer, for ten minutes. An encoder that stopped answering altogether is not
+  tried again until the app restarts.
+- A frame that was encoded and not sent gets no `seq`, and the next frame
+  sent in that stream is a keyframe. That is a frame the socket itself would
+  not take, and one encoded in a moment when no pictures might go (a device
+  joining the session closes the stream for an instant, and may open it
+  again before the phone has paused it).
 - `diagnostic-pong` says `codec: "h264"` and adds `bitrate`, the encoder's
   target in bits a second, only while video is being sent.
 

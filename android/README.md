@@ -99,10 +99,14 @@ phone's own hardware encoder): up to 30 pictures a second, each about a tenth
 the size of a JPEG. Everyone else gets JPEGs, up to 10 a second, as before: a
 PC on an older app, a PC whose Windows has no H.264 decoder, another phone,
 and every viewer while one of those is viewing too. Either way a still screen
-sends nothing. If the phone's encoder cannot be started, or stops working, the
-phone goes back to JPEGs by itself and the viewer keeps its picture; after two
-such failures it stays with JPEGs until smooth sharing is next turned on.
-**Connection history** (below) then has a line, "Smooth video went back to
+sends nothing. If the phone's encoder cannot be started, stops working or
+stops answering, the phone goes back to JPEGs by itself and the viewer keeps
+its picture. The next time a viewer opens, video is tried at three quarters
+size, and after another failure at half size; a size that failed is not tried
+again while smooth sharing stays on. When no size is left the phone stays with
+JPEGs for ten minutes and then starts over. (An encoder that stopped answering
+altogether is not tried again until the app has been restarted.) **Connection
+history** (below) has a line for each failure, "Smooth video went back to
 pictures", with the reason. No encoder is held while nobody is viewing.
 
 A PC that is viewing the phone can ask for it too: **Smooth video** in the
