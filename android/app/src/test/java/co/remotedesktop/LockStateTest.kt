@@ -109,8 +109,10 @@ class LockStateTest {
 
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 
-    private fun receive(from: String, type: String) {
-        handleJson.invoke(ConnectionManager, JSONObject().put("type", type).put("from", from))
+    private fun receive(from: String, type: String) = receive(from, JSONObject().put("type", type))
+
+    private fun receive(from: String, msg: JSONObject) {
+        handleJson.invoke(ConnectionManager, msg.put("from", from))
         idle()
     }
 
@@ -377,6 +379,41 @@ class LockStateTest {
     }
 
     // ---------- the unlock screen ----------
+
+    @Test
+    fun aTapMeantForTheUnlockScreenIsDroppedOnceThePhoneHasUnlocked() {
+        val shadow = shadowOf(service as android.accessibilityservice.AccessibilityService)
+        fun tap(onlyIfLocked: Boolean?) = JSONObject().put("type", "tap").put("x", 0.5).put("y", 0.7)
+            .apply { onlyIfLocked?.let { put("onlyIfLocked", it) } }
+        /** How many taps were made, each let finish so the next may play. */
+        fun made(): Int {
+            shadow.gesturesDispatched.lastOrNull()?.let { it.callback().onCompleted(it.description()) }
+            idle()
+            return shadow.gesturesDispatched.size
+        }
+
+        // On the PIN pad: the key is tapped.
+        screen(on = true, locked = true, Intent.ACTION_SCREEN_ON)
+        receive("pc", tap(onlyIfLocked = true))
+        assertEquals(1, made())
+
+        // The fourth digit unlocked the phone; a fifth is on its way. It is dropped.
+        screen(on = true, locked = false, Intent.ACTION_USER_PRESENT)
+        receive("pc", tap(onlyIfLocked = true))
+        assertEquals(1, made())
+        // An ordinary tap, and one that says false, are made as ever.
+        receive("pc", tap(onlyIfLocked = null))
+        assertEquals(2, made())
+        receive("pc", tap(onlyIfLocked = false))
+        assertEquals(3, made())
+
+        // Locked when the tap arrived, unlocked by the time it would be made: dropped.
+        keyguard.setKeyguardLocked(true)
+        handleJson.invoke(ConnectionManager, tap(onlyIfLocked = true).put("from", "pc"))
+        keyguard.setKeyguardLocked(false)
+        idle()
+        assertEquals(3, made())
+    }
 
     private val ui = "com.android.systemui"
 

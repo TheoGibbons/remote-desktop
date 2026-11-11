@@ -173,7 +173,12 @@ class InputAccessibilityService : AccessibilityService() {
             "tap" -> {
                 val (w, h) = screenSize()
                 val gesture = tap(msg.getDouble("x") * w, msg.getDouble("y") * h)
-                main.post { gestures.whole(gesture) }
+                // A viewer taps a key of the PIN pad it was told about a moment
+                // ago. If the phone has unlocked since, that place is now
+                // something on the home screen or in an app, and only this
+                // phone can know: asked at the moment the tap would be made.
+                val onlyIfLocked = msg.optBoolean("onlyIfLocked")
+                main.post { if (!onlyIfLocked || LockState.read(this).locked) gestures.whole(gesture) }
             }
             "swipe" -> {
                 val (w, h) = screenSize()

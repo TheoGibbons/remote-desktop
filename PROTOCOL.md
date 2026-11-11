@@ -172,7 +172,7 @@ The controller may be a PC or another phone.
 
 | type    | fields | notes |
 |---------|--------|-------|
-| `tap`   | `x`, `y` | |
+| `tap`   | `x`, `y`, `onlyIfLocked`? | A tap at that point. With `onlyIfLocked: true` the phone makes the tap only if its lock screen or unlock screen is up at the moment it would be made, and drops it otherwise. A viewer sets it on the taps it makes for the keys of a PIN `entry` (see `lock-state`): the phone may have unlocked since the viewer was told where the keys are, and that place is then something on the home screen or in an app. Phones before it ignore the field and tap. |
 | `swipe` | `x1`, `y1`, `x2`, `y2`, `ms` | Drag gesture over `ms` milliseconds. |
 | `touch` | `action` (`down`\|`move`\|`up`), `x`, `y` | Streamed pointer for real-time press / long-press / drag. The phone plays it as one continued accessibility stroke: the finger stays down from `down` until `up`. Senders should throttle `move` to ~30 ms. |
 | `pinch` | `x`, `y`, `dir` (`in`\|`out`), `scale`? | Two-finger pinch centered at `x`,`y`. Without `scale`, a fixed step (one mouse-wheel notch). With it, the end finger spread divided by the start spread, from another phone's own pinch; the phone starts the fingers at least the system's minimum scaling span apart (about 27 mm), since a pinch that starts closer barely zooms, and fits the gesture to the screen. |
