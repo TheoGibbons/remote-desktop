@@ -130,6 +130,16 @@ internal object LockState {
         tell(context)
     }
 
+    /**
+     * A device has stopped viewing ([peerId]), or all have (null). What it
+     * was told is forgotten in the order things happened: a viewer that
+     * stops and starts again before this phone has caught up would
+     * otherwise be told nothing, because nothing has changed since.
+     */
+    fun forget(peerId: String?) {
+        main.post { if (peerId == null) told.clear() else told.remove(peerId) }
+    }
+
     /** [ScreenWaker] tried to turn the screen on a moment ago; [woke] is whether it is on now. */
     fun wakeChecked(context: Context, woke: Boolean) {
         if (!listening) return

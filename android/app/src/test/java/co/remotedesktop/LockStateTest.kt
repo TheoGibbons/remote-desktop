@@ -308,6 +308,20 @@ class LockStateTest {
     }
 
     @Test
+    fun aViewerThatStopsAndStartsAgainAtOnceIsToldAgain() {
+        receive("pc", "start-view")
+        assertEquals(1, lockStates().size)
+        // Its window was closed and opened again: both messages arrive before this phone has dealt with either.
+        handleJson.invoke(ConnectionManager, JSONObject().put("type", "stop-view").put("from", "pc"))
+        handleJson.invoke(ConnectionManager, JSONObject().put("type", "start-view").put("from", "pc"))
+        idle()
+        assertEquals("The new window knows nothing of what the old one was told", 2, lockStates().size)
+        // And one that only asks again, without stopping, is still not told twice.
+        receive("pc", "start-view")
+        assertEquals(2, lockStates().size)
+    }
+
+    @Test
     fun aViewerOfASleepingPhoneIsToldOnceItIsKnownWhetherItWoke() {
         power.setIsInteractive(false)
         keyguard.setKeyguardLocked(true)

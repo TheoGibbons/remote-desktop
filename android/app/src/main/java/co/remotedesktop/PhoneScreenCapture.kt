@@ -65,6 +65,8 @@ object PhoneScreenCapture {
     /** Clear requests on disconnect/revocation so a later session never resumes an old view. */
     fun onViewStopped(peerId: String? = null) {
         if (peerId == null) viewers.clear() else viewers.remove(peerId)
+        // If it starts again it is told how things stand again, though nothing has changed.
+        LockState.forget(peerId)
         refresh()
     }
 
