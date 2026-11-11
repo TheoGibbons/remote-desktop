@@ -115,7 +115,10 @@ another phone (a peer whose `device` is `android`) unless its *Allow other
 phones* switch is on, which it is by default; an `fs-list` or `fs-get` it refuses
 that way says so in its `error`. The switch goes by the type each device
 declares to the relay: it is a consent step, not a defence against a modified
-app on an approved phone. Because every key holder can decrypt binary frames,
+app on an approved phone. A phone takes `frame-ack` and answers
+`diagnostic-ping` only from a device that is viewing it at that moment: one
+whose `start-view` it accepted and that has not stopped since. From anyone
+else they are dropped without an answer. Because every key holder can decrypt binary frames,
 and older relays **broadcast them** to the whole session, a host additionally
 sends no video frames and serves no file transfers while *any* unapproved peer
 is present in the session (the stream resumes automatically once the peer is
@@ -143,16 +146,18 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 
 | type          | fields | notes |
 |---------------|--------|-------|
-| `start-view`  | `to`, `autoUnprivacy`? (boolean) | Ask peer to start streaming its screen to me. Windows records `autoUnprivacy: true` for an approved viewer and restores the physical desktop when that viewing session ends (stop-view, peer/relay disconnect, or loss of approval). Defaults to false; each start-view replaces that viewer's policy. Older hosts ignore it. |
+| `start-view`  | `to`, `autoUnprivacy`? (boolean), `codecs`? (array) | Ask peer to start streaming its screen to me. Windows records `autoUnprivacy: true` for an approved viewer and restores the physical desktop when that viewing session ends (stop-view, peer/relay disconnect, or loss of approval). Defaults to false; each start-view replaces that viewer's policy. Older hosts ignore it. `codecs` is for a phone: the formats the viewer can draw inside type `5` frames, so far only `"jpeg"`. Sending it also promises `frame-ack`. See [Phone frames](#phone-frames). PC hosts ignore it. |
 | `stop-view`   | `to`   | Stop streaming. |
 | `privacy-mode` | `to`, `enabled` (boolean) | Windows only: hide physical monitors and block local keyboard/mouse while preserving app-injected remote input. Enabling requires remote-control consent, an approved active viewer, and all peers trusted. Disabling requires remote-control consent and an approved peer. Privacy stays active after viewing stops or peers/relay disconnect unless a departing viewer opted into autoUnprivacy; reconnecting approved viewers receive the current state. |
 | `get-privacy-state` | `to` | Approved peer asks Windows for privacy availability and current state. |
 | `privacy-state` | `to`, `enabled`, `supported`, `allowed`, `error?` | Windows acknowledges a toggle and announces local unlock or automatic cleanup. Viewers must use this state rather than optimistically toggling. Older hosts may omit it. |
-| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`?, `typing`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. A phone sets `typing: true` when it can type `text` and `key` into its text fields; older apps omit it. Sent when streaming starts and whenever the geometry changes. |
+| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`?, `typing`?, `stream`?, `codec`?, `capture`?, `paused`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. A phone sets `typing: true` when it can type `text` and `key` into its text fields; older apps omit it. Sent when streaming starts and whenever the geometry changes. A phone sends it to each viewer by itself (older phone apps broadcast it), and tells a viewer that sent `codecs` how its pictures are coming in `stream`, `codec`, `capture` and `paused`: see [Phone frames](#phone-frames). |
 | `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH`, `h264`? | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. `h264: true` additionally advertises that the viewer can decode binary frame type `4`. See [Viewport streaming](#viewport-streaming). |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
-| `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. |
-| `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | RTT response plus the desktop sender's queued binary backlog. The three stream fields report what the host has **adapted to**, not what the user configured, so they move during a session. |
+| `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. A phone answers only a device that is viewing it; phone apps up to v1.0.53 never answer. |
+| `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | From a PC: RTT response plus the desktop sender's queued binary backlog. The three stream fields report what the host has **adapted to**, not what the user configured, so they move during a session. |
+| `diagnostic-pong` | `to`, `nonce`, `hostTimeMs`, `hostQueueBytes`, `codec`, `capture`, `fps` | From a phone. `hostTimeMs` is the phone's uptime clock in milliseconds, read as the ping is handled; `captureMs` in a type `5` frame is the low 32 bits of the same clock, so a viewer can work out how old a picture is. `hostQueueBytes` is what waits in the phone's own send queue, which is not all that waits (the system buffers more below it). `codec` (`jpeg`) and `capture` (`accessibility` or `screen-share`) are as in `screen-info`. `fps` is how many pictures the phone sent in the last second. |
+| `frame-ack` | `to`, `stream`, `seq` | Viewer to phone: the highest `seq` that has arrived of the type `5` stream `stream`. Sent as frames arrive, at most one per 30 ms; a frame that arrives sooner than that after the last one is acknowledged when the 30 ms are up, so the last frame of a burst is never left out. Every viewer that sends `codecs` sends these. A phone takes them only from a device that is viewing it, and only for the stream it is sending. |
 
 **Input — controlling Windows** (coordinates normalized 0..1 over the stitched
 virtual desktop). The controller may be a phone or another PC — the host injects
@@ -376,9 +381,10 @@ byte). After decryption the payload is:
 
 | byte | meaning     | decrypted payload |
 |------|-------------|-------------------|
-| `1`  | video frame | `JPEG bytes` — one full JPEG image of the streamed screen. (Still used by the Android host; the Windows host streams type `3`.) |
+| `1`  | video frame | `JPEG bytes` — one full JPEG image of the streamed screen. (Sent by a phone while any of its viewers is on an app that does not know type `5`; the Windows host streams type `3`.) |
 | `2`  | file chunk  | `[xferId: uint32 BE][data bytes]` — sequential chunks (≤ 256 KiB) for the transfer announced by `fs-begin`. |
 | `4`  | H.264 frame | `[seq u32][flags u8: bit0 keyframe][surfW u16][surfH u16][regionX u16][regionY u16][regionW u16][regionH u16]` followed by one Annex B access unit. The region is always present: this path runs only in region mode. See [Hardware video](#hardware-video). |
+| `5`  | phone frame | `[stream u64][seq u32][flags u8][width u16][height u16][captureMs u32]` followed by the picture, so far always one full JPEG of the phone's screen. Integers are big-endian. See [Phone frames](#phone-frames). |
 | `3`  | screen patch | Dirty-rect update, all integers big-endian: `[seq u32][flags u8][surfW u16][surfH u16][rectCount u16]`, then — only when `flags` bit 1 is set — `[regionX u16][regionY u16][regionW u16][regionH u16]`, then `rectCount` × `[x u16][y u16][w u16][h u16][jpegLen u32][JPEG bytes]`. `flags` bit 0 = keyframe (a single rect covering the whole image); bit 1 = the image covers only the given desktop rect; bit 2 = scrolled, i.e. the crop moved and the overlapping pixels are to be carried across rather than resent (see [Viewport streaming](#viewport-streaming)). |
 
 **Dirty-rect streaming (type 3).** The host compares each captured frame to the
@@ -432,10 +438,79 @@ the device the file is going to. A relay that doesn't understand the format
 would broadcast it unchanged, which no receiver can read, so a sender
 addresses frames only on a connection whose `welcome` carried `binaryTo: true`,
 and broadcasts otherwise. A viewing app should still ignore frame types its
-host never sends (a desktop viewer ignores type `1`; a phone viewing a phone
-draws type `1` and ignores `3` and `4`), since an older relay or sender
+host never sends (a desktop viewer ignores types `1` and `5`; a phone viewing a
+phone draws `1` and `5` and ignores `3` and `4`), since an older relay or sender
 broadcasts everything. A type `1` frame names no sender, so behind an older
-relay a phone viewer can't tell two streaming phones apart.
+relay a phone viewer can't tell two streaming phones apart. Type `5` frames
+carry a stream id for that reason.
+
+### Phone frames
+
+A phone sends its screen as whole JPEGs. Type `1` is the bare JPEG. Type `5`
+is the same picture behind a header:
+
+```
+[stream u64][seq u32][flags u8][width u16][height u16][captureMs u32][picture bytes]
+```
+
+| field | meaning |
+|-------|---------|
+| `stream` | The id of the stream the frame belongs to: 64 random bits, picked by the phone when the stream starts. |
+| `seq` | 0 for a stream's first frame, one more for each frame after it. A gap means a frame was lost on the way. A picture the phone decided not to send takes no number. |
+| `flags` bit 0 | Keyframe: a picture that needs no earlier one. Always set for a JPEG. |
+| `flags` bits 1–2 | Format: `0` JPEG. `1` is kept for H.264; `2` and `3` are not used. A viewer does not draw a format it did not offer. |
+| `flags` bit 3 | Kept for a picture sent turned on its side. Not used. |
+| `flags` bit 4 | Repeat: the same screen as an earlier frame, sent again. Not used yet. |
+| `flags` bits 5–7 | Not used; a viewer ignores them. |
+| `width`, `height` | The picture's size in pixels. The shorter side is at most 1080, so a phone on its side sends up to 2340 × 1080 or so. |
+| `captureMs` | The low 32 bits of the phone's uptime clock, in milliseconds, when the screen was captured, or when the picture reached the app if Android's own stamp on it is not on that clock. See `hostTimeMs` in `diagnostic-pong`. |
+
+**Which type a phone sends.** A viewer on a current app puts `codecs` in its
+`start-view`. If every device viewing the phone has offered `"jpeg"`, the phone
+sends type `5`. If any has not, which is every app up to v1.0.53, all of them
+get type `1`: there is one stream for all viewers. The choice is made again
+whenever a viewer starts, stops or sends `start-view` again, and each
+`start-view` replaces what that viewer offered before.
+
+**Streams.** A type `1` frame names no sender, so a viewer draws one from
+anyone who holds the session key. Type `5` closes that for apps that know it:
+
+- A stream starts when pictures can first go as type `5`, when they can again
+  after a stop, and when the phone changes how it captures its screen. The
+  phone picks a new id and, before the stream's first frame, sends each viewer
+  a `screen-info` addressed to that viewer with `stream` (the id as 16 hex
+  digits), `codec` (`jpeg`) and `capture` (`accessibility`, or `screen-share`
+  for Android's screen sharing). A viewer that joins a running stream is told
+  the same id and takes up the numbering where it finds it.
+- A viewer believes a `stream` only from the phone it is viewing, and only if
+  it has itself approved that phone, which is also the only time it offers
+  `codecs`. It reads the id in the order messages arrive, before the frame
+  behind it.
+- While a stream is announced, the viewer draws only type `5` frames that carry
+  its id, each number once, and no type `1` frames at all.
+- When a viewer that needs type `1` joins, the phone ends the stream: the
+  viewers that sent `codecs` get a `screen-info` without `stream`, and from
+  then on draw type `1` like everyone else.
+- When the phone stops sending for a while with viewers still there, as it does
+  while a device nobody has approved is in the session, it sends those viewers
+  a `screen-info` with `paused: true` and no `stream`. Until the next
+  `screen-info` they draw nothing, of either type: whatever arrives is not the
+  phone's. The id is dead, and the next stream gets a new one.
+- A stream also ends with its last viewer, and when the phone's connection
+  drops. Nobody is told then.
+
+A viewer on an older app is sent `screen-info` exactly when it always was,
+with the fields it always had: it sizes its window on every one. The extra
+ones that a stream starting or ending brings go only to viewers that sent
+`codecs`.
+
+What this does not cover: a phone on an older app sends type `1` only, and so
+does a current one while an older viewer is watching beside a current one. And
+all of a phone's viewers share one id, so one approved viewer could draw into
+another's window.
+
+A phone never sends a picture with nobody to address it to; the relay would
+take that for a broadcast.
 
 ## Viewport streaming
 
@@ -562,8 +637,8 @@ be dropped without silently corrupting a transfer and keep an 8 MiB ceiling.
 The frame-type byte is cleartext precisely so the relay can tell these apart
 without decrypting anything.
 
-**Android sender.** A phone has one queue (OkHttp's). It skips a video frame
-while more than about 300 KB is queued, and holds back file chunks only above
+**Android sender.** A phone has one queue (OkHttp's). It skips a picture (type
+`1` or `5`) while more than about 300 KB is queued, and holds back file chunks only above
 6 MB. A screen picture skipped that way, or for the 10 fps cap, is kept and
 replaced by any newer one, and the newest goes out once there is room, so the
 last change on screen always arrives.
@@ -587,7 +662,7 @@ the `pairId` (which the server necessarily sees) reveals nothing about `encKey`.
 **AEAD:** AES-256-GCM, fresh random 12-byte nonce per message, 16-byte tag. The
 associated data is a single **channel** byte, binding each ciphertext to its
 context: `0` = JSON control, `1` = full-frame video, `2` = file chunk, `3` =
-dirty-rect screen patch. Frame =
+dirty-rect screen patch, `4` = H.264 from a PC, `5` = phone frame. Frame =
 `nonce(12) || ciphertext || tag(16)`.
 
 **Control envelope** (text frame): the inner control message is encrypted on
@@ -615,6 +690,18 @@ encKey     = 198b7e020fa0c8fdfeb3514e6b402eb3ea5af30addadc19153965eeec0e8dabf
 pairId     = 9a81be09e574b5a3078107db507c21722e8ea1f9f0a7bf762d6894a5dd371626
 channel 0, nonce = 000102030405060708090a0b, plaintext = {"type":"mouse","x":0.5}
   -> 000102030405060708090a0b11316fc47766f9c1dec528cf275cf3fa7d82e9c7f09830195d76f8782e7999f9150b6d97be135331
+channel 5, same nonce, plaintext = the phone frame below, as bytes
+  -> 000102030405060708090a0b94cfa1257157e9eb0ca847bb5530f5d2670534023049dd9bf5c7c4c85dc7fd49ca1773758a5994f402
+```
+
+**Phone frame test vector** (built and read back by `PhoneFrame.selfTest()` in
+Kotlin and `PhoneFrame.SelfTest()` in C#, so the two apps cannot come to
+disagree on the header): stream `fedcba9876543210`, `seq` 4026531841, a JPEG
+keyframe, 2340 × 1080, `captureMs` 4294967280, and the four picture bytes
+`ffd8ffd9`:
+
+```
+fedcba9876543210 f0000001 01 0924 0438 fffffff0 ffd8ffd9
 ```
 
 **Not covered:** replay protection (a malicious *active* relay could reorder or

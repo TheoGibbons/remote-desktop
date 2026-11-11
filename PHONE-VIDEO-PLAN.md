@@ -1,6 +1,6 @@
 # Faster phone viewing from the PC
 
-Plan only. Nothing here is built yet. Written 2026-11-10 against v1.0.53 (`30009c4`), then checked against the code by an independent review and revised the same day (the review log is the last section).
+Written 2026-11-10 against v1.0.53 (`30009c4`), then checked against the code by an independent review and revised the same day (the review log is the last section). Built so far: step 0.1, and step 0.2 on 2026-11-11, whose text below now describes what was built. Everything else is still a plan.
 
 Theo answered the open questions on 2026-11-10; section 12 records the answers, and they changed the order of work (section 3) and added Phase U, which has since become a plan of its own.
 
@@ -145,7 +145,9 @@ It is a Media Foundation transform, reached through `Vortice.MediaFoundation`, w
 - The phone picks a random 64-bit id when a stream starts and tells each viewer in a `screen-info` addressed to that viewer. The relay delivers an addressed message to that one device, and the phone streams nothing while a device it hasn't approved is present.
 - A viewer accepts an id only from a phone it has itself approved. Today the PC will open a viewer on any device in the list and believe its `screen-info`, approved or not.
 - While a phone has announced a stream, its viewer ignores type `1` frames. Otherwise the old unauthenticated path would stay open beside the new one.
-- When streaming stops or pauses, the phone tells its viewers so, and the id is dead. The next stream gets a new one.
+- When streaming pauses with viewers still there, the phone tells them so with `paused: true`, and the id is dead. The next stream gets a new one. A paused viewer draws nothing, of either type, until the next `screen-info`. The plan first had it fall back to type `1` here, but the usual reason for a pause is an unapproved device joining the session, and that device could then have drawn type `1` frames into the viewer for as long as it stayed.
+- A stream that ends because an older viewer joined is different: pictures keep coming, as type `1`, so the viewer is told there is no stream and is not told `paused`.
+- A viewer draws each sequence number of a stream once. A number it has seen is a frame played back.
 - What this does not cover: phones on older apps still send type `1`, which anyone with the session key can imitate, as today. And all of one phone's viewers share an id, so one approved viewer could draw into another's window.
 
 **D8. Keyframes are sent when needed, not on a timer.**
@@ -188,16 +190,16 @@ Decrypted payload, integers big-endian. The associated data for encryption is th
 | `flags` bit 3 | Sideways: the picture is the screen turned 90° clockwise and the viewer turns it back. Reserved until D9 is needed. |
 | `flags` bit 4 | Repeat: the same screen content as an earlier frame, sent again as a keyframe or for sharpness. Viewers leave it out of delay figures. |
 | `width`, `height` | Size of the picture as encoded, in pixels. |
-| `captureMs` | Low 32 bits of the phone's uptime clock, in ms, when the content was captured. |
+| `captureMs` | Low 32 bits of the phone's uptime clock, in ms, when the content was captured. Android's own stamp on the picture is used when it is at most 10 s behind that clock and not ahead of it; otherwise the time the picture reached the app (`PhoneFrame.captureTime`). |
 
 ### 5.2 JSON messages
 
 | Message | Direction | Change | Phase |
 |---|---|---|---|
-| `start-view` | viewer → phone | New optional `codecs`: array of `"jpeg"` and `"h264"`. Its presence means the viewer understands type `5` and will send `frame-ack`. A viewer offers it only to a phone it has approved. A later `start-view` from the same viewer replaces its list, which is how a viewer gives up on H.264 mid-session; every re-send carries the current list. PC hosts ignore it. | 0 |
-| `screen-info` | phone → each viewer | Addressed to each viewer rather than broadcast. New fields: `stream` (16 hex digits; left out when there is no type `5` stream), `codec` (`"jpeg"` or `"h264"`), `capture` (`"accessibility"` or `"screen-share"`). Sent again whenever one of them changes, but only to viewers that sent `codecs`; older viewers get it exactly when they do today, because a v1.0.53 PC resets its window size on every one. | 0 |
-| `frame-ack` | viewer → phone | New. `stream`, `seq`: the highest sequence number received of that stream. At most one per 30 ms. | 0 |
-| `diagnostic-ping` / `diagnostic-pong` | viewer ↔ phone | Phones now answer. The pong carries `nonce`, `hostTimeMs` (the clock `captureMs` uses, read as the ping is handled), `hostQueueBytes`, `codec`, `capture`, `fps` (sent in the last second) and `bitrate` (current target, H.264 only). | 0 |
+| `start-view` | viewer → phone | New optional `codecs`: array of `"jpeg"` and `"h264"`. Its presence means the viewer understands type `5` and will send `frame-ack`. A viewer offers it only to a phone it has approved. A later `start-view` from the same viewer replaces its list, which is how a viewer gives up on H.264 mid-session; every re-send carries the current list. PC hosts ignore it. Every viewer lists `"jpeg"`; one that did not would be sent type `1`. | 0, built |
+| `screen-info` | phone → each viewer | Addressed to each viewer rather than broadcast. New fields: `stream` (16 hex digits; left out when there is no type `5` stream), `codec` (`"jpeg"` or `"h264"`, with `stream`), `capture` (`"accessibility"` or `"screen-share"`), `paused` (true when nothing is being sent for now; see D7). Sent again whenever one of them changes, but only to viewers that sent `codecs`; older viewers get it exactly when they do today, with only the fields it has today, because a v1.0.53 PC resets its window size on every one. | 0, built |
+| `frame-ack` | viewer → phone | New. `stream`, `seq`: the highest sequence number received of that stream. At most one per 30 ms. A frame that arrives inside the 30 ms is acknowledged when they are up, so the last frame of a burst is always acknowledged; step 0.7 would otherwise wait on it for nothing. | 0, built |
+| `diagnostic-ping` / `diagnostic-pong` | viewer ↔ phone | Phones now answer. The pong carries `nonce`, `hostTimeMs` (the clock `captureMs` uses, in full, read as the ping is handled), `hostQueueBytes`, `codec`, `capture`, `fps` (sent in the last second) and `bitrate` (current target, H.264 only; not sent until Phase 2). | 0, built |
 | `screen-info` | phone → each viewer | New field `smooth`: `"on"`, `"available"` or `"unavailable"`. A Phase 0 phone never sends it, so a newer PC shows no button the phone can't act on. | 1 |
 | `request-smooth` | viewer → phone | New. Asks the phone to show its screen-sharing prompt. | 1 |
 | `stop-smooth` | viewer → phone | New. Ends smooth sharing; Accessibility viewing takes over. | 1 |
@@ -208,7 +210,7 @@ Decrypted payload, integers big-endian. The associated data for encryption is th
 
 ### 5.3 Which format a phone sends
 
-1. Any viewer without `codecs`: type `1`, as today, for everyone, and `screen-info` carries no `stream`.
+1. Any viewer without `codecs`, or whose list has nothing this phone sends: type `1`, as today, for everyone, and `screen-info` carries no `stream`.
 2. Every viewer lists `h264`, the phone is in smooth sharing, and its encoder works: type `5` H.264.
 3. Otherwise: type `5` JPEG.
 
@@ -216,8 +218,10 @@ The choice is made again whenever a viewer joins, leaves or re-sends `start-view
 
 ### 5.4 When a stream starts and ends
 
-- **Starts** when streaming begins or resumes, and when the format or the capture mode changes. The phone picks a new id, sends `screen-info` with it, then a keyframe.
-- **Ends** when the last viewer leaves, and when the gate closes (an unapproved device joined, control was switched off, the connection dropped). If it can, the phone sends `screen-info` without `stream` to the viewers that sent `codecs`.
+- **Starts** when streaming begins or resumes, and when the format or the capture mode changes. The phone picks a new id, sends `screen-info` with it, then a keyframe. A viewer that joins a running stream is told its id and nothing else changes; a turned phone keeps its stream.
+- **Ends** when the last viewer leaves, and when the gate closes (an unapproved device joined, control was switched off, the connection dropped). Viewers that are still viewing and sent `codecs` are sent `screen-info` without `stream` and with `paused: true`. Switching control off and a dropped connection leave nobody viewing, so nobody is told.
+- **Ends** also when a viewer that needs type `1` joins. The others are sent `screen-info` without `stream`, and not paused, ahead of the first type `1` frame.
+- A picture the send queue refuses takes no sequence number, so a viewer never counts a gap for it.
 - A frame is never sent to an empty list of recipients. Today `sendBinary` broadcasts in that case (`ConnectionManager.kt:355`).
 
 ## 6. The phases
@@ -233,27 +237,29 @@ Conventions for all phases:
 **0.1 Let the debug build sit beside the release app.** Built first of everything, before the menu plan (`PHONE-PLANS-ORDER.md`, step 0).
 In `android/app/build.gradle.kts`, give the `debug` build type `applicationIdSuffix = ".debug"`, a `-debug` version suffix and its own label ("Remote Desktop (debug)"). Nothing in the code depends on the bare package name: the FileProvider authority and the settings link already use `packageName`. The debug app is then a separate device with its own identity, Accessibility switch and approvals. When it first joins a session, every other device pauses its streams and file transfers until it has approved the newcomer, so approve it on each one straight away.
 
-**0.2 Type `5` with JPEG inside, and the messages around it.**
+**0.2 Type `5` with JPEG inside, and the messages around it.** Built 2026-11-11, without a phone: unit tests on both sides, the shared vectors, and the real window fed by a real feed off screen. Pictures flowing end to end are first seen in the session that closes Phase 0.
 
 Phone, as a host:
 - `Crypto.kt`: channel `5`.
-- New `PhoneFrame.kt`: builds and parses the header. Plain JVM.
-- `PhoneScreenCapture.kt`: keep each viewer's `codecs`, the stream id and the sequence number; choose the format (5.3); start and end streams (5.4); one `send` used by both capture classes, so the gate, the recipients and the header live in one place. Show the "started viewing" toast, and wake the phone, only for a viewer that was not already viewing, since `start-view` will now be re-sent to change `codecs`. (The unlock plan already makes the wake conditional; this adds the toast.)
-- `ConnectionManager.kt`: read `codecs` from `start-view`; answer `diagnostic-ping`; take `frame-ack`; apply the rule in 5.2 about who may send them.
-- `ScreenCaptureService.kt` and `AccessibilityScreenCapture.kt`: send through the shared `send`, with the capture time (`Image.timestamp`, `ScreenshotResult.timestamp`). Check on a device that both sit just before `SystemClock.uptimeMillis()`; where one does not, use the time the picture arrived.
+- New `PhoneFrame.kt`: builds and parses the header. Plain JVM. It holds two test vectors, whole frames as hex, that `PhoneFrame.cs` holds too; each app builds them and reads them back in its tests, and the first is also encrypted on channel `5` in all three `Crypto` self-tests.
+- `PhoneScreenCapture.kt`: keep each viewer's `codecs`, the stream id and the sequence number; choose the format (5.3); start and end streams (5.4); one `send` used by both capture classes, so the gate, the recipients and the header live in one place, and one `sendScreenInfo` that they call where they have always sent `screen-info`. The "started viewing" toast and the wake were already only for a viewer that was not already viewing (the unlock plan built both).
+- `ConnectionManager.kt`: read `codecs` from `start-view`; answer `diagnostic-ping`; take `frame-ack`, which is remembered and not yet acted on (0.7); apply the rule in 5.2 about who may send them.
+- `ScreenCaptureService.kt` and `AccessibilityScreenCapture.kt`: send through the shared `send`, with the capture time (`Image.timestamp`, `ScreenshotResult.timestamp`). Whether both sit just before `SystemClock.uptimeMillis()` has not been checked on a device. `PhoneFrame.captureTime` takes Android's stamp only when it does, and the time the picture arrived otherwise, so a stamp on another clock costs accuracy and not sense. The readout (0.3) will show which it is.
 
 PC:
 - `Crypto.cs`: channel `5`.
-- New `PhoneFrame.cs` (parse) and `PhoneVideoStream.cs` (current stream id, sequence gaps, per-second figures). Both plain, both tested.
-- New `PhoneFeed.cs`, owned by `MainWindow` as `_phoneFrames` is today: one ordered queue with one consumer thread, which owns the `PhoneVideoStream`. The socket thread puts three things into it, in the order they arrive:
-  - a stream announcement, read from `screen-info` in `OnJsonReceived` *before* that message is posted to the UI thread, and only when it comes from the phone being viewed and this PC has approved that phone;
+- New `PhoneFrame.cs` (parse, and build for the tests) and `PhoneVideoStream.cs` (current stream id, sequence gaps, per-second figures, and `AckPacer`, which paces `frame-ack`). Both plain, both tested.
+- New `PhoneFeed.cs`, owned by `MainWindow` in place of `_phoneFrames`. The socket thread hands it, in the order they arrive:
+  - what a `screen-info` says about the stream, read in `OnJsonReceived` *before* that message is posted to the UI thread, and taken only when it comes from the phone being viewed and this PC has approved that phone;
   - type `5` frames;
-  - type `1` frames, which the consumer draws only while no stream is announced.
+  - type `1` frames.
 
-  The socket thread also sends the `frame-ack`, and it never touches the window: the viewed phone's peer id is a field it can read safely. If the announcement went through the UI thread instead, the first keyframe of every stream would overtake it and be thrown away as "wrong stream".
-- `PhoneViewWindow`: `start-view` carries `codecs: ["jpeg"]` when the PC has approved the phone, on every send including `ResendStartView`. Resize the window only when the picture's shape changes; today every `screen-info` resets it. (The menu plan describes the full re-fit rule; see 3.1.)
+  Each is dealt with there and then, on the socket thread, under one lock: the announcement sets the current stream; a frame is checked against it (id, sequence number, type `1` only while no stream is announced and not paused), counted and acknowledged. That is a few comparisons, and it is what keeps the order: if the announcement went through the UI thread instead, the first frame of every stream would overtake it and be thrown away as "wrong stream". The plan first gave the stream to the consumer thread, but then the socket thread could not know which frames to acknowledge.
 
-Phone, as a viewer of another phone (`PhoneViewerActivity`): offer `codecs: ["jpeg"]`, draw type `5` JPEG with the announced id, draw type `1` only while none is announced, and acknowledge. `ConnectionManager` notes the announced id as it handles `screen-info`, which is on the network thread and so in order with the frames. Without this, a phone watching alongside a PC would put both back on type `1`.
+  What passes is left for the feed's own thread, newest only while every frame is a whole picture. That thread decodes the JPEG and looks whether it is black (`LockOverlay`, ruling 15), then leaves the result for the UI thread, which only assigns it. This is step 0.5's "decode off the UI thread", done here because the feed made it natural. The same thread sends an acknowledgement that was held back for the 30 ms rule.
+- `PhoneViewWindow`: `start-view` carries `codecs: ["jpeg"]` when the PC has approved the phone, on every send including `ResendStartView`, and is sent again when the PC approves the phone, or stops approving it, while the window is open. The window already re-fits only when the picture's shape changes (the menu plan built it).
+
+Phone, as a viewer of another phone (`PhoneViewerActivity`): offer `codecs: ["jpeg"]` to a phone this one has approved, draw type `5` JPEG with the announced id, draw type `1` only while none is announced, and acknowledge. `ConnectionManager` has listeners that run on the network thread (`networkJsonListeners`), and the activity reads the announced id there, in order with the frames. Without this, a phone watching alongside a PC would put both back on type `1`.
 
 **0.3 The readout.**
 A *Stats* row in the `⋯` menu toggles a small overlay, and so does F8. No F-key is forwarded to the phone, so F8 is free. It shows: capture mode, format, size, pictures a second, kbit/s, delay (latest, average and worst over the last second), round trip, the phone's queue, and gaps. Shift+F8 copies the last 60 seconds as text, so numbers can be pasted into a message or into section 11.
@@ -271,7 +277,7 @@ How the delay is worked out:
 
 **0.5 Small fixes.** Measure each one before and after.
 - **Turn Nagle off on the phone.** Give the `OkHttpClient` a `SocketFactory` that sets `tcpNoDelay` on each socket it creates. OkHttp creates the raw socket through the factory and layers TLS over it.
-- **Decode JPEGs off the PC's UI thread.** `PhoneViewWindow.OnFrame` decodes each one there today, about 15–30 ms. The feed's consumer thread decodes (newest only, as `FrameMailbox(1)` does), freezes the bitmap, and the UI thread only assigns it. The unlock plan's black-picture test was called from `OnFrame`; call it from the consumer thread now.
+- **Decode JPEGs off the PC's UI thread.** Built with step 0.2: the feed's own thread decodes (newest only, as `FrameMailbox(1)` did), freezes the bitmap and runs the unlock plan's black-picture test, and the UI thread only assigns the picture. Still to do here: measure it. A flat test picture of 1080 × 2340 took 5 ms; a real screen will take longer.
 - **Don't send a screenshot that hasn't changed.** Accessibility viewing sends every screenshot, about 100 KB two and a half times a second, even on a still screen. On a slow upload a changed picture then waits behind unchanged ones. Compare each screenshot with the last one sent (`Bitmap.sameAs`) and skip it if equal, except when a viewer has just joined or the size changed.
 - **For viewers on older apps**, which can't acknowledge, lower the skip threshold from 300 KB to about 64 KB. It costs nothing, but helps little on a slow upload, because the system buffer in front of it is far larger.
 
@@ -280,7 +286,7 @@ How the delay is worked out:
 - **Stop mirroring when nobody is viewing.** Today the virtual display keeps drawing into the `ImageReader` whether or not anyone views, and each picture is thrown away. Call `setSurface(null)` once streaming has been off for about 5 s, not at once, because of the short pauses described above. Attach it again when streaming starts. Attaching also makes Android draw one picture straight away, so a new viewer sees the screen without waiting for it to change.
 
 **0.7 Hold back by what has arrived** (D3).
-Viewers acknowledge from step 0.2 on: for each type `5` frame of the current stream, `frame-ack` with the highest `seq` received, at most one per 30 ms, from the thread that received the frame. That part must ship with 0.2, so that every viewer that offers `codecs` also acknowledges. This step is the phone acting on it. If the baseline shows no queueing on the home network, it can wait and become the first step of Phase 2, which cannot do without it.
+Viewers acknowledge from step 0.2 on (built): for each type `5` frame of the current stream, `frame-ack` with the highest `seq` received, at most one per 30 ms, from the thread that received the frame; one held back by the 30 ms goes a moment later, when they are up. That part had to ship with 0.2, so that every viewer that offers `codecs` also acknowledges. The phone already checks and remembers each one (`PhoneScreenCapture.onFrameAck`). This step is the phone acting on it. If the baseline shows no queueing on the home network, it can wait and become the first step of Phase 2, which cannot do without it.
 
 Phone: a new plain class, `InFlight`.
 - It notes when each frame was handed to the socket.
@@ -294,7 +300,7 @@ The 100 ms is a starting value; tune it with the readout. Known and unchanged: w
 
 **0.8 Docs.** `PROTOCOL.md`: the frame table, `screen-info`, `frame-ack`, the phone's pong, the paragraph on the Android sender's queue (it says 300 KB) and the list of encryption channels. `android/README.md`: the debug build, and that Accessibility viewing no longer sends unchanged pictures. `windows/README.md`: F8.
 
-**Tests.**
+**Tests.** Those that belong to step 0.2 are built: on the phone everything listed except `InFlight` and the unchanged screenshot (`PhoneFrameTest`, `PhoneStreamTest`, `PhoneScreenCaptureTest`, `PhoneViewerActivityTest`); on the PC everything except the delay arithmetic, which comes with the readout, plus the feed's own cases (newest only, the last frame of a burst acknowledged, a phone the PC has not approved, a pause); and the relay's.
 - Phone:
   - header round trip;
   - format choice for every mix of viewers; a viewer without `codecs` still gets a bare type `1` JPEG, byte for byte as now;
@@ -316,7 +322,7 @@ The 100 ms is a starting value; tune it with the readout. Known and unchanged: w
   - a sequence gap is counted;
   - the delay arithmetic, including the 32-bit clock wrapping and a pong that was held up;
   - `ResendStartView` keeps `codecs`.
-- Relay: one case in `server/test.mjs` pinning that an addressed type `5` frame reaches only its recipients and falls under the video buffer limit.
+- Relay: one case in `server/test.mjs` pinning that an addressed type `5` frame reaches only its recipients and falls under the video buffer limit. Built: a viewer that stops reading is sent 24 MiB of each kind, and about 0.7 MB of type `5` reaches it against 9 MB of type `2`.
 
 **Done when** the readout shows a believable delay for both modes on both phones, section 11 holds numbers from before and after, and old and new apps work together in both directions (section 9). If 0.7 is done in this phase, the limited-upload run also stays within about 0.3 s of the unlimited one.
 
@@ -681,10 +687,10 @@ PC decoder (Media Foundation):
 | Area | Files |
 |---|---|
 | Phone, changed | `Crypto.kt`, `ConnectionManager.kt`, `PhoneScreenCapture.kt`, `ScreenCaptureService.kt`, `AccessibilityScreenCapture.kt`, `InputAccessibilityService.kt`, `PhoneViewerActivity.kt`, `PermissionsActivity.kt`, `AndroidManifest.xml`, `strings.xml`, `app/build.gradle.kts` |
-| Phone, new | `PhoneFrame.kt`, `InFlight.kt`, `PhoneVideoEncoder.kt` and its GL class, `BitrateSteps.kt`, `ScreenShareRequestActivity.kt` |
+| Phone, new | `PhoneFrame.kt`, `PhoneVideoStream.kt` (the viewer's side, for a phone viewing a phone), `InFlight.kt`, `PhoneVideoEncoder.kt` and its GL class, `BitrateSteps.kt`, `ScreenShareRequestActivity.kt` |
 | PC, changed | `Crypto.cs`, `MainWindow.xaml.cs`, `PhoneViewWindow.xaml`, `PhoneViewWindow.xaml.cs`, `H264Encoder.cs` (shared Media Foundation start-up) |
 | PC, new | `PhoneFrame.cs`, `PhoneVideoStream.cs`, `PhoneFeed.cs`, `H264Decoder.cs`, `Nv12Converter.cs`, cases added to the menu plan's test project `RemoteDesktopWin.PhoneViewTests` |
-| Relay | `server/test.mjs` only |
+| Relay | `server/test.mjs`, and the channel `5` vector in `server/test-e2ee.mjs` |
 | Build and docs | `.github/workflows/release.yml`, `PROTOCOL.md`, `README.md`, `android/README.md`, `windows/README.md` |
 
 ## Sources
@@ -716,3 +722,13 @@ PC decoder (Media Foundation):
 - **Docs steps** added to Phases 0 and 1.
 
 Not verified by anyone yet, and so left to the checks in section 7: starting the prompt from the background on Android 17, tapping it remotely, wake locks on Android 17, and the Windows decoder's behaviour with tall pictures and in low-latency mode.
+
+2026-11-11. Building step 0.2 changed these parts, and the text above now says what was built:
+
+- **A pause is said as a pause (D7, 5.4).** The plan had a paused viewer fall back to drawing type `1`. A pause is usually an unapproved device joining, which is exactly who could then draw into the viewer. `screen-info` now carries `paused: true`, and a paused viewer draws nothing.
+- **The socket thread checks and acknowledges; the feed's thread only decodes (0.2).** The plan gave the stream's state to the consumer thread and the acknowledgement to the socket thread, which could not then know what to acknowledge.
+- **The last frame of a burst is acknowledged (5.2, 0.7).** "At most one per 30 ms" alone would leave it out, and the phone would then hold back, and send it again, for nothing.
+- **Decoding left the PC's UI thread now (0.5)**, with the black-picture test, since the feed's thread was there to do it.
+- **The capture time is checked, not trusted (5.1, 0.2).** No phone was at hand to see which clock Android stamps pictures with.
+- **A sequence number is drawn once, and a refused picture takes none.**
+- **A shared test vector for the header**, in both apps and, encrypted, in the relay's reference crypto.
