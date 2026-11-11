@@ -38,6 +38,10 @@ internal static class Program
         CheckCaptions();
         CheckBlackPicture();
         CheckBlackWatch();
+        CheckLockEntry();
+        CheckUnlockCaptions();
+        CheckPatternDots();
+        CheckPinTaps();
     }
 
     // ---------------- the menu ----------------
@@ -745,7 +749,7 @@ internal static class Program
         Check(refused == new LockInfo(false, true, LockInfo.Notifications), "And what a phone that didn't wake builds");
 
         var later = LockInfo.Parse(Json("""
-            {"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"pattern","area":[0.1,0.5,0.7,0.3]},"message":"Draw your pattern"}
+            {"type":"lock-state","screenOn":true,"locked":true,"biometrics":{"face":true},"attempts":3}
             """));
         Check(later == new LockInfo(true, true), "Fields a later phone adds are ignored");
         Check(LockInfo.Parse(Json("""{"screenOn":true,"locked":false,"wakeFailed":"notifications"}""")) == new LockInfo(true, false),
@@ -893,6 +897,159 @@ internal static class Program
         Check(!watch.IsBlack, "A change in the phone's state forgets the answer");
         Check(watch.Due(locked, At(1001)), "And the next picture is looked at straight away");
         Console.WriteLine("PASS: pictures are looked at twice a second at most, and only while black would mean something");
+    }
+
+    // ---------------- the unlock screen, drawn ----------------
+
+    private const string SharedPattern = """{"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"pattern","area":[0.1454,0.5141,0.7083,0.3269]},"message":"For your security, draw your pattern.","to":"pc"}""";
+    private const string SharedPin = """{"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"pin","keys":[{"label":"1","rect":[0.1389,0.375,0.2037,0.0917]},{"label":"0","rect":[0.3981,0.7,0.2037,0.0917]},{"label":"delete","rect":[0.1389,0.7,0.2037,0.0917]},{"label":"ok","rect":[0.6574,0.7,0.2037,0.0917]}]},"message":"Enter PIN","to":"pc"}""";
+    private const string SharedPassword = """{"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"password"},"to":"pc"}""";
+
+    /// <summary>A whole pad: twelve keys in four rows, as Android's own lock screen lays them out on a 1080 x 2400 screen.</summary>
+    private static string PinPad(bool withDelete = true, bool withOk = true)
+    {
+        string[][] rows = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["delete", "0", "ok"]];
+        var keys = new List<string>();
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 3; c++)
+            {
+                var label = rows[r][c];
+                if (label == "delete" && !withDelete || label == "ok" && !withOk) continue;
+                double x = (150 + c * 280) / 1080.0, y = (900 + r * 260) / 2400.0;
+                keys.Add(FormattableString.Invariant($$"""{"label":"{{label}}","rect":[{{x:0.####}},{{y:0.####}},0.2037,0.0917]}"""));
+            }
+        return $$"""{"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"pin","keys":[{{string.Join(",", keys)}}]},"message":"Enter PIN"}""";
+    }
+
+    private static void CheckLockEntry()
+    {
+        // The same texts are built by the phone in LockStateTest
+        // (theUnlockScreenIsDescribedAsTheViewersReadIt). Change them together.
+        var pattern = LockInfo.Parse(Json(SharedPattern));
+        Check(pattern is { ScreenOn: true, Locked: true, Message: "For your security, draw your pattern." }, "A pattern screen is read");
+        Check(pattern!.Entry == new PatternEntry(new FRect(0.1454, 0.5141, 0.7083, 0.3269)), "With the S26's grid where the phone says it is");
+
+        // Four keys are not a pad: all ten digits have to be there.
+        Check(LockInfo.Parse(Json(SharedPin)) is { Entry: null, Message: "Enter PIN" }, "A pad without all ten digits is not drawn");
+        var pin = LockInfo.Parse(Json(PinPad()));
+        Check(pin?.Entry is PinEntry { Keys.Count: 12 }, "A whole pad is read");
+        var pad = (PinEntry)pin!.Entry!;
+        Check(pad.Keys[0] == new PinKey("1", new FRect(0.1389, 0.375, 0.2037, 0.0917)), "Key by key, as the phone gives them");
+        Check(LockInfo.Parse(Json(PinPad())) == pin, "The same pad read twice is the same state");
+        Check(LockInfo.Parse(Json(PinPad(withOk: false))) != pin, "A pad without its OK key is another");
+        Check(LockInfo.Parse(Json(PinPad(withOk: false)))?.Entry is PinEntry { Keys.Count: 11 }, "And is still a pad");
+
+        Check(LockInfo.Parse(Json(SharedPassword)) is { Entry: PasswordEntry, Message: null }, "A password screen is read");
+
+        // What the phone can do goes by the screen and the lock, not by the message.
+        var wrong = LockInfo.Parse(Json(SharedPattern.Replace("For your security, draw your pattern.", "Incorrect pattern drawn")));
+        Check(wrong != pattern && wrong!.SameScreenAndLock(pattern), "A new message is a new state with the same screen and lock");
+        Check(!new LockInfo(true, false).SameScreenAndLock(pattern) && !pattern.SameScreenAndLock(null), "Unlocking is not");
+
+        // An unlock screen is only ever on a phone that is locked with its screen on.
+        Check(LockInfo.Parse(Json(SharedPattern.Replace("\"locked\":true", "\"locked\":false"))) == new LockInfo(true, false),
+            "Nothing is entered on an unlocked phone");
+        Check(LockInfo.Parse(Json(SharedPattern.Replace("\"screenOn\":true", "\"screenOn\":false"))) == new LockInfo(false, true),
+            "Nor on a sleeping one");
+
+        // Anything odd: no entry, and the viewer says what it would without one.
+        string With(string entry) => $$"""{"screenOn":true,"locked":true,"entry":{{entry}}}""";
+        foreach (var odd in new[]
+        {
+            "null", "7", "\"pattern\"", "{}", """{"kind":"swipe"}""", """{"kind":7}""",
+            """{"kind":"pattern"}""", """{"kind":"pattern","area":[0.1,0.5,0.7]}""", """{"kind":"pattern","area":[0.1,0.5,0.7,"0.3"]}""",
+            """{"kind":"pattern","area":[0.1,0.5,0,0.3]}""", """{"kind":"pattern","area":[-0.1,0.5,0.7,0.3]}""",
+            """{"kind":"pattern","area":[0.5,0.5,0.7,0.3]}""", """{"kind":"pattern","area":[0.1,0.9,0.7,0.3]}""",
+            """{"kind":"pin"}""", """{"kind":"pin","keys":[]}""", """{"kind":"pin","keys":"1234567890"}""",
+        })
+            Check(LockInfo.Parse(Json(With(odd))) == new LockInfo(true, true), "An entry that makes no sense is no entry: " + odd);
+
+        // Keys this viewer has no use for are left out; the pad still stands.
+        var extra = PinPad().Replace("""{"label":"1",""", """{"label":"emergency","rect":[0,0,0.1,0.1]},{"label":7,"rect":[0,0,0.1,0.1]},{"label":"1","rect":[2,2,2,2]},{"label":"1",""");
+        Check(LockInfo.Parse(Json(extra)) == pin, "Unknown keys, and a key that isn't on the screen, are dropped");
+
+        Check(LockInfo.Parse(Json("""{"screenOn":true,"locked":true,"message":"   "}""")) == new LockInfo(true, true), "A blank message is none");
+        Check(LockInfo.Parse(Json("""{"screenOn":true,"locked":true,"message":7}""")) == new LockInfo(true, true), "Nor is one that isn't words");
+        var longOne = LockInfo.Parse(Json($$"""{"screenOn":true,"locked":true,"message":"{{new string('x', 5000)}}"}"""));
+        Check(longOne!.Message!.Length == LockInfo.MessageMax, "A message is a line, however much a phone sends");
+        Console.WriteLine("PASS: where the pattern, PIN or password is entered is read as the phone builds it, or not at all");
+    }
+
+    private static void CheckUnlockCaptions()
+    {
+        var pattern = LockInfo.Parse(Json(SharedPattern))!;
+        var pin = LockInfo.Parse(Json(PinPad()))!;
+        var password = LockInfo.Parse(Json(SharedPassword))!;
+
+        // The grid and the keys are drawn, so the words about a hidden screen go.
+        foreach (bool black in new[] { false, true })
+        {
+            Check(LockCaption.For(pattern, black) == null, "No caption over a drawn pattern grid");
+            Check(LockCaption.For(pin, black) == null, "Nor over drawn PIN keys");
+            Check(LockCaption.For(password, black) == "Type the phone's password and press Enter.", "A password has nothing to draw: it is said");
+        }
+        var wrong = password with { Message = "Wrong password" };
+        Check(LockCaption.For(wrong, true) == "Wrong password\nType the phone's password and press Enter.", "With the phone's own message first");
+
+        Check(LockOverlay.Heading(pattern) == "For your security, draw your pattern.", "The phone's message heads the grid");
+        Check(LockOverlay.Heading(pattern with { Message = null }) == "Draw the phone's pattern.", "Or plain words when it sends none");
+        Check(LockOverlay.Heading(pin) == "Enter PIN", "The phone's message heads the keys");
+        Check(LockOverlay.Heading(pin with { Message = null }) == "Enter the phone's PIN.", "Or plain words");
+        Check(LockOverlay.Heading(password) == null && LockOverlay.Heading(new LockInfo(true, true)) == null && LockOverlay.Heading(null) == null,
+            "Nothing is drawn for a password, a lock screen, or a phone that never says");
+        Console.WriteLine("PASS: a drawn unlock screen replaces the caption, and a password is asked for in words");
+    }
+
+    private static void CheckPatternDots()
+    {
+        // The S26: a 765 pixel square at (157, 1203) on a 1080 x 2340 screen.
+        var area = new FRect(157 / 1080.0, 1203 / 2340.0, 765 / 1080.0, 765 / 2340.0);
+        var dots = LockOverlay.Dots(area);
+        Check(dots.Length == 9, "Nine dots");
+        // In pixels: the first is half a cell in from the corner, and they are a cell (255) apart.
+        Near(dots[0].X * 1080, 157 + 127.5, "The first dot's x");
+        Near(dots[0].Y * 2340, 1203 + 127.5, "The first dot's y");
+        Near(dots[4].X * 1080, 157 + 382.5, "The middle dot is the middle of the square, across");
+        Near(dots[4].Y * 2340, 1203 + 382.5, "And down");
+        Near(dots[8].X * 1080, 922 - 127.5, "The last dot's x");
+        Near(dots[8].Y * 2340, 1968 - 127.5, "The last dot's y");
+        Near((dots[1].X - dots[0].X) * 1080, 255, "Dots are a cell apart across");
+        Near((dots[3].Y - dots[0].Y) * 2340, 255, "And down");
+        Check(dots[2].Y == dots[0].Y && dots[6].X == dots[0].X, "Rows and columns are straight");
+
+        // Which dot a point is on: within 0.3 of a cell (76 pixels here), as on the phone.
+        int At(double px, double py) => LockOverlay.DotAt(px / 1080, py / 2340, area);
+        for (int i = 0; i < 9; i++) Check(LockOverlay.DotAt(dots[i].X, dots[i].Y, area) == i, "Each dot's centre is on that dot");
+        Check(At(157 + 127.5 + 70, 1203 + 127.5) == 0, "70 pixels from a dot is still on it");
+        Check(At(157 + 127.5 + 80, 1203 + 127.5) == -1, "80 pixels is not");
+        Check(At(157 + 127.5, 1203 + 127.5 + 70) == 0 && At(157 + 127.5, 1203 + 127.5 + 80) == -1, "The same down the screen, though it is taller than wide");
+        Check(At(157 + 255, 1203 + 255) == -1, "Between four dots is on none");
+        Check(At(10, 10) == -1 && At(540, 2300) == -1, "Nor is anywhere off the grid");
+        Console.WriteLine("PASS: the nine dots sit at the centres of an even split of the grid, and a drag takes a dot only when close");
+    }
+
+    private static void CheckPinTaps()
+    {
+        var pad = (PinEntry)LockInfo.Parse(Json(PinPad()))!.Entry!;
+        var four = pad.Tap("4");
+        // The 4 key: second row, first column; its middle.
+        Near(four!.Value.X * 1080, 150 + 110, "A digit is tapped in the middle of its key, across");
+        Near(four.Value.Y * 2400, 1160 + 110, "And down");
+
+        var taps = LockOverlay.PinTaps(pad, "4071");
+        Check(taps is { Count: 4 }, "Typed digits become one tap each");
+        Check(taps![0] == pad.Tap("4") && taps[1] == pad.Tap("0") && taps[2] == pad.Tap("7") && taps[3] == pad.Tap("1"), "In the order typed");
+        Check(LockOverlay.PinTaps(pad, "4a") == null && LockOverlay.PinTaps(pad, " ") == null && LockOverlay.PinTaps(pad, "") == null,
+            "Anything but digits is not for the pad");
+        Check(LockOverlay.PinTaps(pad, "٤") == null, "Nor digits of another script: the keys say 0 to 9");
+
+        Check(pad.Tap(PinEntry.Delete) is { } delete && Math.Abs(delete.X * 1080 - 260) < 0.5, "Backspace is the pad's delete key");
+        Check(pad.Tap(PinEntry.Ok) is { } ok && Math.Abs(ok.X * 1080 - 820) < 0.5, "Enter is its OK key");
+        var bare = (PinEntry)LockInfo.Parse(Json(PinPad(withDelete: false, withOk: false)))!.Entry!;
+        Check(bare.Tap(PinEntry.Delete) == null && bare.Tap(PinEntry.Ok) == null, "A pad without them has nowhere to tap");
+        Check(PinEntry.IsLabel("7") && PinEntry.IsLabel("delete") && PinEntry.IsLabel("ok") && !PinEntry.IsLabel("77") && !PinEntry.IsLabel("x"),
+            "The keys a pad may have");
+        Console.WriteLine("PASS: digits, Backspace and Enter become taps on the phone's own keys");
     }
 
     private static JsonObject Json(string text) => JsonNode.Parse(text)!.AsObject();

@@ -51,6 +51,12 @@
                    MouseLeftButtonDown="Screen_MouseDown" MouseLeftButtonUp="Screen_MouseUp"
                    MouseMove="Screen_MouseMove" MouseWheel="Screen_MouseWheel"
                    MouseUp="Screen_OtherButtonUp"/>
+            <!-- The unlock screen, which Android leaves out of the picture:
+                 the pattern's dots or the PIN's keys, drawn where the phone
+                 says they are, with its message and the trail of the drag
+                 being made (see LockOverlay). It only draws: the mouse goes
+                 to the picture beneath, as it does without it. -->
+            <Canvas x:Name="UnlockOverlay" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed"/>
             <!-- Says that the phone is asleep, or on the unlock screen that
                  Android leaves out of the picture (see LockCaption). At the
                  top, clear of where a pattern is drawn. Its outline sets it

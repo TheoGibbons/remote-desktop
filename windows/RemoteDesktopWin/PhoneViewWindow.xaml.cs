@@ -29,7 +29,10 @@ namespace RemoteDesktopWin;
 ///
 /// A phone that is asleep, or on the unlock screen Android leaves out of the
 /// picture, gets a line of words over the picture saying so (see
-/// <see cref="LockCaption"/>). Clicks pass through it.
+/// <see cref="LockCaption"/>). Clicks pass through it. When the phone says
+/// where its pattern or PIN is entered, the dots or the keys are drawn there
+/// (see <see cref="LockOverlay"/>): the mouse draws the pattern as it would
+/// on any screen, and digits typed on the keyboard become taps on the keys.
 ///
 /// While it is focused, the keyboard types into the phone's focused text
 /// field: characters as <c>text</c>, composed here with this PC's layout, and
@@ -80,6 +83,15 @@ public partial class PhoneViewWindow : Window
     private LockInfo? _lock;
     private readonly BlackWatch _blackWatch = new();
     private byte[] _pixels = [];        // the picture last looked at, kept to save allocating it again
+
+    // The drag being made over the pattern grid, as fractions of the phone's
+    // screen, and the dots it has passed over. Drawn, never sent or kept:
+    // both are emptied when the button comes up.
+    private readonly List<Point> _trail = [];
+    private readonly HashSet<int> _trailDots = [];
+
+    private static readonly Brush OverlayBrush = Frozen(Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF));
+    private static readonly Brush OverlayFaintBrush = Frozen(Color.FromArgb(0x73, 0xFF, 0xFF, 0xFF));
 
     // The size of the phone's picture, and the one the window was last sized
     // round. They differ while the window is maximised or minimised.
@@ -149,6 +161,9 @@ public partial class PhoneViewWindow : Window
             if (_downPos is { } p && !_touching) BeginTouch(p);
         };
         Loaded += (_, _) => { Focus(); Keyboard.Focus(this); FitToPicture(); };
+        // What is drawn over the picture is placed by the picture's size.
+        ScreenImage.SizeChanged += (_, _) => DrawUnlockScreen();
+        PictureHost.SizeChanged += (_, _) => DrawUnlockScreen();
     }
 
     private static Brush Frozen(Color color)
@@ -424,15 +439,163 @@ public partial class PhoneViewWindow : Window
         Dispatcher.BeginInvoke(() =>
         {
             if (LockInfo.Parse(msg) is not { } state || state == _lock) return;
+            bool screenOrLock = !state.SameScreenAndLock(_lock);
             _lock = state;
             // The picture on show was taken before this.
-            _blackWatch.Forget();
+            if (screenOrLock) _blackWatch.Forget();
+            if (state.Entry is not PatternEntry) ClearTrail();
             ShowCaption();
-            // What the phone can do goes with it: it turns its screen for
-            // nobody while asleep or locked, and lets go of a turn it held.
-            // It doesn't say so by itself, so it is asked.
-            AskPhoneState(always: true);
+            DrawUnlockScreen();
+            // What the phone can do goes with its screen and its lock: it
+            // turns its screen for nobody while asleep or locked, and lets
+            // go of a turn it held. It doesn't say so by itself, so it is
+            // asked. Not for a message line that changes: a lock screen
+            // counting down changes it every second.
+            if (screenOrLock) AskPhoneState(always: true);
         });
+    }
+
+    // ---------------- the unlock screen, drawn ----------------
+
+    /// <summary>The PIN pad the phone is showing, if it is.</summary>
+    private PinEntry? CurrentPin => _lock is { ScreenOn: true, Locked: true, Entry: PinEntry pin } ? pin : null;
+
+    /// <summary>Where the picture is drawn inside its host, letterboxed.</summary>
+    private Rect? PictureRect()
+    {
+        if (ScreenImage.Source is not { } picture) return null;
+        double iw = picture.Width, ih = picture.Height;
+        double cw = ScreenImage.ActualWidth, ch = ScreenImage.ActualHeight;
+        if (iw <= 0 || ih <= 0 || cw <= 0 || ch <= 0) return null;
+        double scale = Math.Min(cw / iw, ch / ih);
+        double dw = iw * scale, dh = ih * scale;
+        var origin = ScreenImage.TranslatePoint(new Point((cw - dw) / 2, (ch - dh) / 2), PictureHost);
+        return new Rect(origin.X, origin.Y, dw, dh);
+    }
+
+    /// <summary>
+    /// Draws the pattern's dots or the PIN's keys where the phone says they
+    /// are, with the line above them, or clears them away. Everything is
+    /// placed by the picture, so it lines up at any window size.
+    /// </summary>
+    private void DrawUnlockScreen()
+    {
+        UnlockOverlay.Children.Clear();
+        var heading = LockOverlay.Heading(_lock);
+        if (heading == null || _lock?.Entry is not { } entry || PictureRect() is not { } picture)
+        {
+            UnlockOverlay.Visibility = Visibility.Collapsed;
+            return;
+        }
+        UnlockOverlay.Visibility = Visibility.Visible;
+        Point At(double x, double y) => new(picture.X + x * picture.Width, picture.Y + y * picture.Height);
+
+        double top;
+        if (entry is PatternEntry pattern)
+        {
+            var area = pattern.Area;
+            top = At(0, area.Y).Y;
+            double cell = area.Width * picture.Width / 3;
+            if (_trail.Count > 1)
+            {
+                var line = new System.Windows.Shapes.Polyline
+                {
+                    Stroke = OverlayFaintBrush,
+                    StrokeThickness = Math.Max(2, cell * 0.06),
+                    StrokeLineJoin = PenLineJoin.Round,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                };
+                foreach (var point in _trail) line.Points.Add(At(point.X, point.Y));
+                UnlockOverlay.Children.Add(line);
+            }
+            var dots = LockOverlay.Dots(area);
+            for (int i = 0; i < dots.Length; i++)
+            {
+                bool taken = _trailDots.Contains(i);
+                double radius = Math.Max(3, cell * (taken ? 0.11 : 0.06));
+                var dot = new System.Windows.Shapes.Ellipse { Width = radius * 2, Height = radius * 2, Fill = OverlayBrush };
+                var centre = At(dots[i].X, dots[i].Y);
+                System.Windows.Controls.Canvas.SetLeft(dot, centre.X - radius);
+                System.Windows.Controls.Canvas.SetTop(dot, centre.Y - radius);
+                UnlockOverlay.Children.Add(dot);
+            }
+        }
+        else if (entry is PinEntry pin)
+        {
+            top = pin.Keys.Min(key => At(0, key.Rect.Y).Y);
+            foreach (var key in pin.Keys)
+            {
+                var corner = At(key.Rect.X, key.Rect.Y);
+                double w = key.Rect.Width * picture.Width, h = key.Rect.Height * picture.Height;
+                var box = new System.Windows.Controls.Border
+                {
+                    Width = w,
+                    Height = h,
+                    CornerRadius = new CornerRadius(Math.Min(w, h) * 0.3),
+                    BorderBrush = OverlayFaintBrush,
+                    BorderThickness = new Thickness(1),
+                    Child = new System.Windows.Controls.TextBlock
+                    {
+                        // The key that rubs out, as keyboards draw it.
+                        Text = key.Label switch { PinEntry.Delete => "\u232B", PinEntry.Ok => "OK", _ => key.Label },
+                        FontFamily = new FontFamily("Segoe UI Symbol, Segoe UI"),
+                        FontSize = Math.Clamp(Math.Min(w, h) * (key.Label.Length == 1 ? 0.42 : 0.3), 9, 30),
+                        Foreground = OverlayBrush,
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                System.Windows.Controls.Canvas.SetLeft(box, corner.X);
+                System.Windows.Controls.Canvas.SetTop(box, corner.Y);
+                UnlockOverlay.Children.Add(box);
+            }
+        }
+        else return;
+
+        // The line above them, as the phone has it above its own.
+        double width = Math.Max(40, picture.Width - 24);
+        var words = new System.Windows.Controls.TextBlock
+        {
+            Text = heading,
+            Width = width,
+            TextWrapping = TextWrapping.Wrap,
+            TextAlignment = TextAlignment.Center,
+            FontFamily = new FontFamily("Segoe UI"),
+            FontSize = 14,
+            Foreground = OverlayBrush,
+        };
+        words.Measure(new Size(width, double.PositiveInfinity));
+        System.Windows.Controls.Canvas.SetLeft(words, picture.X + (picture.Width - width) / 2);
+        System.Windows.Controls.Canvas.SetTop(words, Math.Max(picture.Y + 4, top - words.DesiredSize.Height - 14));
+        UnlockOverlay.Children.Add(words);
+    }
+
+    /// <summary>The mouse is down or moving over the picture: remembers
+    /// where, while the phone shows its pattern grid, so the drag can be
+    /// seen. It is the only sign of it on a black picture.</summary>
+    private void TrailTo(Point at)
+    {
+        if (_lock is not { ScreenOn: true, Locked: true, Entry: PatternEntry pattern } || Normalize(at) is not { } n) return;
+        _trail.Add(new Point(n.x, n.y));
+        int dot = LockOverlay.DotAt(n.x, n.y, pattern.Area);
+        if (dot >= 0) _trailDots.Add(dot);
+        DrawUnlockScreen();
+    }
+
+    private void ClearTrail()
+    {
+        if (_trail.Count == 0 && _trailDots.Count == 0) return;
+        _trail.Clear();
+        _trailDots.Clear();
+        DrawUnlockScreen();
+    }
+
+    /// <summary>Taps the points given, in order: digits typed for a PIN.</summary>
+    private void TapEach(IEnumerable<(double X, double Y)> points)
+    {
+        foreach (var (x, y) in points)
+            _ws.SendJson(new JsonObject { ["type"] = "tap", ["to"] = _phoneId, ["x"] = x, ["y"] = y });
     }
 
     /// <summary>Puts the words over the picture, or takes them away.</summary>
@@ -586,12 +749,14 @@ public partial class PhoneViewWindow : Window
         _touching = false;
         ScreenImage.CaptureMouse();
         _holdTimer.Start();
+        TrailTo(_downPos.Value);
     }
 
     private void Screen_MouseMove(object sender, MouseEventArgs e)
     {
         if (_downPos is not { } down) return;
         var pos = e.GetPosition(ScreenImage);
+        TrailTo(pos);
 
         if (!_touching)
         {
@@ -610,6 +775,7 @@ public partial class PhoneViewWindow : Window
     {
         ScreenImage.ReleaseMouseCapture();
         _holdTimer.Stop();
+        ClearTrail();
         if (_downPos is not { } down) return;
         var up = e.GetPosition(ScreenImage);
         _downPos = null;
@@ -702,7 +868,9 @@ public partial class PhoneViewWindow : Window
     ///   1. F8 and Shift+F8: the Stats readout. Not built yet.
     ///   2. Esc while the menu is open: closes the menu.
     ///   3. Digits, Backspace and Enter while the phone asks for a PIN: taps
-    ///      on its keys. Not built yet.
+    ///      on its keys, never text. Digits are claimed in
+    ///      <see cref="Window_PreviewTextInput"/>, where they arrive as
+    ///      characters whatever the keyboard's layout.
     ///   4. Everything else is typed into the phone.
     /// A key that makes a character is left unhandled here and arrives in
     /// <see cref="Window_PreviewTextInput"/>; handling it here stops that.
@@ -731,6 +899,30 @@ public partial class PhoneViewWindow : Window
             _escClosedMenu = false;
         }
 
+        // 3. A PIN pad on the phone: Backspace and Enter are its own two
+        // keys, tapped, and a paste has nowhere to go. A pad without one of
+        // them (some confirm by themselves) gets nothing for it.
+        if (CurrentPin is { } pin)
+        {
+            var label = modifiers != ModifierKeys.None ? null : key switch
+            {
+                Key.Back => PinEntry.Delete,
+                Key.Enter => PinEntry.Ok,
+                _ => null,
+            };
+            if (label != null)
+            {
+                if (pin.Tap(label) is { } at) TapEach([at]);
+                e.Handled = true;
+                return;
+            }
+            if (IsPaste(key, modifiers))
+            {
+                e.Handled = true;
+                return;
+            }
+        }
+
         // 4. The phone's keys.
         if (IsPaste(key, modifiers))
         {
@@ -750,6 +942,13 @@ public partial class PhoneViewWindow : Window
         var text = e.Text;
         if (string.IsNullOrEmpty(text)) return;
         if (text.Length == 1 && char.IsControl(text[0])) return; // control chars go via key events
+        // Digits for a PIN are taps on the phone's own keys, and never text.
+        if (CurrentPin is { } pin && LockOverlay.PinTaps(pin, text) is { } taps)
+        {
+            TapEach(taps);
+            e.Handled = true;
+            return;
+        }
         SendText(text);
         e.Handled = true;
     }
