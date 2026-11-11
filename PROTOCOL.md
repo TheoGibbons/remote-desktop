@@ -156,7 +156,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `request-keyframe` | `to`, `stream`? | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). To a phone that is sending video it asks for an H.264 keyframe and names the stream (16 hex digits): see [Phone video](#phone-video). |
 | `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. A phone answers only a device that is viewing it; phone apps up to v1.0.53 never answer. The PC's phone window sends one every two seconds while its Stats readout is open, and works out from the answers how old each picture is when it is drawn: the phone's `hostTimeMs` less the time the ping was sent is the difference between the two clocks plus the ping's trip, and the smallest such figure of the last minute, less half the shortest round trip, is taken as the difference. |
 | `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | From a PC: RTT response plus the desktop sender's queued binary backlog. The three stream fields report what the host has **adapted to**, not what the user configured, so they move during a session. |
-| `diagnostic-pong` | `to`, `nonce`, `hostTimeMs`, `hostQueueBytes`, `codec`, `capture`, `fps` | From a phone. `hostTimeMs` is the phone's uptime clock in milliseconds, read as the ping is handled; `captureMs` in a type `5` frame is the low 32 bits of the same clock, so a viewer can work out how old a picture is. `hostQueueBytes` is what waits in the phone's own send queue, which is not all that waits (the system buffers more below it). `codec` (`jpeg`) and `capture` (`accessibility` or `screen-share`) are as in `screen-info`. `fps` is how many pictures the phone sent in the last second. |
+| `diagnostic-pong` | `to`, `nonce`, `hostTimeMs`, `hostQueueBytes`, `codec`, `capture`, `fps` | From a phone. `hostTimeMs` is the phone's uptime clock in milliseconds, read as the ping is handled; `captureMs` in a type `5` frame is the low 32 bits of the same clock, so a viewer can work out how old a picture is. `hostQueueBytes` is what waits in the phone's own send queue, which is not all that waits (the system buffers more below it). `codec` (`jpeg` or `h264`) and `capture` (`accessibility` or `screen-share`) are as in `screen-info`. `fps` is how many pictures the phone sent in the last second. While it sends video it adds `bitrate`: see [Phone video](#phone-video). |
 | `frame-ack` | `to`, `stream`, `seq` | Viewer to phone: the highest `seq` that has arrived of the type `5` stream `stream`. Sent as frames arrive, before they are decoded, at most one per 30 ms; a frame that arrives sooner than that after the last one is acknowledged when the 30 ms are up, so the last frame of a burst is never left out. Every viewer that sends `codecs` sends these, for every frame of the stream including one it does not draw. A phone takes them only from a device that is viewing it, and only for the stream it is sending. It holds the next picture back by them: see [Phone frames](#phone-frames). |
 
 **Input — controlling Windows** (coordinates normalized 0..1 over the stitched
@@ -625,8 +625,9 @@ acknowledged, an unchanged screen is still sent every three seconds.
 ### Phone video
 
 A phone in smooth sharing can send its screen as H.264 in the same type `5`
-frames, to viewers that all offered `"h264"`. The Windows app decodes it; the
-Android app does not send it yet. The header is as above, with these meanings:
+frames, to viewers that all offered `"h264"`. The Android app sends it and
+the Windows app decodes it; a phone viewing another phone does not offer it.
+The header is as above, with these meanings:
 
 | field | for H.264 |
 |-------|-----------|
@@ -659,11 +660,39 @@ A stream's first frame is a keyframe, and so is the first frame at a new size
 when the phone is turned, whether or not the phone gives the stream a new id
 for that. A viewer that comes into a running stream is sent a keyframe.
 
+**What a phone does besides.**
+
+- A turn keeps the stream id. `screen-info` with the new size goes before the
+  first frame at that size, which is a keyframe from a new encoder, and no
+  frame of the old size follows it.
+- `screen-info`'s `width` and `height` for a video stream are the encoded
+  picture's. If the phone's encoder refuses the full size they are three
+  quarters or half of it, and a second `screen-info` says so once that is
+  known.
+- After a pause the next stream has a new id and starts with a keyframe.
+- A viewer that joins a running stream is told its id, and a keyframe is
+  encoded for it at once, unasked. Ordinary frames may reach it first.
+- The repeat flag is set on the two frames that sharpen a still picture
+  (150 ms and 600 ms after the last change), on a keyframe made of a screen
+  that has not changed, and on the keyframe made because the last frame went
+  unacknowledged, which for video is the screen encoded again.
+- If its encoder fails, the phone goes on in JPEG: `screen-info` with a new
+  id and `codec: "jpeg"`, not paused. After two failures in one run of smooth
+  sharing it stays on JPEG, whatever viewers offer.
+- A frame the socket itself would not take gets no `seq`, and the next frame
+  sent is a keyframe.
+- `diagnostic-pong` says `codec: "h264"` and adds `bitrate`, the encoder's
+  target in bits a second, only while video is being sent.
+
 **Asking for a keyframe.** `request-keyframe` with `to` and `stream`. A phone
 honours it only from a device that is viewing it, at most once a second in
-all, and drops one that names a stream it is no longer sending. Honouring it
-means the next frame it encodes is a keyframe, encoded even if the screen has
-not changed. The PC sends one, at most once a second and again each second
+all, and drops one that names a stream it is no longer sending; one with no
+`stream` is taken to mean the current one. A request that comes inside the
+second is honoured when the second is up, not dropped. One that crosses a
+keyframe is dropped: if the phone sent a keyframe less than a second ago and
+the viewer has not yet acknowledged a frame that late, the two have passed
+each other. Honouring it means the next frame it encodes is a keyframe,
+encoded even if the screen has not changed. The PC sends one, at most once a second and again each second
 until a keyframe comes, when:
 
 - a `seq` is missing (a frame was lost);
