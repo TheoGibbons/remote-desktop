@@ -68,6 +68,7 @@
                 <StackPanel>
                     <UniformGrid Rows="1">
                         <Button x:Name="BackButton" Style="{StaticResource RdMenuButton}" Tag="back"
+                                AutomationProperties.Name="Back"
                                 HorizontalContentAlignment="Center" Padding="8" Click="MenuAction_Click">
                             <StackPanel Orientation="Horizontal">
                                 <Path Data="M 10.5,2 L 3.5,7 L 10.5,12 Z" Width="14" Height="14"
@@ -77,6 +78,7 @@
                             </StackPanel>
                         </Button>
                         <Button x:Name="HomeButton" Style="{StaticResource RdMenuButton}" Tag="homebtn"
+                                AutomationProperties.Name="Home"
                                 HorizontalContentAlignment="Center" Padding="8" Click="MenuAction_Click">
                             <StackPanel Orientation="Horizontal">
                                 <Ellipse Width="12" Height="12" Margin="1" StrokeThickness="1.4" VerticalAlignment="Center"
@@ -85,6 +87,7 @@
                             </StackPanel>
                         </Button>
                         <Button x:Name="RecentsButton" Style="{StaticResource RdMenuButton}" Tag="recents"
+                                AutomationProperties.Name="Recents"
                                 HorizontalContentAlignment="Center" Padding="8" Click="MenuAction_Click">
                             <StackPanel Orientation="Horizontal">
                                 <Rectangle Width="11" Height="11" Margin="1.5" RadiusX="2" RadiusY="2"
