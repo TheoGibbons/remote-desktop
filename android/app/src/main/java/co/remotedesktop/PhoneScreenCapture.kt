@@ -171,14 +171,18 @@ object PhoneScreenCapture {
      * they have always sent `screen-info`: when streaming starts, when a
      * viewer asks, and when the size changes. A viewer on an older app sizes
      * its window on every one, so it is sent no others.
+     *
+     * @return whether it was said; false when the gate has closed, and the
+     * caller still owes it.
      */
-    fun sendScreenInfo(context: Context, width: Int, height: Int, capture: String) {
-        if (!maySendFrames(context)) return
+    fun sendScreenInfo(context: Context, width: Int, height: Int, capture: String): Boolean {
+        if (!maySendFrames(context)) return false
         val to = recipients()
         synchronized(streamLock) {
-            val word = settle(to, capture) ?: return
+            val word = settle(to, capture) ?: return false
             size = width to height
             for (viewer in to) tell(viewer, word, always = true)
+            return true
         }
     }
 

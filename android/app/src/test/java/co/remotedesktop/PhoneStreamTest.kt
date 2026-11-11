@@ -365,7 +365,7 @@ class PhoneStreamTest {
         picture()
         socket.clear()
         // The phone turns: the capture says so where it always has, then sends.
-        screenInfo(width = 2340, height = 1080)
+        assertTrue(screenInfo(width = 2340, height = 1080))
         assertTrue(PhoneScreenCapture.send(context, jpeg, 2340, 1080, 99, PhoneScreenCapture.ACCESSIBILITY))
         assertEquals(listOf("screen-info to pc", "frame 5"), socket.order)
         infos().single().let {
@@ -384,7 +384,8 @@ class PhoneStreamTest {
     fun nothingIsEverSentToNobody() {
         // Nobody is viewing. To the relay, a frame with no names on it is for everyone.
         assertFalse(picture())
-        screenInfo()
+        // The size was not said either, and the capture is told so: it still owes it.
+        assertFalse(screenInfo())
         // Someone who may not view asked.
         startView("stranger")
         assertFalse(picture())

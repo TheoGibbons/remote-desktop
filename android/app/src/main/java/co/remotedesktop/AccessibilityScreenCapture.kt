@@ -146,9 +146,13 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
             val size = width to height
             // Rotation and source/session switches need fresh dimensions before the JPEG.
             if (infoRequested.getAndSet(false) || sentSize != size || sentGeneration != token) {
-                PhoneScreenCapture.sendScreenInfo(service, width, height, PhoneScreenCapture.ACCESSIBILITY)
-                sentSize = size
-                sentGeneration = token
+                if (PhoneScreenCapture.sendScreenInfo(service, width, height, PhoneScreenCapture.ACCESSIBILITY)) {
+                    sentSize = size
+                    sentGeneration = token
+                } else {
+                    // The gate closed under it. It is still owed, with the next picture that goes.
+                    infoRequested.set(true)
+                }
             }
             if (isCurrent(token))
                 PhoneScreenCapture.send(service, out.toByteArray(), width, height, capturedAt, PhoneScreenCapture.ACCESSIBILITY)
