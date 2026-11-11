@@ -99,6 +99,9 @@ internal sealed class PhoneFeed : IDisposable
             Reset();
             _phoneId = null;
             _offered = false;
+            // The readout went with the window. The next window starts with it
+            // closed, and is not to ping its phone until it is opened there.
+            _statsShown = false;
         }
     }
 

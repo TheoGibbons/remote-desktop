@@ -1493,9 +1493,12 @@ internal static class Program
         Check(old.Text(10_000) == string.Join(Environment.NewLine,
             "Capture not known · JPEG, type 1 · 1080 × 2340",
             "3 pictures/s · 2400 kbit/s",
-            "Delay: not known. The phone's app is too old to say when a picture was taken.",
+            "Delay: not known. These pictures don't say when they were taken.",
             "Round trip not known · phone's queue not known",
             "Frames lost: 0"), "An older phone's readout has the rate and the size and says why there is no delay:\n" + old.Text(10_000));
+        Check(old.Text(20_000).Contains("0 pictures/s") && old.Text(20_000).Contains("Delay: not known."), "And goes on saying so while its screen is still");
+        Check(new PhoneStats().Text(0).Contains("Capture not known · JPEG · size not known") && new PhoneStats().Text(0).Contains("Delay: measuring"),
+            "Before anything has arrived, nothing is said about what kind of pictures they are");
 
         var stats = new PhoneStats();
         stats.Announce("accessibility", "jpeg");
@@ -1580,6 +1583,14 @@ internal static class Program
         rig.Now = 20_000;
         rig.Pump();
         Check(rig.Sent.Count(m => m.Contains("diagnostic-ping")) == 2, "Closing the readout stops the pings");
+        // A window that closes with its readout open takes the readout with it.
+        rig.Feed.ShowStats(true);
+        rig.Pump();
+        rig.Feed.Stop("7");
+        rig.Feed.View("7", offered: true);
+        rig.Now = 30_000;
+        rig.Pump();
+        Check(rig.Sent.Count(m => m.Contains("diagnostic-ping")) == 3, "The next window on the phone does not ping it until its own readout is opened");
         rig.Feed.Stop("7");
         rig.Feed.View("9", offered: true);
         Check(rig.Feed.StatsText().StartsWith("Capture not known") && rig.Feed.StatsText().Contains("Delay: measuring"),

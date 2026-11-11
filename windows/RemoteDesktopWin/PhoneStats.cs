@@ -45,7 +45,7 @@ internal sealed class PhoneStats
 
     private string? _capture, _codec;
     private (int W, int H) _size;
-    private bool _headers;      // the last picture came behind a header (type 5)
+    private bool? _headers;     // whether the last picture came behind a header (type 5); null before the first
 
     /// <summary>Frames of the current stream that never arrived.</summary>
     public long Lost { get; set; }
@@ -164,7 +164,7 @@ internal sealed class PhoneStats
         _ => "Capture not known",
     };
 
-    private string Format() => (_codec ?? "jpeg").ToUpperInvariant() + (_headers ? "" : ", type 1");
+    private string Format() => (_codec ?? "jpeg").ToUpperInvariant() + (_headers == false ? ", type 1" : "");
 
     private string SizeText() => _size.W > 0 ? $"{_size.W} × {_size.H}" : "size not known";
 
@@ -181,8 +181,9 @@ internal sealed class PhoneStats
         text.Append(Mode()).Append(" · ").Append(Format()).Append(" · ").AppendLine(SizeText());
         text.Append(second.Pictures).Append(second.Pictures == 1 ? " picture/s · " : " pictures/s · ")
             .Append((second.Bytes * 8 / 1000).ToString(CultureInfo.InvariantCulture)).AppendLine(" kbit/s");
-        if (!_headers && second.Pictures > 0)
-            text.AppendLine("Delay: not known. The phone's app is too old to say when a picture was taken.");
+        if (_headers == false)
+            // Type 1 frames carry no capture time: from a phone on an older app, or one that has an older viewer too.
+            text.AppendLine("Delay: not known. These pictures don't say when they were taken.");
         else if (clock == null)
             text.AppendLine("Delay: measuring");
         else if (second.DelayLatest == null)
@@ -238,7 +239,7 @@ internal sealed class PhoneStats
         _pingedAt = null;
         _capture = _codec = null;
         _size = default;
-        _headers = false;
+        _headers = null;
         Lost = 0;
     }
 }
