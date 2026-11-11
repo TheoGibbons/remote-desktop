@@ -351,6 +351,17 @@ internal class PhoneVideo(
         }
     }
 
+    /**
+     * The encoder started, and the caller could not put it to use: the
+     * display would not be pointed at it. It is let go of, and that counts
+     * as a failure like any other, so that it is not tried without end.
+     */
+    fun refused() {
+        val session = current ?: return
+        stop()
+        failedAt(session.step + 1)
+    }
+
     /** The capture service is ending: as [stop], and nothing starts again. */
     fun shutDown() {
         shutDown = true

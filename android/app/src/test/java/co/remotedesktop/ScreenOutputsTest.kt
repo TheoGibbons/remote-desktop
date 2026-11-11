@@ -2,6 +2,7 @@ package co.remotedesktop
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -234,6 +235,17 @@ class ScreenOutputsTest {
         assertEquals(0, openPipes)
         assertEquals("reader 1080x2340", mirroredInto)
         assertTrue(target.drawing)
+
+        // It counts like any failure, so it is not tried at every pause for ever:
+        // twice more, a size down each time, and then video is given up.
+        assertNotNull(point(video = true))
+        assertNotNull(point(video = true))
+        assertEquals(listOf(1080, 810, 540), pipes.map { it.width })
+        assertTrue(video.gaveUp)
+        repeat(5) { assertNull(point(video = true)) }
+        assertEquals(3, pipes.size)
+        assertEquals(0, openPipes)
+        assertEquals("reader 1080x2340", mirroredInto)
     }
 
     @Test

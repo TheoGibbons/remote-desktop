@@ -67,7 +67,7 @@ internal class ScreenOutputs<R : Any>(
         try {
             display.toVideo(checkNotNull(video.pipe))
         } catch (e: RuntimeException) {
-            video.stop()
+            video.refused()
             return "The screen could not be shown to the video encoder." to e.toString()
         }
         videoSource = width to height
