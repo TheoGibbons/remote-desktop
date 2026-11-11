@@ -469,6 +469,176 @@ class PhoneH264StreamTest {
             captureMs = 1234), header(socket.frames.single()))
     }
 
+    // ---------------- from the encoder to the wire, through the capture service's own wiring ----------------
+
+    /**
+     * The capture service as far as it can be had without Android's screen
+     * sharing: its own wiring ([ScreenOutputs], [VideoLane], [PhoneVideo],
+     * [VideoWish]) with a made-up encoder and display, and on the far side
+     * of it this phone's real stream and socket. The service itself adds
+     * only what is spelled out here: its `Host` passes `announce` to
+     * [PhoneScreenCapture.sendScreenInfo] and the encoder's pictures to
+     * [PhoneScreenCapture.sendVideo], and [streaming] is its `updateStreaming`.
+     */
+    private inner class Service {
+        val timer = FakeVideoTimer()
+        val pipes = ArrayList<FakeVideoPipe>()
+        val history = ArrayList<String>()
+        val wish = VideoWish()
+        val target = CaptureTarget({ w, h -> "reader ${w}x$h" }) { }
+        var mirroredInto: Any? = null
+        var sending = false
+        lateinit var outputs: ScreenOutputs<String>
+        val video = PhoneVideo(
+            encoders = { listOf(VideoSetup.Encoder("hardware", hardware = true, constantBitrate = true) { _, _ -> true }) },
+            open = { attempt, _, _, events -> FakeVideoPipe(attempt, events).also { pipes += it } },
+            timer = timer,
+            clock = { timer.now },
+            hasRoom = PhoneScreenCapture::hasRoom,
+            send = { frame ->
+                PhoneScreenCapture.sendVideo(context, frame.bytes, frame.keyframe, frame.repeat, frame.resend,
+                    frame.width, frame.height, frame.capturedAtMs)
+            },
+            onFailed = { reason, detail -> outputs.failed(reason, detail) },
+            spare = { it() },
+        )
+        val lane = VideoLane(video, post = { it.run() }, clock = { timer.now })
+
+        init {
+            outputs = ScreenOutputs(target, lane, wish, object : ScreenOutputs.Display<String> {
+                override fun toReader(reader: String?) { mirroredInto = reader }
+                override fun toVideo(pipe: VideoPipe) { mirroredInto = pipe }
+            }, object : ScreenOutputs.Host {
+                override val sending: Boolean get() = this@Service.sending
+                override fun size() = 1080 to 2340
+                override fun dropWaiting() = Unit
+                override fun announce(width: Int, height: Int, video: Boolean, always: Boolean) {
+                    PhoneScreenCapture.sendScreenInfo(context, width, height, PhoneScreenCapture.SCREEN_SHARE, video, always)
+                }
+                override fun videoFailed(reason: String, detail: String?) { history += reason }
+                override fun later(task: Runnable, delayMs: Long) = Unit
+            })
+            mirroredInto = target.open(1080, 2340)
+        }
+
+        /** `ScreenCaptureService.updateStreaming`, as `PhoneScreenCapture.refresh` calls it. */
+        fun streaming(on: Boolean) {
+            val change = wish.update(on, on && PhoneScreenCapture.videoWanted())
+            if (!change.any) return
+            sending = on
+            if (on) {
+                outputs.announce(always = change.started)
+                outputs.mirror(true)
+            } else outputs.point()
+        }
+
+        /** What the service's reader does with a picture: nothing while pictures are to be video. */
+        fun jpeg(): Boolean = !outputs.asVideo && picture()
+
+        val pipe get() = pipes.last()
+    }
+
+    @Test
+    fun aFailedEncoderIsFollowedAllTheWayToTheViewersJpegStream() {
+        val service = Service()
+        startView("pc")
+        socket.clear()
+        service.streaming(true)
+        // Video is what this viewer gets, so the reader's pictures are not sent.
+        assertFalse(service.jpeg())
+        service.pipe.config()
+        service.pipe.events.picture(service.timer.now)
+        service.pipe.answerAll()
+        assertEquals(listOf("screen-info to pc", "frame 5"), socket.order)
+        assertEquals("h264", infos().single().getString("codec"))
+        assertEquals(id(1), infos().single().getString("stream"))
+        header(socket.frames.single()).let {
+            assertEquals(PhoneFrame.H264, it.format)
+            assertTrue(it.keyframe)
+            assertEquals(0L, it.seq)
+        }
+
+        // The encoder reports an error. Nothing in this test does the service's part for it.
+        socket.clear()
+        service.pipe.events.failed(IllegalStateException("codec error"))
+        service.timer.advance()
+        assertEquals(listOf("The video encoder stopped working."), service.history)
+        assertEquals("reader 1080x2340", service.mirroredInto)
+        assertEquals(1, service.pipe.closed)
+        // The viewer is told of a new stream, in JPEG, and not that pictures have paused.
+        assertEquals(listOf("screen-info to pc"), socket.order)
+        infos().single().let {
+            assertEquals(id(2), it.getString("stream"))
+            assertEquals("jpeg", it.getString("codec"))
+            assertEquals(1080 to 2340, it.getInt("width") to it.getInt("height"))
+            assertFalse(it.has("paused"))
+        }
+        // And the reader's pictures, which Android draws at once when the screen is given back to it, go out in it.
+        assertTrue(service.jpeg())
+        assertTrue(service.jpeg())
+        assertEquals(listOf("screen-info to pc", "frame 5", "frame 5"), socket.order)
+        assertEquals(listOf(0L, 1L), socket.frames.map { header(it).seq })
+        assertTrue(socket.frames.all { header(it).format == PhoneFrame.JPEG && header(it).stream == 0xA2L })
+        // Whatever the dead encoder still gives is not sent.
+        service.pipe.answer(FakeVideoPipe.Drawn(1, keyframe = true))
+        assertEquals(2, socket.frames.size)
+
+        // The viewer closes and opens its window: video again, at the next size down, announced as such.
+        stopView("pc")
+        service.streaming(false)
+        startView("pc")
+        socket.clear()
+        service.timer.advance(1_000)
+        service.streaming(true)
+        service.pipe.config()
+        service.pipe.events.picture(service.timer.now)
+        service.pipe.answerAll()
+        assertEquals(2, service.pipes.size)
+        infos().last().let {
+            assertEquals("h264", it.getString("codec"))
+            assertEquals(810 to 1754, it.getInt("width") to it.getInt("height"))
+        }
+        header(socket.frames.single()).let {
+            assertEquals(PhoneFrame.H264, it.format)
+            assertTrue(it.keyframe)
+            assertEquals(810 to 1754, it.width to it.height)
+        }
+    }
+
+    @Test
+    fun anEncoderThatWillNotStartLeavesTheViewerOnJpegFromTheFirstPicture() {
+        val service = Service()
+        startView("pc")
+        socket.clear()
+        // This phone has no encoder that will start.
+        val refusing = PhoneVideo({ emptyList() }, { _, _, _, _ -> error("unreachable") }, service.timer,
+            { service.timer.now }, { true }, { VideoSent.SENT }, { _, _ -> }, spare = { it() })
+        val outputs = ScreenOutputs(service.target, VideoLane(refusing, { it.run() }, { service.timer.now }), service.wish,
+            object : ScreenOutputs.Display<String> {
+                override fun toReader(reader: String?) { service.mirroredInto = reader }
+                override fun toVideo(pipe: VideoPipe) = error("unreachable")
+            }, object : ScreenOutputs.Host {
+                override val sending: Boolean get() = service.sending
+                override fun size() = 1080 to 2340
+                override fun dropWaiting() = Unit
+                override fun announce(width: Int, height: Int, video: Boolean, always: Boolean) {
+                    PhoneScreenCapture.sendScreenInfo(context, width, height, PhoneScreenCapture.SCREEN_SHARE, video, always)
+                }
+                override fun videoFailed(reason: String, detail: String?) { service.history += reason }
+                override fun later(task: Runnable, delayMs: Long) = Unit
+            })
+        service.outputs = outputs
+        service.streaming(true)
+        assertEquals(listOf("This phone has no video encoder for its screen's size."), service.history)
+        assertEquals("reader 1080x2340", service.mirroredInto)
+        assertTrue(service.jpeg())
+        // What the viewer is left believing is the JPEG stream, and the picture is in it.
+        assertEquals("jpeg", infos().last().getString("codec"))
+        assertEquals(PhoneFrame.parseStream(infos().last().getString("stream")), header(socket.frames.single()).stream)
+        assertEquals(PhoneFrame.JPEG, header(socket.frames.single()).format)
+        assertEquals("frame 5", socket.order.last())
+    }
+
     @Test
     fun theEncoderFailingMidStreamStartsAJpegStream() {
         startView("pc")
