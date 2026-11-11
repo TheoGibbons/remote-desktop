@@ -25,9 +25,9 @@ import java.nio.FloatBuffer
  * whether or not the network could take it, and a still screen could never
  * be encoded again for a viewer that needs a keyframe.
  *
- * Everything here belongs to the thread that made it: the OpenGL context is
- * current on that thread from the constructor until [release]. It decides
- * nothing; a failure is thrown.
+ * Everything here belongs to the thread that made it, the video's own: the
+ * OpenGL context is current on that thread from the constructor until
+ * [release]. It decides nothing; a failure is thrown.
  *
  * @param output the encoder's input surface, [width] x [height].
  * @param sourceWidth the size the screen is mirrored at, which the texture's

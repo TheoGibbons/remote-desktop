@@ -8,7 +8,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** A clock and a queue of tasks that a test moves forward by hand, standing in for the capture thread. */
+/** A clock and a queue of tasks that a test moves forward by hand, standing in for the video's thread. */
 internal class FakeVideoTimer(var now: Long = 10_000) : PhoneVideo.Timer {
     private val tasks = ArrayList<Pair<Long, Runnable>>()
     override fun post(task: Runnable) { tasks += now to task }
@@ -35,20 +35,46 @@ internal class FakeVideoPipe(val attempt: VideoSetup.Attempt, val events: VideoP
     override val width = attempt.width
     override val height = attempt.height
     override val bitrate = attempt.bitrate
-    val drawn = ArrayList<Drawn>()
-    var closed = 0
+    val drawn: MutableList<Drawn> = java.util.Collections.synchronizedList(ArrayList<Drawn>())
+    @Volatile var closed = 0
+    @Volatile var aborted = 0
     var failDraws: RuntimeException? = null
     var failClose = false
+
+    /**
+     * An encoder that has stopped answering: while this is set, a draw or a
+     * close does not come back until it is opened. With real threads only.
+     */
+    @Volatile var hold: java.util.concurrent.CountDownLatch? = null
+
+    /** Whether letting go of the encoder from outside ([abort]) frees a call that is held. */
+    @Volatile var abortFrees = false
+
+    /**
+     * Runs in the middle of a draw, for a test on one thread to do what
+     * another thread would be doing while this one is inside the encoder.
+     */
+    var whileDrawing: (() -> Unit)? = null
 
     override fun draw(ptsUs: Long, keyframe: Boolean) {
         check(closed == 0) { "Drawn into after it was closed" }
         failDraws?.let { throw it }
+        whileDrawing?.invoke()
+        hold?.await()
+        // As a draw fails that was waiting on an encoder which has been let go of.
+        check(aborted == 0) { "eglSwapBuffers 0x300d" }
         drawn += Drawn(ptsUs, keyframe)
     }
 
     override fun close() {
+        hold?.await()
         closed++
         if (failClose) throw IllegalStateException("close failed")
+    }
+
+    override fun abort() {
+        aborted++
+        if (abortFrees) hold?.countDown()
     }
 
     companion object {
@@ -107,6 +133,7 @@ class PhoneVideoTest {
         send = { frame -> sent += frame; sendResult },
         onFailed = { reason, detail -> failures += reason to detail },
         screenOn = { screenOn },
+        spare = { it() },
     )
 
     private val pipe get() = pipes.last()
@@ -772,6 +799,66 @@ class PhoneVideoTest {
         video.shutDown()
         video.stop()
         assertEquals(1, pipe.closed)
+    }
+
+    // ---------------- an encoder that stops answering ----------------
+
+    @Test
+    fun aCallIntoTheEncoderIsTimedWhileItLasts() {
+        val pipe = running()
+        assertEquals(0L, video.stuckFor(timer.now))
+        var seen = -1L
+        // Looked at from outside, in the middle of a draw that has taken three seconds so far.
+        pipe.whileDrawing = {
+            timer.now += 3_000
+            seen = video.stuckFor(timer.now)
+        }
+        screenChanges()
+        assertEquals(3_000L, seen)
+        // It came back: nothing is being waited for.
+        assertEquals(0L, video.stuckFor(timer.now + 60_000))
+    }
+
+    @Test
+    fun aVideoGivenUpFromOutsideSendsNothingMoreAndIsNeverStartedAgain() {
+        val pipe = running()
+        screenChanges()
+        val late = pipe.drawn.last()
+        // Its thread did not come back from the encoder, and somebody else found that out.
+        video.abandon()
+        assertFalse(video.running)
+        assertFalse(video.usable)
+        // The encoder is let go of from outside, which is all that might free the thread.
+        assertEquals(1, pipe.aborted)
+        assertEquals(0, pipe.closed)
+
+        // Whatever the encoder still gives goes nowhere.
+        pipe.answer(late)
+        assertTrue(sent.isEmpty())
+
+        // The thread comes back after all. It closes what it had, and that is all it does.
+        timer.advance(60_000)
+        assertEquals(1, pipe.closed)
+        assertEquals(4, pipe.drawn.size)
+        // Whoever gave it up has said so already: nothing is reported from here.
+        assertTrue(failures.isEmpty())
+        assertFalse(video.start(1080, 2340))
+        assertEquals(1, pipes.size)
+        video.abandon()
+        assertEquals(1, pipe.aborted)
+    }
+
+    @Test
+    fun aDrawThatFailsOnceItsVideoWasGivenUpReportsNothing() {
+        val pipe = running()
+        // Given up in the middle of a draw, which then fails because the encoder was let go of under it.
+        pipe.whileDrawing = { video.abandon() }
+        screenChanges()
+        timer.advance(10_000)
+        assertTrue(failures.isEmpty())
+        assertEquals(1, pipe.closed)
+        assertEquals(3, pipe.drawn.size)
+        assertFalse(video.gaveUp)
     }
 
     @Test

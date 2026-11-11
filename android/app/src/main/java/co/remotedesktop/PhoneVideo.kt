@@ -20,8 +20,15 @@ internal interface VideoPipe {
     /** Lets go of everything. Nothing is heard from it afterwards. */
     fun close()
 
+    /**
+     * Called from another thread when a call into this pipe has not come
+     * back: lets go of the encoder under it, which may let the call return.
+     * It may itself never return, so it is called on a thread nothing waits for.
+     */
+    fun abort()
+
     interface Events {
-        /** The texture holds a new picture of the screen, captured at [capturedAtMs] (uptime). The pipe's own thread. */
+        /** The texture holds a new picture of the screen, captured at [capturedAtMs] (uptime). The video thread. */
         fun picture(capturedAtMs: Long)
 
         /**
@@ -136,8 +143,17 @@ internal class VideoLedger {
  * tried again. A phone may have been short of encoders for a while (its
  * camera in use), and the PC forgets its own failures after the same time.
  *
- * Every method is for the capture thread, which [timer] runs things on. The
- * encoder's callbacks come in on its own thread ([VideoPipe.Events]).
+ * **Threads.** This lives on a thread of its own, the video thread, which
+ * [timer] runs things on, and every method is for that thread unless it says
+ * otherwise. The encoder's callbacks come in on the encoder's thread
+ * ([VideoPipe.Events]). The capture service talks to it through [VideoLane].
+ *
+ * It has its own thread because an encoder can stop answering without
+ * saying so, and a call into it then never comes back. On the thread that
+ * also makes the JPEGs and hears Android end the sharing, that would freeze
+ * everything, with nothing left to fall back with. So every call into the
+ * encoder is timed ([stuckFor]), and whoever finds one stuck gives this
+ * object up for good ([abandon]) from its own thread, and carries on in JPEG.
  */
 internal class PhoneVideo(
     private val encoders: () -> List<VideoSetup.Encoder>,
@@ -148,10 +164,12 @@ internal class PhoneVideo(
     private val clock: () -> Long,
     private val hasRoom: () -> Boolean,
     private val send: (Frame) -> VideoSent,
-    /** Video has ended by a failure, for the reason given. Capture thread. */
+    /** Video has ended by a failure, for the reason given. Called on the video thread. */
     private val onFailed: (reason: String, detail: String?) -> Unit,
     /** Whether the phone's own screen is on: a screen that is off gives no pictures, and that is no failure. */
     private val screenOn: () -> Boolean = { true },
+    /** Runs something that may never return, on a thread nothing waits for. */
+    private val spare: (() -> Unit) -> Unit = { task -> Thread({ task() }, "video-abort").apply { isDaemon = true }.start() },
 ) {
     interface Timer {
         fun post(task: Runnable)
@@ -233,7 +251,47 @@ internal class PhoneVideo(
     @Volatile private var current: Session? = null
     private val pacer = VideoPacer()
     private var sending = false
-    private var shutDown = false
+    @Volatile private var shutDown = false
+
+    /** When the call into the encoder that is being made now began; 0 while none is. */
+    @Volatile private var busySince = 0L
+    @Volatile private var abandoned = false
+
+    /** Makes one call into the encoder, timed so that another thread can see if it never comes back. */
+    private inline fun <T> timed(call: () -> T): T {
+        busySince = clock().coerceAtLeast(1)
+        try {
+            return call()
+        } finally {
+            busySince = 0
+        }
+    }
+
+    /** How long the call into the encoder that is being made now has taken; 0 while none is. Any thread. */
+    fun stuckFor(now: Long): Long = busySince.let { if (it == 0L) 0 else now - it }
+
+    /**
+     * A call into the encoder has not come back, and this object's thread
+     * with it. Any thread but that one. Nothing more is sent, and nothing is
+     * ever started again. The encoder is let go of from a spare thread, which
+     * frees the stuck call if anything will; if the video thread does come
+     * back it closes what it had open and does nothing else.
+     */
+    fun abandon() {
+        if (abandoned) return
+        abandoned = true
+        current?.let { session ->
+            synchronized(session.gate) { session.ended = true }
+            spare {
+                try {
+                    session.pipe.abort()
+                } catch (_: Exception) {
+                    // It was worth trying.
+                }
+            }
+        }
+        timer.post { stop() }
+    }
     private var lastPtsUs = 0L
     /** The first size still to be tried ([VideoSetup.Attempt.step]), and when video last failed. */
     @Volatile private var step = 0
@@ -241,7 +299,8 @@ internal class PhoneVideo(
     /** Whether [watchTask] is due to run. */
     private var watching = false
 
-    val running: Boolean get() = current != null
+    /** Any thread. */
+    val running: Boolean get() = current != null && !abandoned
 
     /** The encoded picture's size, while video is running. Any thread. */
     val size: Pair<Int, Int>? get() = current?.pipe?.let { it.width to it.height }
@@ -258,11 +317,11 @@ internal class PhoneVideo(
      */
     val gaveUp: Boolean get() = step >= VideoSetup.STEPS && clock() - failedAt < FORGET_MS
 
-    /** Whether video may be started: it has not been given up, and the service is not ending. Capture thread. */
-    val usable: Boolean get() = !shutDown && !gaveUp
+    /** Whether video may be started: it has not been given up or abandoned, and the service is not ending. Any thread. */
+    val usable: Boolean get() = !shutDown && !abandoned && !gaveUp
 
     /** Why the last [start] did not start, in words for the connection history, and the raw error. */
-    var lastFailure: Pair<String, String?> = "Video could not be started." to null
+    @Volatile var lastFailure: Pair<String, String?> = "Video could not be started." to null
         private set
 
     private val tickTask = Runnable { tick() }
@@ -291,10 +350,15 @@ internal class PhoneVideo(
         for (attempt in attempts) {
             val session = Session(attempt.step)
             try {
-                session.pipe = open(attempt, sourceWidth, sourceHeight, session)
+                session.pipe = timed { open(attempt, sourceWidth, sourceHeight, session) }
             } catch (e: Exception) {
                 error = e
                 continue
+            }
+            if (abandoned) {
+                // It took so long to start that it was given up meanwhile.
+                closeQuietly(session)
+                return false
             }
             current = session
             pacer.reset()
@@ -316,7 +380,7 @@ internal class PhoneVideo(
         sending = on
         timer.remove(tickTask)
         // What follows a pause is a new stream, and a stream starts with a keyframe.
-        if (on) {
+        if (on && !abandoned) {
             pacer.resumed(clock())
             tick()
         }
@@ -324,14 +388,14 @@ internal class PhoneVideo(
 
     /** A keyframe is wanted: [byViewer] when a viewer asked for it, and then at most one a second is made. */
     fun keyframe(byViewer: Boolean) {
-        if (current == null) return
+        if (current == null || abandoned) return
         pacer.wantKeyframe(byViewer)
         tick()
     }
 
     /** The last picture went unacknowledged: the screen as it is now goes again, as a keyframe. */
     fun resend() {
-        if (current == null) return
+        if (current == null || abandoned) return
         pacer.wantResend()
         tick()
     }
@@ -344,8 +408,12 @@ internal class PhoneVideo(
         timer.remove(watchTask)
         watching = false
         synchronized(session.gate) { session.ended = true }
+        closeQuietly(session)
+    }
+
+    private fun closeQuietly(session: Session) {
         try {
-            session.pipe.close()
+            timed { session.pipe.close() }
         } catch (_: Exception) {
             // It is gone either way.
         }
@@ -371,7 +439,7 @@ internal class PhoneVideo(
     private fun tick() {
         val session = current ?: return
         timer.remove(tickTask)
-        if (!sending) return
+        if (!sending || abandoned) return
         val now = clock()
         val room = hasRoom()
         pacer.next(now, room)?.let { draw ->
@@ -381,7 +449,7 @@ internal class PhoneVideo(
             if (draw.keyframe) session.lastKeyPtsUs = ptsUs
             session.ledger.drawn(ptsUs, draw, now)
             try {
-                session.pipe.draw(ptsUs, draw.keyframe)
+                timed { session.pipe.draw(ptsUs, draw.keyframe) }
             } catch (e: Exception) {
                 fail(session, "The video encoder stopped working.", e.toString())
                 return
@@ -440,6 +508,8 @@ internal class PhoneVideo(
     private fun fail(session: Session, reason: String, detail: String?) {
         if (current !== session) return
         stop()
+        // Given up already, by whoever found it stuck, and reported by them.
+        if (abandoned) return
         // It started at this size and failed at it: the next try is at the next size down.
         failedAt(session.step + 1)
         onFailed(reason, detail)

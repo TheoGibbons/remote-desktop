@@ -10,7 +10,7 @@ package co.remotedesktop
  * next one is. ([PhoneVideo] ends that after two failures.)
  *
  * [update] is for the main thread and [tried], [failed] for the capture
- * thread; [wanted] may be read on either. Nothing here touches Android.
+ * thread; [wanted] may be read on any. Nothing here touches Android.
  */
 internal class VideoWish {
     @Volatile private var agreed = false

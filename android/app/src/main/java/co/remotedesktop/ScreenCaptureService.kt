@@ -30,6 +30,7 @@ import android.view.Display
 import android.view.WindowManager
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Foreground service holding the MediaProjection. The projection consent is
@@ -38,19 +39,24 @@ import java.io.ByteArrayOutputStream
  *
  * Pictures leave as JPEGs, or as H.264 while every viewer can draw it
  * ([PhoneScreenCapture.videoWanted]). The screen is mirrored into an image
- * reader for the one and into a video encoder for the other
- * ([ScreenOutputs], [PhoneVideo]). If the encoder cannot be started, or
- * fails, pictures go on as JPEGs and the connection history says why.
+ * reader for the one and into a video encoder for the other. [ScreenOutputs]
+ * decides which, and what happens when the encoder cannot be started or
+ * fails: pictures go on as JPEGs and the connection history says why. This
+ * class only hands it the display, the threads and the way to the viewers.
  *
  * Threads: the service's own calls and [updateStreaming] run on the main
- * thread. Pictures arrive, wait their turn and are encoded on the capture
- * thread, which is also where the stream is given a new shape when the screen
- * turns ([followScreen]), where the mirror is pointed at the reader or the
- * encoder ([point]) and where mirroring is stopped while nobody views
- * ([mirror]); the pacer, the bitmap and everything of the video's but the
- * encoder's own output belong to it. The image
+ * thread. Pictures arrive, wait their turn and are made into JPEGs on the
+ * capture thread, which is also where the stream is given a new shape when
+ * the screen turns ([followScreen]), where the mirror is pointed at the
+ * reader or the encoder and where mirroring is stopped while nobody views
+ * ([ScreenOutputs]); the pacer and the bitmap belong to it. The image
  * reader is swapped there and closed on the main thread when sharing stops,
  * so [CaptureTarget] makes the two take turns.
+ *
+ * The video ([PhoneVideo], with its OpenGL context and its encoder) has a
+ * third thread to itself, and is spoken to through [VideoLane]. An encoder
+ * that stops answering takes that thread with it and nothing else: the
+ * capture thread, which also hears Android end the sharing, goes on.
  */
 class ScreenCaptureService : Service() {
 
@@ -125,7 +131,7 @@ class ScreenCaptureService : Service() {
         }
 
         fun resendScreenInfo() {
-            instance?.let { if (it.streaming && PhoneScreenCapture.maySendFrames(it)) it.sendScreenInfo() }
+            instance?.outputs?.announce()
         }
 
         /**
@@ -133,16 +139,23 @@ class ScreenCaptureService : Service() {
          * viewer asked, and then at most one a second is made. Any thread.
          */
         fun keyframeWanted(byViewer: Boolean) {
-            instance?.run { captureHandler?.post { video.keyframe(byViewer) } }
+            instance?.lane?.keyframe(byViewer)
         }
 
         /** The last H.264 picture went unacknowledged: the screen goes again, as a keyframe. Any thread. */
         fun resendWanted() {
-            instance?.run { captureHandler?.post { video.resend() } }
+            instance?.lane?.resend()
         }
 
         /** Bits a second the video encoder is aiming at, while it runs. */
-        val videoBitrate: Int? get() = instance?.video?.bitrate
+        val videoBitrate: Int? get() = instance?.lane?.bitrate
+
+        /**
+         * An encoder stopped answering and took the video's thread with it.
+         * Video is not tried again while this process lives: whatever stuck
+         * is still in it.
+         */
+        private val videoWedged = AtomicBoolean()
 
         /**
          * Where encoded pictures go in place of the viewers, for a check on
@@ -161,20 +174,20 @@ class ScreenCaptureService : Service() {
 
     // Whether pictures are to be H.264, as [updateStreaming] last found the viewers.
     private val wish = VideoWish()
-    // Capture thread: the try at video the encoder was last started for, and
-    // whether the screen is mirrored at all.
-    private var tried = 0
-    private var mirrorOn = true
+
+    // The video's own thread: its OpenGL context is made, drawn with and let go of there.
+    private var videoThread: HandlerThread? = null
+    @Volatile private var videoHandler: Handler? = null
 
     private val video = PhoneVideo(
         encoders = PhoneVideoEncoder::encoders,
         open = { attempt, width, height, events ->
-            PhoneVideoEncoder(attempt, width, height, checkNotNull(captureHandler), events)
+            PhoneVideoEncoder(attempt, width, height, checkNotNull(videoHandler), events)
         },
         timer = object : PhoneVideo.Timer {
-            override fun post(task: Runnable) { captureHandler?.post(task) }
-            override fun postDelayed(task: Runnable, delayMs: Long) { captureHandler?.postDelayed(task, delayMs) }
-            override fun remove(task: Runnable) { captureHandler?.removeCallbacks(task) }
+            override fun post(task: Runnable) { videoHandler?.post(task) }
+            override fun postDelayed(task: Runnable, delayMs: Long) { videoHandler?.postDelayed(task, delayMs) }
+            override fun remove(task: Runnable) { videoHandler?.removeCallbacks(task) }
         },
         clock = SystemClock::uptimeMillis,
         hasRoom = PhoneScreenCapture::hasRoom,
@@ -182,21 +195,49 @@ class ScreenCaptureService : Service() {
             videoSink?.invoke(frame) ?: PhoneScreenCapture.sendVideo(this, frame.bytes, frame.keyframe,
                 frame.repeat, frame.resend, frame.width, frame.height, frame.capturedAtMs)
         },
-        onFailed = ::videoFailed,
+        // It says so on its own thread; what follows is the capture thread's to do.
+        onFailed = { reason, detail -> captureHandler?.post { outputs.failed(reason, detail) } },
         screenOn = { (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive },
     )
-    private val outputs = ScreenOutputs(target, video, object : ScreenOutputs.Display<ImageReader> {
-        override fun toReader(reader: ImageReader?) {
-            virtualDisplay?.surface = reader?.surface
-        }
+    private val lane = VideoLane(video,
+        // With no thread for it, which is before sharing has started and after it has ended, there and then.
+        post = { task -> if (videoHandler?.post(task) != true) task.run() },
+        clock = SystemClock::uptimeMillis, wedge = videoWedged)
+    private val outputs: ScreenOutputs<ImageReader> = ScreenOutputs(target, lane, wish,
+        object : ScreenOutputs.Display<ImageReader> {
+            override fun toReader(reader: ImageReader?) {
+                try {
+                    virtualDisplay?.surface = reader?.surface
+                } catch (e: RuntimeException) {
+                    // E.g. the projection stopped at that moment.
+                    Log.w("ScreenCaptureService", "Could not point the mirror", e)
+                }
+            }
 
-        override fun toVideo(pipe: VideoPipe) {
-            virtualDisplay?.surface = (pipe as PhoneVideoEncoder).surface
-        }
-    }) { pacer.clear() }
+            // If this throws, video is taken to have failed.
+            override fun toVideo(pipe: VideoPipe) {
+                checkNotNull(virtualDisplay).surface = (pipe as PhoneVideoEncoder).surface
+            }
+        },
+        object : ScreenOutputs.Host {
+            override val sending: Boolean get() = streaming
+            override fun size(): Pair<Int, Int> = outSize()
+            override fun dropWaiting() = pacer.clear()
 
-    /** Whether pictures are to be H.264 now: the viewers can all draw it, and this try at it has not failed. */
-    private fun videoMode() = wish.wanted && !video.gaveUp
+            override fun announce(width: Int, height: Int, video: Boolean, always: Boolean) {
+                PhoneScreenCapture.sendScreenInfo(this@ScreenCaptureService, width, height,
+                    PhoneScreenCapture.SCREEN_SHARE, video, always)
+            }
+
+            override fun videoFailed(reason: String, detail: String?) {
+                Log.w("ScreenCaptureService", "Video failed: $reason ${detail.orEmpty()}")
+                ConnectionLog.add(ConnectionLog.Entry(ConnectionLog.Kind.VIDEO, System.currentTimeMillis(), reason, detail))
+            }
+
+            override fun later(task: Runnable, delayMs: Long) {
+                captureHandler?.postDelayed(task, delayMs)
+            }
+        })
 
     // The screen is held on while the phone is viewed in smooth sharing,
     // because a phone that sleeps and locks ends it (see KeepAwake).
@@ -210,7 +251,7 @@ class ScreenCaptureService : Service() {
     private val pacer = FramePacer<Image>(1000L / maxFps, retryMs = 100L) { it.close() }
     @Volatile private var captureHandler: Handler? = null
     private val catchUp = Runnable {
-        if (!streaming || videoMode()) pacer.clear()
+        if (!streaming || outputs.asVideo) pacer.clear()
         else pacer.retry(SystemClock.uptimeMillis(), PhoneScreenCapture.hasRoom())?.let(::encodeAndSend)
         scheduleCatchUp()
     }
@@ -220,10 +261,10 @@ class ScreenCaptureService : Service() {
     // every change of the screen into the reader, each picture to be thrown
     // away. So the mirror is let go of, but not at once: pictures pause for a
     // moment whenever any device joins the session.
-    private val idle = Runnable { if (!streaming) mirror(false) }
-    private val resume = Runnable { mirror(true) }
+    private val idle = Runnable { if (!streaming) outputs.mirror(false) }
+    private val resume = Runnable { outputs.mirror(true) }
     // A pause in the pictures: the encoder, if there is one, is kept and nothing is drawn into it.
-    private val pause = Runnable { point() }
+    private val pause = Runnable { outputs.point() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -246,6 +287,8 @@ class ScreenCaptureService : Service() {
         captureThread = HandlerThread("capture").also { it.start() }
         val handler = Handler(captureThread!!.looper)
         captureHandler = handler
+        videoThread = HandlerThread("video").also { it.start() }
+        videoHandler = Handler(videoThread!!.looper)
 
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projection = mpm.getMediaProjection(resultCode, data)
@@ -284,8 +327,12 @@ class ScreenCaptureService : Service() {
         // Waits for a change of shape that is under way; none starts after it.
         target.close { virtualDisplay?.release() }
         // The encoder and its OpenGL context are let go of on the thread they belong to,
-        // which then ends; nothing of the video's is started after this.
-        captureHandler?.post { outputs.close() }
+        // which then ends; nothing of the video's is started after this. A thread that
+        // never came back from its encoder cannot be ended, and is all that is left behind.
+        captureHandler?.post {
+            outputs.close()
+            videoThread?.quitSafely()
+        }
         projection?.stop()
         captureThread?.quitSafely()
         super.onDestroy()
@@ -344,7 +391,7 @@ class ScreenCaptureService : Service() {
         handler?.removeCallbacks(idle)
         if (on) {
             // When only the format changes, viewers on older apps have nothing new to hear.
-            sendScreenInfo(always = change.started)
+            outputs.announce(always = change.started)
             // Attaching makes Android draw the screen once straight away, so a
             // viewer has a picture without waiting for something to change.
             handler?.post(resume)
@@ -353,52 +400,6 @@ class ScreenCaptureService : Service() {
             handler?.postDelayed(idle, IDLE_MS)
         }
     }
-
-    /** Starts or stops Android drawing the screen into the reader or the encoder. Capture thread only. */
-    private fun mirror(on: Boolean) {
-        mirrorOn = on
-        point()
-    }
-
-    /**
-     * Points the mirror at what it should be drawn into now: the encoder
-     * while pictures are to be H.264, the reader otherwise, nothing while
-     * nobody views. Capture thread only.
-     */
-    private fun point() {
-        if (virtualDisplay == null) return
-        val (w, h) = outSize()
-        tried = wish.tried()
-        val wasVideo = video.running
-        val failure = try {
-            outputs.point(mirrorOn, videoMode(), streaming, w, h)
-        } catch (e: RuntimeException) {
-            // E.g. the projection stopped at that moment.
-            Log.w("ScreenCaptureService", "Could not point the mirror", e)
-            return
-        }
-        if (failure != null) videoFailed(failure.first, failure.second)
-        // An encoder that would only start at a smaller size: the viewers were told the full one.
-        else if (video.running && !wasVideo && video.size != videoSize(w, h) &&
-            streaming && PhoneScreenCapture.maySendFrames(this)) sendScreenInfo()
-    }
-
-    /**
-     * Video has failed, or would not start. Pictures go on as JPEGs: the
-     * viewers are told of the new stream, and the reader is given the screen,
-     * which makes Android draw it at once. Capture thread only.
-     */
-    private fun videoFailed(reason: String, detail: String?) {
-        wish.failed(tried)
-        Log.w("ScreenCaptureService", "Video failed: $reason ${detail.orEmpty()}")
-        ConnectionLog.add(ConnectionLog.Entry(ConnectionLog.Kind.VIDEO, System.currentTimeMillis(), reason, detail))
-        if (instance !== this) return
-        point()
-        if (streaming && PhoneScreenCapture.maySendFrames(this)) sendScreenInfo()
-    }
-
-    /** The size H.264 is sent at for a screen mirrored at [w] x [h], unless the encoder wants it smaller. */
-    private fun videoSize(w: Int, h: Int) = VideoSetup.even(w) to VideoSetup.even(h)
 
     private fun screenSize(): Triple<Int, Int, Int> {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -411,13 +412,6 @@ class ScreenCaptureService : Service() {
     private fun outSize(): Pair<Int, Int> {
         val (w, h, _) = screenSize()
         return StreamSize.of(w, h)
-    }
-
-    private fun sendScreenInfo(always: Boolean = true) {
-        val (w, h) = outSize()
-        val asVideo = videoMode()
-        val (sentW, sentH) = if (asVideo) video.size ?: videoSize(w, h) else w to h
-        PhoneScreenCapture.sendScreenInfo(this, sentW, sentH, PhoneScreenCapture.SCREEN_SHARE, asVideo, always)
     }
 
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -457,9 +451,9 @@ class ScreenCaptureService : Service() {
         if (!changed && !videoStopped) return
         reusableBitmap = null
         // Video starts again at the new shape, and its first picture is a keyframe.
-        point()
+        outputs.point()
         // The viewer needs the new shape before the first picture in it.
-        if (streaming && PhoneScreenCapture.maySendFrames(this)) sendScreenInfo()
+        outputs.announce()
     }
 
     private fun setupCapture() {
@@ -486,7 +480,7 @@ class ScreenCaptureService : Service() {
             // them to the whole session — never send while an unapproved
             // device is present. Resumes automatically once it is approved or leaves.
             // Nor while pictures are to be H.264: the reader is about to give way to the encoder.
-            if (!streaming || videoMode() || !PhoneScreenCapture.maySendFrames(this)) {
+            if (!streaming || outputs.asVideo || !PhoneScreenCapture.maySendFrames(this)) {
                 image.close()
                 pacer.clear()
                 return@setOnImageAvailableListener
@@ -508,7 +502,7 @@ class ScreenCaptureService : Service() {
     private fun encodeAndSend(image: Image) {
         try {
             val token = streamGeneration
-            if (!streaming || videoMode() || !PhoneScreenCapture.maySendFrames(this)) return
+            if (!streaming || outputs.asVideo || !PhoneScreenCapture.maySendFrames(this)) return
             val plane = image.planes[0]
             val rowPadding = plane.rowStride - plane.pixelStride * image.width
             val bmpW = image.width + rowPadding / plane.pixelStride

@@ -29,12 +29,10 @@ import android.view.Surface
  * which is where the screen's pictures are announced too. What the encoder
  * produces is announced on a thread of its own.
  *
- * That second thread also keeps watch on every draw. An encoder that has
- * stopped taking pictures without saying so leaves the draw waiting on it
- * for good, and with it the thread that everything else of the video's runs
- * on. A draw that has not come back after [STUCK_MS] is reported as a
- * failure, and the encoder is released from the watching thread, which is
- * what lets the draw return.
+ * An encoder that has stopped answering without saying so leaves a call into
+ * it waiting for good: a draw, or even asking for a keyframe. Nothing here
+ * can time that out from the inside. [PhoneVideo] times every call from the
+ * outside, and whoever finds one stuck calls [abort] from another thread.
  */
 internal class PhoneVideoEncoder(
     attempt: VideoSetup.Attempt,
@@ -48,7 +46,6 @@ internal class PhoneVideoEncoder(
     override val bitrate = attempt.bitrate
 
     private val output = HandlerThread("video-out").also { it.start() }
-    private val outputHandler = Handler(output.looper)
     @Volatile private var codec: MediaCodec? = null
     private var input: Surface? = null
     private var gl: VideoGl? = null
@@ -92,17 +89,6 @@ internal class PhoneVideoEncoder(
         }
     }
 
-    /** Runs on the encoder's thread when a draw has not come back. */
-    private val stuck = Runnable {
-        if (closed) return@Runnable
-        events.failed(IllegalStateException("The encoder stopped taking pictures"))
-        try {
-            codec?.release()
-        } catch (_: RuntimeException) {
-            // It is being let go of on the other thread at this moment.
-        }
-    }
-
     /** What the screen is to be mirrored into. */
     val surface: Surface get() = checkNotNull(gl).surface
 
@@ -127,7 +113,7 @@ internal class PhoneVideoEncoder(
             }
             val made = MediaCodec.createByCodecName(attempt.encoder)
             codec = made
-            made.setCallback(callback, outputHandler)
+            made.setCallback(callback, Handler(output.looper))
             made.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             val into = made.createInputSurface()
             input = into
@@ -149,11 +135,19 @@ internal class PhoneVideoEncoder(
         if (keyframe) checkNotNull(codec).setParameters(Bundle().apply {
             putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
         })
-        outputHandler.postDelayed(stuck, STUCK_MS)
+        checkNotNull(gl).draw(ptsUs * 1000)
+    }
+
+    /**
+     * Releasing the encoder abandons the surface a stuck draw is waiting to
+     * hand its picture to, and the draw then fails and returns. If the
+     * encoder is past answering even that, this call does not return either.
+     */
+    override fun abort() {
         try {
-            checkNotNull(gl).draw(ptsUs * 1000)
-        } finally {
-            outputHandler.removeCallbacks(stuck)
+            codec?.release()
+        } catch (_: RuntimeException) {
+            // It is being let go of on its own thread at this moment.
         }
     }
 
@@ -175,9 +169,6 @@ internal class PhoneVideoEncoder(
 
     companion object {
         private const val MIME = "video/avc"
-
-        /** A draw takes a millisecond or two. One that takes this long is not coming back. */
-        private const val STUCK_MS = 2_000L
 
         /** This phone's H.264 encoders, for [VideoSetup.attempts] to choose from. */
         fun encoders(): List<VideoSetup.Encoder> =
