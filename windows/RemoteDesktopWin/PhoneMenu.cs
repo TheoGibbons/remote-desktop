@@ -293,8 +293,9 @@ internal sealed class VolumeSender
 
     public int? Tick(DateTime now) => Counted(_throttle.Tick(now), now);
 
-    /// <summary>A <c>volume</c> message went out that the slider didn't send
-    /// (mute). Its answer is owed like any other.</summary>
+    /// <summary>A message went out that the slider didn't send, and that the
+    /// phone also answers with its state (mute, rotate). Its answer is owed
+    /// like any other.</summary>
     public void Sent(DateTime now)
     {
         _owed++;
@@ -326,7 +327,8 @@ internal sealed class VolumeSender
 /// <c>phone-state</c>; a phone that is being viewed and has never sent one is
 /// running an older app, and gets a line saying to update it instead.
 /// </summary>
-internal readonly record struct MenuRows(bool Volume, bool QuickSettings, bool Screenshot, bool Lock, bool UpdateLine)
+internal readonly record struct MenuRows(bool Volume, bool Rotation, bool QuickSettings, bool Screenshot, bool Lock,
+    bool UpdateLine)
 {
     /// <summary>How long a phone has to answer before it is taken for an older app.</summary>
     public static readonly TimeSpan AnswerWait = TimeSpan.FromSeconds(2);
@@ -336,14 +338,65 @@ internal readonly record struct MenuRows(bool Volume, bool QuickSettings, bool S
     /// which is when it began answering this PC; null if it hasn't.</param>
     public static MenuRows For(PhoneState? state, DateTime? viewingSince, DateTime now)
     {
-        if (state == null) return new MenuRows(false, false, false, false, UpdateLine: UpdateLineDue(state, viewingSince) <= now);
-        return new MenuRows(state.Can.Contains("volume"), state.Can.Contains("quick-settings"),
+        if (state == null)
+            return new MenuRows(false, false, false, false, false, UpdateLine: UpdateLineDue(state, viewingSince) <= now);
+        return new MenuRows(state.Can.Contains("volume"), state.Can.Contains("rotate"), state.Can.Contains("quick-settings"),
             state.Can.Contains("screenshot"), state.Can.Contains("lock"), UpdateLine: false);
     }
 
     /// <summary>When the update line appears if the phone goes on saying nothing.</summary>
     public static DateTime? UpdateLineDue(PhoneState? state, DateTime? viewingSince) =>
         state == null && viewingSince is { } since ? since + AnswerWait : null;
+}
+
+/// <summary>
+/// Notices a phone that was asked to turn and didn't. After Portrait or
+/// Landscape is chosen the picture should take that shape; if it hasn't a few
+/// seconds later, the app on the phone's screen is probably one that only
+/// draws one way, and the person at the PC is told.
+/// </summary>
+internal sealed class RotationCheck
+{
+    public static readonly TimeSpan Wait = TimeSpan.FromSeconds(3);
+
+    private string? _wanted;
+    private DateTime _due;
+
+    /// <summary>Whether a picture of this size is the shape an orientation gives.</summary>
+    public static bool Matches(string orientation, int width, int height) => orientation switch
+    {
+        PhoneState.Landscape => width > height,
+        PhoneState.Portrait => height > width,
+        _ => true,
+    };
+
+    /// <summary>An orientation was chosen, with the picture the size it is now
+    /// (0 if there is none yet). Auto asks for no shape, so nothing is waited for.</summary>
+    public void Chose(string orientation, int pictureWidth, int pictureHeight, DateTime now)
+    {
+        _wanted = null;
+        if (pictureWidth <= 0 || pictureHeight <= 0 || Matches(orientation, pictureWidth, pictureHeight)) return;
+        _wanted = orientation;
+        _due = now + Wait;
+    }
+
+    /// <summary>The phone sent a picture size.</summary>
+    public void Picture(int width, int height)
+    {
+        if (_wanted != null && Matches(_wanted, width, height)) _wanted = null;
+    }
+
+    /// <summary>When <see cref="Tick"/> should be called, if anything is waited for.</summary>
+    public DateTime? NextDue => _wanted != null ? _due : null;
+
+    /// <summary>Returns true, once, if the phone has had its time and the
+    /// picture is still the wrong shape.</summary>
+    public bool Tick(DateTime now)
+    {
+        if (_wanted == null || now < _due) return false;
+        _wanted = null;
+        return true;
+    }
 }
 
 /// <summary>

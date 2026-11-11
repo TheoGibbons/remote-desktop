@@ -29,6 +29,7 @@ internal static class Program
         CheckVolumeAnswers();
         CheckPhoneState();
         CheckMenuRows();
+        CheckRotation();
     }
 
     // ---------------- the menu ----------------
@@ -487,10 +488,10 @@ internal static class Program
         // (phoneStateIsBuiltAsTheWindowsAppReadsIt), so the two apps can't come to
         // disagree about a field's name or type. Change both together.
         var shared = PhoneState.Parse(Json("""
-            {"type":"phone-state","to":"pc","volume":7,"volumeMax":15,"muted":false,"rotation":"auto","can":["volume","quick-settings","lock","screenshot"]}
+            {"type":"phone-state","to":"pc","volume":7,"volumeMax":15,"muted":false,"rotation":"auto","can":["volume","rotate","quick-settings","lock","screenshot"]}
             """));
         Check(shared is { Volume: 7, VolumeMax: 15, Muted: false, Rotation: PhoneState.Auto, IsSilent: false }, "What the phone builds is read");
-        Check(shared!.Can.SetEquals(["volume", "quick-settings", "lock", "screenshot"]), "With the rows it offers");
+        Check(shared!.Can.SetEquals(["volume", "rotate", "quick-settings", "lock", "screenshot"]), "With the rows it offers");
 
         var muted = PhoneState.Parse(Json("""{"volume":0,"volumeMax":15,"muted":true,"can":["volume"]}"""));
         Check(muted is { Muted: true, IsSilent: true }, "A muted phone is silent");
@@ -534,7 +535,7 @@ internal static class Program
 
     private static void CheckMenuRows()
     {
-        var none = new MenuRows(false, false, false, false, false);
+        var none = new MenuRows(false, false, false, false, false, false);
 
         // Nothing has come from the phone: it may not have approved this PC yet.
         Check(MenuRows.For(null, null, At(0)) == none, "Before the phone sends anything there are no extra rows");
@@ -547,15 +548,19 @@ internal static class Program
         Check(MenuRows.For(null, At(1000), At(1000) + MenuRows.AnswerWait) == none with { UpdateLine = true },
             "A phone that shows a picture and never says what it can do gets the update line, and no rows");
 
-        var full = PhoneState.Parse(Json("""{"volume":7,"volumeMax":15,"can":["volume","quick-settings","lock","screenshot"]}"""));
-        Check(MenuRows.For(full, At(1000), At(1100)) == new MenuRows(true, true, true, true, false), "A phone that can do everything gets every row");
-        Check(MenuRows.For(full, null, At(1100)) == new MenuRows(true, true, true, true, false), "Whether or not a picture has come yet");
+        var full = PhoneState.Parse(Json("""{"volume":7,"volumeMax":15,"can":["volume","rotate","quick-settings","lock","screenshot"]}"""));
+        Check(MenuRows.For(full, At(1000), At(1100)) == new MenuRows(true, true, true, true, true, false), "A phone that can do everything gets every row");
+        Check(MenuRows.For(full, null, At(1100)) == new MenuRows(true, true, true, true, true, false), "Whether or not a picture has come yet");
+
+        // The phone app as first released with the menu: everything but rotation.
+        var unturning = PhoneState.Parse(Json("""{"volume":7,"volumeMax":15,"can":["volume","quick-settings","lock","screenshot"]}"""));
+        Check(MenuRows.For(unturning, At(1000), At(1100)) == new MenuRows(true, false, true, true, true, false), "A phone that can't turn its screen gets no rotation row");
         Check(MenuRows.For(full, At(1000), At(90000)) is { UpdateLine: false }, "And never the update line");
         Check(MenuRows.UpdateLineDue(full, At(1000)) == null, "Nor a wait for it");
 
         // Android 8: no lock, no screenshot.
         var partial = PhoneState.Parse(Json("""{"volume":7,"volumeMax":15,"can":["volume","quick-settings"]}"""));
-        Check(MenuRows.For(partial, At(1000), At(5000)) == new MenuRows(true, true, false, false, false), "Only the rows the phone lists are shown");
+        Check(MenuRows.For(partial, At(1000), At(5000)) == new MenuRows(true, false, true, false, false, false), "Only the rows the phone lists are shown");
 
         // The accessibility service is off and the volume is fixed.
         var nothing = PhoneState.Parse(Json("""{"volume":0,"volumeMax":0,"can":["volume"]}"""));
@@ -563,8 +568,58 @@ internal static class Program
 
         // A newer phone lists something this app has no row for.
         var newer = PhoneState.Parse(Json("""{"volume":3,"volumeMax":15,"can":["rotate","torch","lock"]}"""));
-        Check(MenuRows.For(newer, At(1000), At(5000)) == none with { Lock = true }, "Names this app doesn't know add nothing");
+        Check(MenuRows.For(newer, At(1000), At(5000)) == none with { Rotation = true, Lock = true }, "Names this app doesn't know add nothing");
         Console.WriteLine("PASS: the menu shows the rows the phone lists, or says to update a phone that lists nothing");
+    }
+
+    private static void CheckRotation()
+    {
+        Check(RotationCheck.Matches(PhoneState.Landscape, 2340, 1080), "A wide picture is a phone on its side");
+        Check(!RotationCheck.Matches(PhoneState.Landscape, 1080, 2340), "A tall one is not");
+        Check(RotationCheck.Matches(PhoneState.Portrait, 1080, 2340), "A tall picture is an upright phone");
+        Check(!RotationCheck.Matches(PhoneState.Portrait, 2340, 1080), "A wide one is not");
+        Check(RotationCheck.Matches(PhoneState.Auto, 2340, 1080) && RotationCheck.Matches(PhoneState.Auto, 1080, 2340), "Auto asks for no shape");
+
+        // Landscape chosen with the phone upright, and the phone turns.
+        var check = new RotationCheck();
+        Check(check.NextDue == null && !check.Tick(At(0)), "Nothing is waited for before anything is chosen");
+        check.Chose(PhoneState.Landscape, 1080, 2340, At(1000));
+        Check(check.NextDue == At(1000) + RotationCheck.Wait, "The phone gets a few seconds to turn");
+        check.Picture(1080, 2340);
+        Check(check.NextDue != null, "The same picture again is not a turn");
+        check.Picture(1080, 498);
+        Check(check.NextDue == null, "The picture turned: nothing more to wait for");
+        Check(!check.Tick(At(9000)), "A phone that turned is not complained about");
+
+        // The app on screen only draws upright.
+        check.Chose(PhoneState.Landscape, 1080, 2340, At(10000));
+        Check(!check.Tick(At(12999)), "Not before the wait is up");
+        Check(check.Tick(At(13000)), "A phone that hasn't turned in time is reported");
+        Check(!check.Tick(At(14000)) && check.NextDue == null, "Once");
+
+        // Already the shape that was asked for: nothing can be learnt from the picture.
+        check.Chose(PhoneState.Portrait, 1080, 2340, At(20000));
+        Check(check.NextDue == null, "Choosing the shape the picture already has waits for nothing");
+        check.Chose(PhoneState.Landscape, 2340, 1080, At(20000));
+        Check(check.NextDue == null, "The same for a phone already on its side");
+
+        // Auto: the phone may stay as it is or turn; either is right.
+        check.Chose(PhoneState.Landscape, 1080, 2340, At(30000));
+        check.Chose(PhoneState.Auto, 1080, 2340, At(31000));
+        Check(check.NextDue == null && !check.Tick(At(40000)), "Going back to Auto cancels the wait");
+
+        // A second choice starts the wait again.
+        check.Chose(PhoneState.Landscape, 1080, 2340, At(50000));
+        check.Picture(1080, 498);
+        check.Chose(PhoneState.Portrait, 1080, 498, At(51000));
+        Check(check.NextDue == At(51000) + RotationCheck.Wait, "Each choice has its own wait");
+        Check(!check.Tick(At(53000)), "The first choice's time doesn't count for the second");
+        Check(check.Tick(At(54000)), "The second is reported when its own time is up");
+
+        // No picture yet: there is nothing to compare with.
+        check.Chose(PhoneState.Landscape, 0, 0, At(60000));
+        Check(check.NextDue == null, "Before any picture nothing is waited for");
+        Console.WriteLine("PASS: a phone that was asked to turn and didn't is reported once, after a few seconds");
     }
 
     private static JsonObject Json(string text) => JsonNode.Parse(text)!.AsObject();

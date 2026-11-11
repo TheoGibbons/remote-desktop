@@ -1,6 +1,6 @@
 # Phone menu in the Windows viewer: plan
 
-Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Phases 1 and 2 are built; the rest is not.
+Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Phases 1 to 3 are built; the docs (Phase 4) are not.
 
 This is the first of three plans to be built. `PHONE-PLANS-ORDER.md` gives the order (this plan is its steps 1 to 4, after a step 0 that lets a debug build sit beside the release app) and settles where this plan met `PHONE-UNLOCK-PLAN.md` and `PHONE-VIDEO-PLAN.md`. This file has been edited to match.
 
@@ -93,10 +93,10 @@ Evidence: the current AOSP window manager (`DisplayArea.Tokens.getOrientation`) 
 
 Limits, all to be checked on real phones:
 
-- Unproven on your phones. The S20 is Android 13 and the S942W is Android 17; I have not run this on either.
+- Works on the S942W (Android 17), with auto-rotate off, on the home screen and in Settings. Unproven on the S20 (Android 13).
 - On tablets and unfolded foldables (Android 16 and later), the system may ignore orientation requests.
 - An app that only draws one way may look odd when forced the other way.
-- If a 0 × 0 window turns out not to count as visible on some phone, use 1 × 1.
+- A 0 × 0 window counts on the S942W. If it turns out not to on some phone, use 1 × 1.
 
 The alternative, writing the system rotation setting, needs a new "Modify system settings" permission and only turns apps that allow it. The S20 shows why that is not enough: its rotation setting already says landscape while its home screen stays portrait.
 
@@ -123,7 +123,7 @@ The alternative, writing the system rotation setting, needs a new "Modify system
 - **Volume slider:** 0 to `volumeMax`, snapping to whole steps. Sends at most one message per 100 ms while dragging and always the final value. Ignores incoming state while dragging so the thumb doesn't jump back. What it last sent is forgotten when a drag starts and when the phone reports its state, so a drag that ends where the last one did is still sent. A level the thumb rests on mid-drag is sent when its 100 ms come round. A click on the track moves the thumb there and sends at once.
 - **Answers to the slider:** the phone answers every `volume` with its state, so the answers to a drag's earlier messages arrive after the drag has ended. The slider counts what it has sent and shows only the answer to the last, so the thumb doesn't jump back and forth. Answers still owed two seconds after the last message are given up on.
 - **Speaker icon:** mutes a phone that is making sound and unmutes a muted one. A phone turned right down is not muted, so there the icon sets the last level heard in this window, or the quietest step if none, as the icon on Android's own volume panel does. Android reports a volume of 0 while muted, so the thumb sits at the left then.
-- **Rotation:** highlights what the phone reports. After choosing Portrait or Landscape, if the picture hasn't changed shape within 3 seconds, toast: "The phone didn't rotate. The app on screen may not allow it."
+- **Rotation:** three choices, Auto / Portrait / Landscape. The one lit is what the phone reports, so it changes when the phone answers a click, not at the click, and shows Auto again once the phone has let go by itself. After choosing Portrait or Landscape, if the picture is not that shape within 3 seconds, toast: "The phone didn't rotate. The app on screen may not allow it." When the picture turns, the window is re-fitted and the menu closes.
 - Right-click for Back and middle-click for Home stay as they are.
 
 ## Protocol additions
@@ -181,22 +181,29 @@ Checked on the S26 through the rig (Android 17, debug build): the slider moved t
 
 Not checked: `lock` on a real phone (left to the unlock plan, where the lock screen is the subject), and anything needing a real mouse: dragging the thumb, clicking the track, and that the menu stays open while the thumb is dragged outside it.
 
-### Phase 3: rotation
+### Phase 3: rotation (built)
 
 Phone:
 
-- `android/.../RotationOverride.kt` (new), owned by `InputAccessibilityService`: add, update and remove the overlay window, on the main thread, with `addView` failures caught.
-- `rotate` is accepted only when `PhoneScreenCapture.isViewing(from)`.
-- Release when the phone has no viewers left. `PhoneScreenCapture.refresh()` already runs on stop-view, peer-left, relay loss, revocation, and when the control switch goes off (`Prefs.allowControl` clears the viewers), so that is the one place to hook. The window also dies with the service, so a crash can't leave the phone sideways.
-- Also release when the screen turns off or the phone locks (`ACTION_SCREEN_OFF`, registered only while an override is held). The override is not put back afterwards; `phone-state` reports `auto`. The lock screen is where someone unlocks the phone remotely, so it keeps the phone's own orientation.
-- Fix `ScreenCaptureService`. This is the only place the fix is planned: `PHONE-VIDEO-PLAN.md` step 0.6 used to carry it too and now relies on this one. Register a `DisplayManager.DisplayListener` on the capture thread, and `MediaProjection.Callback.onCapturedContentResize` on API 34+. When the output size changes, make a new `ImageReader`, call `virtualDisplay.resize(w, h, dpi)` and `virtualDisplay.surface = reader.surface`, close the old reader, clear the pacer and `reusableBitmap`, and send `screen-info`.
-- Tests: `rotate` from a viewing PC adds a window with the right `screenOrientation`; from a device that isn't viewing, nothing; `auto`, stop-view, peer-left and screen-off remove it; `phone-state` reports it.
+- `android/.../RotationOverride.kt` (new), owned by `InputAccessibilityService`: adds, updates and removes the overlay window, on the main thread, with failures caught. `phone-state` reports what is being held, which is set at once, so the answer to a `rotate` already says it.
+- `rotate` is accepted only when `PhoneScreenCapture.isViewing(from)`, and goes to `PhoneControls` like `volume`, so it never wakes the phone. An `orientation` that isn't one of the three changes nothing.
+- Released when the phone has no viewers left: one line in `PhoneScreenCapture.refresh()`, which already runs on stop-view, peer-left, relay loss, revocation, and when the control switch goes off. A rotation one viewer asked for is held while any viewer is left. The window also dies with the service, so a crash can't leave the phone sideways.
+- Also released when the screen turns off, which is when the phone locks (`ACTION_SCREEN_OFF`, registered only while an override is held). The override is not put back afterwards; `phone-state` reports `auto`. The lock screen is where someone unlocks the phone remotely, so it keeps the phone's own orientation.
+- `ScreenCaptureService` follows a turned screen. This is the only place the fix is built: `PHONE-VIDEO-PLAN.md` step 0.6 relies on it. A `DisplayManager.DisplayListener` and, on API 34+, `MediaProjection.Callback.onCapturedContentResize` both run on the capture thread and call `followScreen()`. When the stream's size is no longer the screen's, it makes a new `ImageReader`, calls `virtualDisplay.resize(w, h, dpi)`, sets the new surface, drops the picture the pacer was holding, closes the old reader, and sends `screen-info` before the first picture in the new shape.
+- Tests: `RotationOverrideTest` (a viewing PC adds a window with the right `screenOrientation` and flags; a device that isn't viewing, nothing; `auto`, stop-view, the last of two viewers, peer-left, the control and *Allow other phones* switches, the service stopping and screen-off remove it, and screen-off stops the listening; `phone-state` reports it; no wake). `StreamSizeTest` for the stream's size. The stream rebuild itself has no unit test: it is all platform calls, and was checked on the phone.
 
 Windows:
 
-- The three-way control, the highlight from `phone-state.rotation`, the "didn't rotate" toast. The window re-fit from Phase 1 does the rest.
-- The row goes between the volume row and Notifications (a comment in `PhoneViewWindow.xaml` marks the place), shown when `can` has `rotate`: add it to `MenuRows`. The update line then reads "…for volume, rotation and more."
-- The phone side adds `rotate` to `can` and reports the real `rotation` from `PhoneControls.state`. PROTOCOL.md already describes both fields; it needs the `rotate` message.
+- A row of three choices, Auto / Portrait / Landscape, between the volume row and Notifications, shown when `can` has `rotate` (`MenuRows.Rotation`). The one lit is what `phone-state.rotation` says, not what was clicked last: a click sends `rotate` and the choice lights when the phone answers.
+- The choices are `ToggleButton`s that act on being checked or unchecked rather than on Click, because UI Automation toggles a button without clicking it.
+- `RotationCheck` in `PhoneMenu.cs` decides the "didn't rotate" toast: only when the picture is not already the shape asked for, and not if it becomes that shape within 3 seconds.
+- The update line reads "Update Remote Desktop on this phone for volume, rotation and more."
+- The window re-fit from Phase 1 does the rest, with one correction: the long side carried from one shape to the next is the last fit's own figure unless the user has resized the window since (`PhoneFit.KeptLongSide`). Measured back from a window that sits on whole pixels it came out a pixel or two short each time, and the window shrank with every turn.
+- The menu closes when the window is re-fitted, like at any other resize: the button it hangs from has moved.
+
+Checked on the S26 through the rig (Android 17, auto-rotate off): Landscape, Portrait and Auto on the home screen and in Settings, with `dumpsys window` showing the display's rotation and the overlay window; the PC's window re-fitted each time and kept its size over repeated turns; the phone turned back when the viewer was closed and when the PC app was killed; with smooth sharing on, the picture filled the window in both shapes. A 0 × 0 window is enough there.
+
+Not checked: that taps land where clicked after a turn (the rig has no mouse), a portrait-only app and a video app, screen-off and lock on a real phone (left to the unlock plan, where they are the subject; unit tests cover them here), the toast on a real phone, and the S20.
 
 ### Phase 4: docs and release
 
@@ -219,10 +226,10 @@ Phase 1 can be checked against the released phone app. Phases 2 and 3 need a bui
 1. Volume: slider moves the phone's media volume and the phone's panel shows; mute and unmute; menu reopened shows the real level. Done on the S26, except dragging with a real mouse.
 2. Screenshot: the capture card pops up on the PC. Done on the S26.
 3. Lock: the phone locks, and the next click in the viewer wakes it. Getting back in is blind until `PHONE-UNLOCK-PLAN.md` is built. Not done: it is first tried in that plan's Phase 1.
-4. Rotation on the S26: home screen, a portrait-only app, a video app. Taps land where clicked after turning. The S20 at release.
-5. Rotation, then lock the phone: the override is gone and the lock screen is the phone's usual one.
-6. Rotation, then close the viewer window, and separately kill the PC app: the phone returns to its own orientation both times.
-7. Smooth mode (MediaProjection) on, then rotate: the picture fills the window and taps land right.
+4. Rotation on the S26: home screen, a portrait-only app, a video app. Taps land where clicked after turning. The S20 at release. Done for the home screen and Settings; the apps and the taps are still to do by hand.
+5. Rotation, then lock the phone: the override is gone and the lock screen is the phone's usual one. Not done: first tried in the unlock plan's Phase 1.
+6. Rotation, then close the viewer window, and separately kill the PC app: the phone returns to its own orientation both times. Done on the S26.
+7. Smooth mode (MediaProjection) on, then rotate: the picture fills the window and taps land right. The picture: done on the S26. The taps: by hand.
 8. Windows 10, if one can be found: buttons draw and work.
 
 ## Anything else?

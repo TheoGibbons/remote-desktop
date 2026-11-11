@@ -22,8 +22,9 @@ namespace RemoteDesktopWin;
 /// Notifications, for a phone that uses gestures; clicking the phone's own
 /// buttons in the picture works too. The menu opens when the pointer rests on
 /// the button and closes when it leaves (see <see cref="MenuHover"/>). A phone
-/// that says it can (<c>phone-state</c>) also gets its media volume, Quick
-/// settings, Screenshot and Lock screen there (see <see cref="MenuRows"/>).
+/// that says it can (<c>phone-state</c>) also gets its media volume, which
+/// way its screen is held, Quick settings, Screenshot and Lock screen there
+/// (see <see cref="MenuRows"/>).
 ///
 /// While it is focused, the keyboard types into the phone's focused text
 /// field: characters as <c>text</c>, composed here with this PC's layout, and
@@ -64,6 +65,9 @@ public partial class PhoneViewWindow : Window
     private readonly DispatcherTimer _volumeTimer;
     private bool _showingPhoneVolume;   // the slider is being moved to what the phone said
     private int _lastAudible;           // the last level above 0 the phone had or was sent; 0 if none yet
+    private bool _showingPhoneRotation; // the rotation choices are being lit as the phone said
+    private readonly RotationCheck _rotation = new();
+    private readonly DispatcherTimer _rotationTimer;
 
     // The size of the phone's picture, and the one the window was last sized
     // round. They differ while the window is maximised or minimised.
@@ -111,7 +115,14 @@ public partial class PhoneViewWindow : Window
         _updateLineTimer.Tick += (_, _) => ShowMenuRows();
         _volumeTimer = new DispatcherTimer(DispatcherPriority.Input);
         _volumeTimer.Tick += (_, _) => SendVolume(_volume.Tick(DateTime.UtcNow));
-        Closed += (_, _) => { _updateLineTimer.Stop(); _volumeTimer.Stop(); };
+        _rotationTimer = new DispatcherTimer();
+        _rotationTimer.Tick += (_, _) =>
+        {
+            _rotationTimer.Stop();
+            if (_rotation.Tick(DateTime.UtcNow))
+                Toast.Show("The phone didn't rotate. The app on screen may not allow it.");
+        };
+        Closed += (_, _) => { _updateLineTimer.Stop(); _volumeTimer.Stop(); _rotationTimer.Stop(); };
 
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
         AskPhoneState();
@@ -271,6 +282,8 @@ public partial class PhoneViewWindow : Window
 
         static Visibility Shown(bool show) => show ? Visibility.Visible : Visibility.Collapsed;
         VolumeRow.Visibility = Shown(rows.Volume);
+        RotationRow.Visibility = Shown(rows.Rotation);
+        ShowRotation();
         QuickSettingsButton.Visibility = Shown(rows.QuickSettings);
         ScreenshotButton.Visibility = Shown(rows.Screenshot);
         LockButton.Visibility = Shown(rows.Lock);
@@ -285,6 +298,37 @@ public partial class PhoneViewWindow : Window
         MuteButton.Content = state.IsSilent ? "\uE74F" : "\uE767";
         MuteButton.ToolTip = state.IsSilent ? "Unmute" : "Mute";
         AutomationProperties.SetName(MuteButton, state.IsSilent ? "Unmute" : "Mute");
+    }
+
+    /// <summary>Lights the choice the phone says is in force.</summary>
+    private void ShowRotation()
+    {
+        var held = _phoneState?.Rotation ?? PhoneState.Auto;
+        _showingPhoneRotation = true;
+        RotateAutoButton.IsChecked = held == PhoneState.Auto;
+        RotatePortraitButton.IsChecked = held == PhoneState.Portrait;
+        RotateLandscapeButton.IsChecked = held == PhoneState.Landscape;
+        _showingPhoneRotation = false;
+    }
+
+    /// <summary>A rotation choice was clicked, or pressed through UI
+    /// Automation, which toggles it without a click. Either way the phone is
+    /// asked, and the choice stays unlit until the phone says it holds.</summary>
+    private void RotateButton_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_showingPhoneRotation || (sender as FrameworkElement)?.Tag is not string orientation) return;
+        var now = DateTime.UtcNow;
+        _volume.Sent(now);
+        _ws.SendJson(new JsonObject { ["type"] = "rotate", ["to"] = _phoneId, ["orientation"] = orientation });
+        ShowRotation();
+
+        _rotation.Chose(orientation, _picture?.W ?? 0, _picture?.H ?? 0, now);
+        _rotationTimer.Stop();
+        if (_rotation.NextDue is { } due)
+        {
+            _rotationTimer.Interval = due - now;
+            _rotationTimer.Start();
+        }
     }
 
     private void MuteButton_Click(object sender, RoutedEventArgs e)
@@ -356,6 +400,7 @@ public partial class PhoneViewWindow : Window
             }
             if (width <= 0 || height <= 0) return;
             _picture = (width, height);
+            _rotation.Picture(width, height);
             FitToPicture();
         });
     }

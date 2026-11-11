@@ -118,7 +118,30 @@
                                     Thumb.DragCompleted="VolumeSlider_DragCompleted"/>
                         </Grid>
                     </StackPanel>
-                    <!-- Rotation goes here when it is built, under a separator of its own. -->
+                    <!-- How the phone's screen is held while it is viewed. The one
+                         lit is what the phone says, not what was last clicked. -->
+                    <StackPanel x:Name="RotationRow" Visibility="Collapsed">
+                        <Separator Style="{StaticResource RdMenuSeparator}"/>
+                        <Grid Margin="14,0,4,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Rotation" VerticalAlignment="Center" Margin="0,0,12,0" FontFamily="Segoe UI"
+                                       FontSize="13" Foreground="{StaticResource RdOnSurfaceBrush}"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <ToggleButton x:Name="RotateAutoButton" Style="{StaticResource RdMenuChoice}" Tag="auto"
+                                              Content="Auto" ToolTip="Let the phone turn its own screen"
+                                              Checked="RotateButton_Changed" Unchecked="RotateButton_Changed"/>
+                                <ToggleButton x:Name="RotatePortraitButton" Style="{StaticResource RdMenuChoice}" Tag="portrait"
+                                              Content="Portrait" ToolTip="Hold the phone's screen upright while this window is open"
+                                              Checked="RotateButton_Changed" Unchecked="RotateButton_Changed"/>
+                                <ToggleButton x:Name="RotateLandscapeButton" Style="{StaticResource RdMenuChoice}" Tag="landscape"
+                                              Content="Landscape" ToolTip="Hold the phone's screen on its side while this window is open"
+                                              Checked="RotateButton_Changed" Unchecked="RotateButton_Changed"/>
+                            </StackPanel>
+                        </Grid>
+                    </StackPanel>
                     <Separator Style="{StaticResource RdMenuSeparator}"/>
                     <Button x:Name="NotificationsButton" Style="{StaticResource RdMenuButton}" Tag="notifications"
                             Content="Notifications" Click="MenuAction_Click"/>
@@ -134,7 +157,7 @@
                         <TextBlock x:Name="UpdateText" Margin="14,6,14,8" MaxWidth="244" HorizontalAlignment="Left"
                                    TextWrapping="Wrap" FontFamily="Segoe UI" FontSize="12"
                                    Foreground="{StaticResource RdOnSurfaceVariantBrush}"
-                                   Text="Update Remote Desktop on this phone for volume, screenshots and more."/>
+                                   Text="Update Remote Desktop on this phone for volume, rotation and more."/>
                     </StackPanel>
                 </StackPanel>
             </Border>
