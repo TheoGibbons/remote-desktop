@@ -114,6 +114,18 @@ class SmoothSharingTest {
         assertEquals(emptyList<Any>(), rules.started())
     }
 
+    /** Someone turns smooth sharing on in the phone's Permissions screen while a viewer's prompt is up. */
+    @Test
+    fun sharingThatStartsAnotherWayAnswersThePromptThatIsUp() {
+        rules.request("pc", viewer, ready, now = 0)
+        rules.request("phone", viewer, ready, now = 1)
+        assertEquals(listOf(ClosePrompt, tell("started", null, "pc", "phone")), rules.started())
+        assertFalse(rules.prompting)
+        // Nobody hears "Nobody answered" a minute later, with sharing on.
+        assertEquals(emptyList<Any>(), rules.tick(now = SmoothSharing.ANSWER_MS))
+        assertEquals(emptyList<Any>(), rules.started())
+    }
+
     @Test
     fun sharingThatNeverGotGoingIsSaidToo() {
         rules.request("pc", viewer, ready, now = 0)

@@ -289,6 +289,28 @@ class SmoothRequestTest {
     }
 
     @Test
+    fun aPromptIsTakenAwayWhenSharingStartsAnotherWay() {
+        view("pc")
+        receive("pc", "request-smooth")
+        val prompt = promptActivity()
+        val asked = consent(prompt.get())!!
+
+        // Turned on in the phone's Permissions screen, with the viewer's prompt still up.
+        val shared = sharing()
+        SmoothPrompt.sharingStarted()
+        idle()
+        assertTrue(prompt.get().isFinishing)
+        assertEquals(listOf("prompting", "started"), statuses("pc").map(::said))
+
+        // The prompt that was taken away is approved all the same: nothing starts twice, and nothing more is said.
+        shadowOf(prompt.get()).receiveResult(asked, Activity.RESULT_OK, Intent())
+        later(SmoothSharing.ANSWER_MS)
+        assertNull(shadowOf(context).nextStartedService)
+        assertEquals(listOf("prompting", "started"), statuses("pc").map(::said))
+        assertSame(shared.get(), sharingField.get(null))
+    }
+
+    @Test
     fun aSecondRequestWaitsForTheSamePrompt() {
         view("pc")
         view("other-pc")

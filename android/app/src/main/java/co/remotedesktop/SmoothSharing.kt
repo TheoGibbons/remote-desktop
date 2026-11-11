@@ -177,11 +177,22 @@ internal class SmoothSharing(
         return listOf(ClosePrompt)
     }
 
-    /** Smooth sharing is running. Those who asked for it are told. */
+    /**
+     * Smooth sharing is running. Those who asked for it are told. That
+     * includes whoever is waiting on a prompt that is still up: sharing can
+     * start another way, from the phone's Permissions screen, and the prompt
+     * a viewer asked for then has nothing left to ask.
+     */
     fun started(): List<Step> {
-        val asked = starting.toList()
+        val asked = (waiting + starting).toList()
+        val wasPrompting = prompting
+        waiting.clear()
         starting.clear()
-        return if (asked.isEmpty()) emptyList() else listOf(Tell(asked, STARTED))
+        promptSince = null
+        return buildList {
+            if (wasPrompting) add(ClosePrompt)
+            if (asked.isNotEmpty()) add(Tell(asked, STARTED))
+        }
     }
 
     /**
