@@ -17,7 +17,12 @@ public partial class MainWindow : Window
     private readonly PeerAuth _auth;
     private readonly PrivacyOverlayManager _privacy;
     private readonly HashSet<string> _autoUnprivacyViewers = new();
-    private readonly FrameMailbox _phoneFrames;
+    private readonly PhoneFeed _phoneFeed;
+    // The phone picture that is decoded and waiting to be shown, with the
+    // window it was decoded for. Only the newest is kept.
+    private (PhoneViewWindow View, PhoneViewWindow.DecodedPicture Picture)? _phonePicture;
+    private readonly object _phonePictureLock = new();
+    private bool _phoneDrawPosted;
     private readonly FrameMailbox _pcPatches;
 
     // A few hundred milliseconds of a desktop stream. A window further behind
@@ -76,7 +81,7 @@ public partial class MainWindow : Window
     private bool _simpleSized; // window is currently shrunk to the simple view
 
     private readonly List<Peer> _peers = new();
-    private PhoneViewWindow? _phoneView;
+    private volatile PhoneViewWindow? _phoneView;   // read by the phone feed's thread too
     private PcViewWindow? _pcView;
     // One per device, so each upload goes to the device its window names.
     private readonly Dictionary<string, FileExplorerWindow> _fileExplorers = new();
@@ -138,6 +143,8 @@ public partial class MainWindow : Window
         // rather than from inside it.
         _auth.ApprovalNeeded += req => Dispatcher.BeginInvoke(() => ShowApprovalPrompt(req));
         _auth.Changed += RefreshDeviceList;
+        // A phone approved, or no longer approved, while its window is open is asked again.
+        _auth.Changed += () => _phoneView?.TrustChanged();
         _auth.Changed += () =>
         {
             RestorePrivacyForEndedViewers();
@@ -171,7 +178,9 @@ public partial class MainWindow : Window
         // Frames are drawn below input and rendering, so a stream the PC cannot
         // keep up with costs frames rather than a frozen window.
         Action<Action> drawLater = draw => Dispatcher.BeginInvoke(DispatcherPriority.Background, draw);
-        _phoneFrames = new FrameMailbox(1, frame => _phoneView?.OnFrame(frame), drawLater);
+        _phoneFeed = new PhoneFeed(DecodePhonePicture, _ws.SendJson,
+            () => System.Diagnostics.Stopwatch.GetTimestamp() * 1000 / System.Diagnostics.Stopwatch.Frequency);
+        Closed += (_, _) => _phoneFeed.Dispose();
         _pcPatches = new FrameMailbox(MaxWaitingPatches, patch => _pcView?.OnPatch(patch), drawLater);
 
         // Never make the socket thread wait for the window: while it waits it
@@ -739,10 +748,44 @@ public partial class MainWindow : Window
 
     private void OnJsonReceived(JsonNode msg)
     {
+        var type = msg["type"]?.GetValue<string>();
+        // What a phone says about its stream is read here, on the socket
+        // thread, where it is still in order with the frames behind it. The
+        // window hears the rest of the message later, like any other.
+        if (type == "screen-info") _phoneFeed.OnScreenInfo(msg);
         // fs-begin is the exception: it opens the file that the chunks behind
         // it are written to, and chunks are written on the socket thread.
-        if (msg["type"]?.GetValue<string>() == "fs-begin") Dispatcher.Invoke(() => OnJson(msg));
+        if (type == "fs-begin") Dispatcher.Invoke(() => OnJson(msg));
         else Dispatcher.BeginInvoke(() => OnJson(msg));
+    }
+
+    /// <summary>The phone feed's thread: turns the newest picture into a
+    /// bitmap there, and leaves it for the window to show when it next can.</summary>
+    private void DecodePhonePicture(PhonePicture picture)
+    {
+        if (_phoneView is not { } view || view.Decode(picture.Data, picture.Offset, picture.Length) is not { } decoded) return;
+        lock (_phonePictureLock)
+        {
+            _phonePicture = (view, decoded);
+            if (_phoneDrawPosted) return;
+            _phoneDrawPosted = true;
+        }
+        // Drawn below input and rendering, so a stream the PC cannot keep up
+        // with costs pictures rather than a frozen window.
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, ShowPhonePicture);
+    }
+
+    private void ShowPhonePicture()
+    {
+        (PhoneViewWindow View, PhoneViewWindow.DecodedPicture Picture)? waiting;
+        lock (_phonePictureLock)
+        {
+            waiting = _phonePicture;
+            _phonePicture = null;
+            _phoneDrawPosted = false;
+        }
+        // Not into a window that has been closed, or opened on another phone, meanwhile.
+        if (waiting is { } latest && ReferenceEquals(latest.View, _phoneView)) latest.View.ShowPicture(latest.Picture);
     }
 
     private void OnJson(JsonNode msg)
@@ -1089,8 +1132,9 @@ public partial class MainWindow : Window
         if (data.Length == 0) return;
         switch (data[0])
         {
-            case 1: // full-frame JPEG (phone host)
-                _phoneFrames.Post(data);
+            case 1: // full-frame JPEG (phone host on an older app, or with an older viewer beside this one)
+            case 5: // the same behind a header naming its stream (phone host)
+                _phoneFeed.OnFrame(data);
                 break;
             case 2: // file chunk
                 _fs.HandleFileChunk(data);
@@ -1283,13 +1327,14 @@ public partial class MainWindow : Window
     {
         if (_phoneView == null || !_phoneView.IsLoaded)
         {
-            _phoneView = new PhoneViewWindow(_ws, phone.Id, phone.Name);
-            _phoneView.Closed += (_, _) => _phoneView = null;
-            _phoneView.Show();
+            var view = new PhoneViewWindow(_ws, phone.Id, phone.Name, _phoneFeed, () => _auth.IsTrusted(phone.Id));
+            _phoneView = view;
+            view.Closed += (_, _) => _phoneView = null;
+            view.Show();
         }
         else
         {
-            _phoneView.Activate();
+            _phoneView?.Activate();
         }
     }
 

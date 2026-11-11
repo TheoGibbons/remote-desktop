@@ -43,8 +43,21 @@ namespace RemoteDesktopWin;
 /// </summary>
 public partial class PhoneViewWindow : Window
 {
+    /// <summary>A picture ready to be shown, and what was seen in it:
+    /// whether it is nearly all black, if it was looked at, and how many
+    /// times the phone's screen or lock had changed by then.</summary>
+    internal sealed record DecodedPicture(BitmapSource Image, bool? Black, int AsOf);
+
     private readonly WsClient _ws;
     private readonly string _phoneId;
+
+    // Where this phone's frames come in, and whether this PC has approved
+    // the phone. Only an approved phone is offered type 5 frames, since the
+    // feed then takes its word for which stream is its own. Both are null in
+    // a window made without them, which is offered nothing.
+    private readonly PhoneFeed? _feed;
+    private readonly Func<bool>? _approved;
+    private bool _offered;              // the last start-view offered codecs
 
     public string PeerId => _phoneId;
 
@@ -80,10 +93,15 @@ public partial class PhoneViewWindow : Window
     private readonly DispatcherTimer _rotationTimer;
 
     // What the phone last said in lock-state; null until it does, and for
-    // good with a phone app too old to say.
-    private LockInfo? _lock;
+    // good with a phone app too old to say. Written here, on the window's
+    // thread, and read where pictures are decoded.
+    private volatile LockInfo? _lock;
+    // The black test runs where pictures are decoded, which is not the
+    // window's thread, so the watch and the pixels are used under its lock.
     private readonly BlackWatch _blackWatch = new();
     private byte[] _pixels = [];        // the picture last looked at, kept to save allocating it again
+    private bool _pictureBlack;         // whether the picture on show is nearly all black
+    private int _lockChanges;           // goes up each time the phone's screen or lock changes
 
     // The drag being made over the pattern grid, as fractions of the phone's
     // screen, and the dots it has passed over. Drawn, never sent or kept:
@@ -106,11 +124,20 @@ public partial class PhoneViewWindow : Window
     private static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
     private static readonly TimeSpan MoveInterval = TimeSpan.FromMilliseconds(30);
 
-    public PhoneViewWindow(WsClient ws, string phoneId, string name)
+    /// <summary>A window on a phone that is offered nothing but the bare
+    /// JPEGs every app sends.</summary>
+    public PhoneViewWindow(WsClient ws, string phoneId, string name) : this(ws, phoneId, name, null, null) { }
+
+    /// <param name="feed">Where this phone's frames come in.</param>
+    /// <param name="approved">Whether this PC has approved the phone, asked
+    /// each time the phone is asked for its screen.</param>
+    internal PhoneViewWindow(WsClient ws, string phoneId, string name, PhoneFeed? feed, Func<bool>? approved)
     {
         InitializeComponent();
         _ws = ws;
         _phoneId = phoneId;
+        _feed = feed;
+        _approved = approved;
         Title = name;
 
         _caption = new WindowCaption(this);
@@ -150,9 +177,13 @@ public partial class PhoneViewWindow : Window
         };
         Closed += (_, _) => { _updateLineTimer.Stop(); _volumeTimer.Stop(); _rotationTimer.Stop(); };
 
-        _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
+        SendStartView();
         AskPhoneState(always: true);
-        Closed += (_, _) => _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _phoneId });
+        Closed += (_, _) =>
+        {
+            _feed?.Stop(_phoneId);
+            _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _phoneId });
+        };
 
         // Holding the button without moving becomes a long-press on the phone.
         _holdTimer = new DispatcherTimer { Interval = HoldDelay };
@@ -273,8 +304,25 @@ public partial class PhoneViewWindow : Window
     /// the phone hasn't approved this device yet.</summary>
     public void ResendStartView()
     {
-        _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
+        SendStartView();
         AskPhoneState(always: true);
+    }
+
+    /// <summary>Every start-view goes from here, so each one says what this
+    /// viewer can draw: the phone takes the latest as the whole of it.</summary>
+    private void SendStartView()
+    {
+        _offered = _feed != null && _approved?.Invoke() == true;
+        // The feed is told first: the phone's answer is read on another thread.
+        _feed?.View(_phoneId, _offered);
+        _ws.SendJson(PhoneFeed.StartView(_phoneId, _offered));
+    }
+
+    /// <summary>This PC has approved a device, or no longer does. If that
+    /// changes what this phone may be offered, it is asked again.</summary>
+    public void TrustChanged()
+    {
+        if (_feed != null && (_approved?.Invoke() == true) != _offered) SendStartView();
     }
 
     // ---------------- what the phone can do, and its volume ----------------
@@ -442,8 +490,14 @@ public partial class PhoneViewWindow : Window
             if (LockInfo.Parse(msg) is not { } state || state == _lock) return;
             bool screenOrLock = !state.SameScreenAndLock(_lock);
             _lock = state;
-            // The picture on show was taken before this.
-            if (screenOrLock) _blackWatch.Forget();
+            // The picture on show was taken before this, and so was any that
+            // is decoded and on its way here.
+            if (screenOrLock)
+            {
+                lock (_blackWatch) _blackWatch.Forget();
+                _pictureBlack = false;
+                _lockChanges++;
+            }
             if (state.Entry is not PatternEntry) ClearTrail();
             ShowCaption();
             DrawUnlockScreen();
@@ -606,7 +660,7 @@ public partial class PhoneViewWindow : Window
     /// <summary>Puts the words over the picture, or takes them away.</summary>
     private void ShowCaption()
     {
-        var text = LockCaption.For(_lock, _blackWatch.IsBlack);
+        var text = LockCaption.For(_lock, _pictureBlack);
         if (text == null)
         {
             CaptionBox.Visibility = Visibility.Collapsed;
@@ -622,29 +676,33 @@ public partial class PhoneViewWindow : Window
 
     /// <summary>
     /// The black test, run where the picture is decoded: twice a second at
-    /// most, and only while a black picture would mean something.
+    /// most, and only while a black picture would mean something. Any thread.
     /// </summary>
-    private void LookAtPicture(BitmapSource picture)
+    /// <returns>Whether the picture is nearly all black, or null when this
+    /// one was not looked at.</returns>
+    private bool? LookAtPicture(BitmapSource picture)
     {
-        var now = DateTime.UtcNow;
-        if (!_blackWatch.Due(_lock, now)) return;
-        var format = picture.Format;
-        bool colour = format == PixelFormats.Bgr32 || format == PixelFormats.Bgra32 || format == PixelFormats.Pbgra32 ||
-            format == PixelFormats.Bgr24 || format == PixelFormats.Gray8;
-        bool black = false;
-        if (colour)
+        lock (_blackWatch)
         {
-            int bytesPerPixel = format.BitsPerPixel / 8;
-            int stride = picture.PixelWidth * bytesPerPixel;
-            int size = stride * picture.PixelHeight;
-            if (_pixels.Length < size) _pixels = new byte[size];
-            picture.CopyPixels(_pixels, stride, 0);
-            black = LockOverlay.IsNearlyBlack(_pixels.AsSpan(0, size), picture.PixelWidth, picture.PixelHeight,
-                stride, bytesPerPixel);
+            var now = DateTime.UtcNow;
+            if (!_blackWatch.Due(_lock, now)) return null;
+            var format = picture.Format;
+            bool colour = format == PixelFormats.Bgr32 || format == PixelFormats.Bgra32 || format == PixelFormats.Pbgra32 ||
+                format == PixelFormats.Bgr24 || format == PixelFormats.Gray8;
+            bool black = false;
+            if (colour)
+            {
+                int bytesPerPixel = format.BitsPerPixel / 8;
+                int stride = picture.PixelWidth * bytesPerPixel;
+                int size = stride * picture.PixelHeight;
+                if (_pixels.Length < size) _pixels = new byte[size];
+                picture.CopyPixels(_pixels, stride, 0);
+                black = LockOverlay.IsNearlyBlack(_pixels.AsSpan(0, size), picture.PixelWidth, picture.PixelHeight,
+                    stride, bytesPerPixel);
+            }
+            _blackWatch.Looked(black, now);
+            return black;
         }
-        bool was = _blackWatch.IsBlack;
-        _blackWatch.Looked(black, now);
-        if (black != was) ShowCaption();
     }
 
     // ---------------- window size ----------------
@@ -696,21 +754,49 @@ public partial class PhoneViewWindow : Window
         Height = fit.Height;
     }
 
-    public void OnFrame(byte[] frame)
+    /// <summary>
+    /// Turns a JPEG into a picture that can be shown, and looks whether it
+    /// is black. This is the slow part, 15 to 30 ms for a phone's screen, so
+    /// it is done on the phone feed's thread and never on the window's.
+    /// </summary>
+    /// <returns>Null for bytes that are no picture.</returns>
+    internal DecodedPicture? Decode(byte[] data, int offset, int count)
     {
         try
         {
-            using var ms = new MemoryStream(frame, 1, frame.Length - 1);
+            using var ms = new MemoryStream(data, offset, count);
             var img = new BitmapImage();
             img.BeginInit();
             img.CacheOption = BitmapCacheOption.OnLoad;
             img.StreamSource = ms;
             img.EndInit();
             img.Freeze();
-            ScreenImage.Source = img;
-            LookAtPicture(img);
+            // The phone may say its lock has changed while this picture is on
+            // its way to the window. What was seen in it was seen before
+            // that, and is not carried over.
+            int asOf = Volatile.Read(ref _lockChanges);
+            return new DecodedPicture(img, LookAtPicture(img), asOf);
         }
-        catch { }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Puts a decoded picture on show. The window's thread.</summary>
+    internal void ShowPicture(DecodedPicture picture)
+    {
+        ScreenImage.Source = picture.Image;
+        if (picture.Black is not { } black || picture.AsOf != _lockChanges || black == _pictureBlack) return;
+        _pictureBlack = black;
+        ShowCaption();
+    }
+
+    /// <summary>Decodes and shows a type 1 frame in one go, on the window's
+    /// thread. The app goes through the feed; this is for a window driven by hand.</summary>
+    public void OnFrame(byte[] frame)
+    {
+        if (Decode(frame, 1, frame.Length - 1) is { } picture) ShowPicture(picture);
     }
 
     /// <summary>Convert a mouse position on the Image control to normalized phone coords.</summary>

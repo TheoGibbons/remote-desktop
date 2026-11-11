@@ -4,8 +4,11 @@ using RemoteDesktopWin;
 // The decisions behind the phone viewer: when its "⋯" menu is open, how the
 // window is sized round the phone's picture, how a dragged slider is paced and
 // what a phone says about itself (PhoneMenu.cs), and what is said over the
-// picture of a phone that is asleep or locked (LockOverlay.cs). Neither file
-// has any WPF in it, so none of this needs a window.
+// picture of a phone that is asleep or locked (LockOverlay.cs); and which of
+// the frames that arrive are the phone's own, how they are acknowledged and
+// how they reach the window (PhoneFrame.cs, PhoneVideoStream.cs,
+// PhoneFeed.cs). None of these files has any WPF in it, so none of this needs
+// a window.
 internal static class Program
 {
     private static readonly DateTime T0 = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -42,6 +45,15 @@ internal static class Program
         CheckUnlockCaptions();
         CheckPatternDots();
         CheckPinTaps();
+        CheckFrameHeader();
+        CheckAnnouncedStream();
+        CheckSequenceNumbers();
+        CheckAcknowledgements();
+        CheckFeedDrawsAnnouncedFrames();
+        CheckFeedBelievesOnlyAnApprovedPhone();
+        CheckFeedKeepsTheNewest();
+        CheckFeedOnItsOwnThread();
+        CheckStartView();
     }
 
     // ---------------- the menu ----------------
@@ -1058,6 +1070,361 @@ internal static class Program
         Check(PinEntry.IsLabel("7") && PinEntry.IsLabel("delete") && PinEntry.IsLabel("ok") && !PinEntry.IsLabel("77") && !PinEntry.IsLabel("x"),
             "The keys a pad may have");
         Console.WriteLine("PASS: digits, Backspace and Enter become taps on the phone's own keys");
+    }
+
+    // ---------------- type 5 frames ----------------
+
+    private const ulong StreamA = 0xaa, StreamB = 0xab;
+    private const string IdA = "00000000000000aa", IdB = "00000000000000ab";
+
+    private static PhoneFrameHeader Header(ulong stream, uint seq, int format = PhoneFrame.Jpeg) =>
+        new(stream, seq, Keyframe: true, format, Sideways: false, Repeat: false, Width: 1080, Height: 2340, CaptureMs: 5);
+
+    private static void CheckFrameHeader()
+    {
+        // The same vectors are in PhoneFrame.kt, checked by PhoneFrameTest: what
+        // one app builds, the other reads, in both directions.
+        Check(PhoneFrame.SelfTest(), "The header is the bytes the Android app writes and reads");
+        // And encrypted on channel 5, the same blob comes out of all three implementations.
+        Check(Crypto.SelfTest(), "A phone frame encrypts on channel 5 as it does on the phone");
+
+        var vector = Convert.FromHexString(PhoneFrame.Vector);
+        Check(PhoneFrame.TryParse(vector, out var read), "The vector holds a header");
+        Check(read.Stream == 0xfedcba9876543210 && read.Seq == 4026531841 && read.Keyframe && read.Format == PhoneFrame.Jpeg &&
+            !read.Sideways && !read.Repeat && read.CaptureMs == 4294967280, "Each field is read from its own bytes");
+        Check(read.Width == 2340 && read.Height == 1080, "A phone on its side fits: the long side is the width");
+        Check(vector.Length == PhoneFrame.HeaderSize + 4, "The picture follows the 21 bytes of header");
+
+        var picture = new byte[] { 1, 2, 3 };
+        foreach (var header in new[]
+        {
+            new PhoneFrameHeader(ulong.MaxValue, uint.MaxValue, true, 3, true, true, 65535, 65535, uint.MaxValue),
+            new PhoneFrameHeader(0, 0, false, PhoneFrame.Jpeg, false, false, 0, 0, 0),
+            new PhoneFrameHeader(0x8000000000000000, 0x80000000, false, PhoneFrame.H264, true, false, 2400, 1080, 0x80000000),
+        })
+        {
+            var frame = PhoneFrame.Build(header, picture);
+            Check(PhoneFrame.TryParse(frame, out var back) && back == header, "Every field survives the trip at its largest and smallest");
+            Check(frame.AsSpan(PhoneFrame.HeaderSize).SequenceEqual(picture), "The picture is behind the header, untouched");
+        }
+        Check(!PhoneFrame.TryParse(new byte[PhoneFrame.HeaderSize - 1], out _), "Too short to hold a header is no frame");
+
+        Check(PhoneFrame.StreamHex(1) == "0000000000000001" && PhoneFrame.StreamHex(ulong.MaxValue) == "ffffffffffffffff",
+            "A stream's id is written as 16 hex digits");
+        Check(PhoneFrame.ParseStream("ffffffffffffffff") == ulong.MaxValue && PhoneFrame.ParseStream("FFFFFFFFFFFFFFFF") == ulong.MaxValue &&
+            PhoneFrame.ParseStream("0123456789abcdef") == 0x0123456789abcdef, "And read back, in either case");
+        foreach (var bad in new[] { null, "", "123", "0123456789abcdef0", "0123456789abcdeg", "+123456789abcdef", "-123456789abcdef", " 123456789abcdef" })
+            Check(PhoneFrame.ParseStream(bad) == null, $"\"{bad}\" is not a stream id");
+        Console.WriteLine("PASS: a phone frame's header is read and written as the Android app does");
+    }
+
+    private static void CheckAnnouncedStream()
+    {
+        var stream = new PhoneVideoStream();
+        Check(stream.DrawsType1, "A phone on an older app announces nothing, and its type 1 frames are drawn");
+        Check(stream.Take(Header(StreamA, 0), 100, 0) == FrameVerdict.Refuse, "A type 5 frame nobody announced is not drawn");
+
+        stream.Announce(StreamA, paused: false);
+        Check(stream.Current == StreamA && !stream.DrawsType1, "Type 1 is refused while a stream is announced");
+        Check(stream.Take(Header(StreamA, 0), 100, 0) == FrameVerdict.Draw, "A frame that follows its announcement is drawn");
+        Check(stream.Take(Header(StreamB, 1), 100, 0) == FrameVerdict.Refuse, "A frame with another id is not");
+        Check(stream.Take(Header(StreamA, 1), 100, 0) == FrameVerdict.Draw, "The next frame of the stream is drawn");
+        Check(stream.Take(Header(StreamA, 2, PhoneFrame.H264), 100, 0) == FrameVerdict.Skip,
+            "H.264 was not offered: it arrived, and is not drawn");
+        Check(stream.Gaps == 0, "Nothing was lost");
+
+        // Another viewer needs type 1, so everyone gets it.
+        stream.Announce(null, paused: false);
+        Check(stream.DrawsType1 && stream.Take(Header(StreamA, 3), 100, 0) == FrameVerdict.Refuse,
+            "A stream that ends lets type 1 back in, and its id is dead");
+
+        // Nothing is being sent, e.g. while a device waits to be approved.
+        stream.Announce(StreamA, paused: false);
+        stream.Announce(null, paused: true);
+        Check(!stream.DrawsType1 && stream.Current == null && stream.Take(Header(StreamA, 4), 100, 0) == FrameVerdict.Refuse,
+            "While the phone says it is sending nothing, nothing that arrives is its own");
+        stream.Announce(StreamA, paused: true);
+        Check(stream.Take(Header(StreamA, 5), 100, 0) == FrameVerdict.Draw, "A message that names a stream means the stream");
+
+        stream.Forget();
+        Check(stream.DrawsType1 && stream.Current == null, "A viewer that stops forgets what was announced");
+
+        // What a screen-info says, however it is written.
+        Check(PhoneVideoStream.Read(Json($$"""{"type":"screen-info","stream":"{{IdA}}","codec":"jpeg"}""")) == (StreamA, false), "A stream");
+        Check(PhoneVideoStream.Read(Json("""{"type":"screen-info","width":1080,"height":2340}""")) == (null, false), "None, as an older phone sends");
+        Check(PhoneVideoStream.Read(Json("""{"type":"screen-info","paused":true}""")) == (null, true), "Paused");
+        Check(PhoneVideoStream.Read(Json("""{"type":"screen-info","stream":12,"paused":"yes"}""")) == (null, false), "Nonsense is no stream");
+        Check(PhoneVideoStream.Read(Json("""{"type":"screen-info","stream":"abc"}""")) == (null, false), "Nor is an id of the wrong length");
+        Console.WriteLine("PASS: only frames of the stream the phone announced are drawn, and type 1 only while there is none");
+    }
+
+    private static void CheckSequenceNumbers()
+    {
+        var stream = new PhoneVideoStream();
+        stream.Announce(StreamA, paused: false);
+        Check(stream.Take(Header(StreamA, 40), 100, 0) == FrameVerdict.Draw && stream.Gaps == 0,
+            "A viewer that joins a stream part-way starts counting where it came in");
+        Check(stream.Take(Header(StreamA, 43), 100, 10) == FrameVerdict.Draw && stream.Gaps == 2, "Two missing numbers are two frames lost");
+        Check(stream.Take(Header(StreamA, 43), 100, 20) == FrameVerdict.Refuse && stream.Take(Header(StreamA, 41), 100, 20) == FrameVerdict.Refuse,
+            "A number seen before is a frame played back, and is not drawn");
+        Check(stream.Gaps == 2, "Nor counted");
+
+        stream.Announce(StreamA, paused: false);
+        Check(stream.Take(Header(StreamA, 43), 100, 30) == FrameVerdict.Refuse && stream.Take(Header(StreamA, 44), 100, 30) == FrameVerdict.Draw,
+            "The same stream announced again, as with a new size, goes on counting");
+        stream.Announce(StreamB, paused: false);
+        Check(stream.Take(Header(StreamA, 45), 100, 40) == FrameVerdict.Refuse && stream.Take(Header(StreamB, 0), 100, 40) == FrameVerdict.Draw,
+            "A new stream starts from nothing");
+
+        // Pictures and bytes in the last second.
+        var rate = new PhoneVideoStream();
+        rate.Announce(StreamA, paused: false);
+        rate.Take(Header(StreamA, 0), 1000, 0);
+        rate.Take(Header(StreamA, 1), 2000, 400);
+        rate.Count(500, 800);
+        Check(rate.LastSecond(999) == (3, 3500), "Three pictures in the last second, type 1 counted with the rest");
+        Check(rate.LastSecond(1000) == (2, 2500) && rate.LastSecond(1799) == (1, 500) && rate.LastSecond(1800) == (0, 0),
+            "Each drops out a second after it arrived");
+        Console.WriteLine("PASS: a gap in the frame numbers is counted, and a repeated number refused");
+    }
+
+    private static void CheckAcknowledgements()
+    {
+        var acks = new AckPacer();
+        Check(acks.Received(StreamA, 0, 1000) == new FrameAck(StreamA, 0) && acks.DueIn(1000) == null, "The first frame is acknowledged as it arrives");
+        Check(acks.Received(StreamA, 1, 1010) == null && acks.Received(StreamA, 2, 1020) == null, "Two more inside 30 ms are not, yet");
+        Check(acks.DueIn(1020) == 10 && acks.Due(1029) == null, "The higher one is owed, 30 ms after the last that went");
+        Check(acks.Due(1030) == new FrameAck(StreamA, 2), "And goes then, so the last frame is never left unsaid");
+        Check(acks.Due(1100) == null && acks.DueIn(1100) == null, "Once");
+        Check(acks.Received(StreamA, 3, 1059) == null && acks.Due(1060) == new FrameAck(StreamA, 3), "The 30 ms run from the one that went");
+        Check(acks.Received(StreamA, 4, 1090) == new FrameAck(StreamA, 4), "Frames far enough apart are each acknowledged at once");
+        acks.Received(StreamA, 5, 1091);
+        acks.Forget();
+        Check(acks.Due(5000) == null && acks.Received(StreamB, 0, 5000) == new FrameAck(StreamB, 0), "Forgotten with the stream");
+
+        Check(new FrameAck(0xfedcba9876543210, 4026531841).Message("7").ToJsonString() ==
+            """{"type":"frame-ack","to":"7","stream":"fedcba9876543210","seq":4026531841}""", "frame-ack names the stream and the highest frame");
+        Console.WriteLine("PASS: frames are acknowledged at most every 30 ms, and the last one always is");
+    }
+
+    /// <summary>A feed with no thread of its own, a clock the test moves, and
+    /// lists of what it drew and sent.</summary>
+    private sealed class FeedRig
+    {
+        public long Now;
+        public readonly List<PhonePicture> Drawn = [];
+        public readonly List<string> Sent = [];
+        public readonly PhoneFeed Feed;
+
+        public FeedRig() => Feed = new PhoneFeed(Drawn.Add, msg => Sent.Add(msg.ToJsonString()), () => Now, ownThread: false);
+
+        public void Info(string from, string? stream = null, bool paused = false)
+        {
+            var msg = new JsonObject { ["type"] = "screen-info", ["from"] = from, ["width"] = 1080, ["height"] = 2340, ["typing"] = true };
+            if (stream != null) { msg["stream"] = stream; msg["codec"] = "jpeg"; msg["capture"] = "accessibility"; }
+            if (paused) msg["paused"] = true;
+            Feed.OnScreenInfo(msg);
+        }
+
+        public void Type5(ulong stream, uint seq, params byte[] picture) =>
+            Feed.OnFrame([Crypto.ChPhone, .. PhoneFrame.Build(Header(stream, seq), picture)]);
+
+        public void Type1(params byte[] picture) => Feed.OnFrame([Crypto.ChVideo, .. picture]);
+
+        /// <summary>What the feed's thread would have drawn by now, as the picture bytes of each.</summary>
+        public List<byte[]> Pump()
+        {
+            Drawn.Clear();
+            while (Feed.Pump()) { }
+            return Drawn.Select(p => p.Data.AsSpan(p.Offset, p.Length).ToArray()).ToList();
+        }
+    }
+
+    private static bool Drew(List<byte[]> drawn, params byte[] picture) => drawn.Count == 1 && drawn[0].SequenceEqual(picture);
+
+    private static void CheckFeedDrawsAnnouncedFrames()
+    {
+        var rig = new FeedRig();
+        // No window is open: whatever arrives is nobody's.
+        rig.Info("7", IdA);
+        rig.Type5(StreamA, 0, 1);
+        rig.Type1(2);
+        Check(rig.Pump().Count == 0 && rig.Sent.Count == 0, "With no phone being viewed nothing is drawn or acknowledged");
+
+        rig.Feed.View("7", offered: true);
+        rig.Type1(3);
+        Check(Drew(rig.Pump(), 3), "Before any announcement a type 1 frame is drawn, as from a phone on an older app");
+
+        // The announcement, and straight behind it the stream's first frame.
+        rig.Now = 1000;
+        rig.Info("7", IdA);
+        rig.Type5(StreamA, 0, 4, 5);
+        Check(rig.Sent.SequenceEqual(["""{"type":"frame-ack","to":"7","stream":"00000000000000aa","seq":0}"""]),
+            "The frame is acknowledged as it arrives, before anything is decoded");
+        Check(Drew(rig.Pump(), 4, 5), "A frame that directly follows its announcement is drawn, without its header");
+        Check(rig.Feed.State == (StreamA, false, 0), "The stream is current");
+
+        rig.Now = 1100;
+        rig.Type1(6);
+        Check(rig.Pump().Count == 0, "Type 1 is refused while an id is current");
+        rig.Type5(StreamB, 1, 7);
+        Check(rig.Pump().Count == 0 && rig.Sent.Count == 1, "A frame with the wrong id is ignored, and not acknowledged");
+        rig.Type5(StreamA, 3, 8);
+        Check(Drew(rig.Pump(), 8) && rig.Feed.State.Gaps == 2, "A sequence gap is counted");
+        Check(rig.Sent.Count == 2 && rig.Sent[1].Contains("\"seq\":3"), "And the highest number acknowledged");
+        rig.Feed.OnFrame([Crypto.ChPhone, 1, 2, 3]);
+        rig.Feed.OnFrame([Crypto.ChPhone]);
+        rig.Feed.OnFrame([]);
+        rig.Feed.OnFrame([Crypto.ChPatch, 1, 2, 3]);
+        Check(rig.Pump().Count == 0, "A frame too short for a header, or of another kind, is nothing");
+
+        // Another device's word about a stream is not this phone's.
+        rig.Info("8", IdB);
+        rig.Type5(StreamB, 0, 9);
+        Check(rig.Pump().Count == 0 && rig.Feed.State.Stream == StreamA, "An announcement from a device that is not being viewed is ignored");
+        rig.Feed.OnScreenInfo(Json("""{"type":"screen-info","stream":"00000000000000ab"}"""));
+        rig.Feed.OnScreenInfo(Json("""{"type":"screen-info","from":7,"stream":"00000000000000ab"}"""));
+        Check(rig.Feed.State.Stream == StreamA, "So is one with no sender");
+
+        // Pictures stop for now: an unapproved device joined the session.
+        rig.Info("7", paused: true);
+        rig.Type1(10);
+        rig.Type5(StreamA, 4, 11);
+        Check(rig.Pump().Count == 0, "While the phone says it sends nothing, neither kind of frame is drawn");
+        rig.Info("7", IdB);
+        rig.Type5(StreamA, 5, 12);
+        rig.Type5(StreamB, 0, 13);
+        Check(Drew(rig.Pump(), 13), "The next stream has a new id, and the old one is dead");
+
+        // An older viewer joined, so the phone sends everyone type 1.
+        rig.Info("7");
+        rig.Type5(StreamB, 1, 14);
+        rig.Type1(15);
+        Check(Drew(rig.Pump(), 15), "With no stream announced, type 1 is drawn again");
+
+        rig.Feed.Stop("8");
+        rig.Type1(16);
+        Check(Drew(rig.Pump(), 16), "Some other window closing changes nothing");
+        rig.Info("7", IdA);
+        rig.Feed.Stop("7");
+        rig.Type5(StreamA, 0, 17);
+        rig.Type1(18);
+        Check(rig.Pump().Count == 0, "After the window closes nothing is drawn");
+        rig.Feed.View("7", offered: true);
+        rig.Type1(19);
+        Check(Drew(rig.Pump(), 19) && rig.Feed.State.Stream == null, "A window opened again starts from nothing");
+        Console.WriteLine("PASS: the feed draws the frames of the stream the viewed phone announced, in the order they arrive");
+    }
+
+    private static void CheckFeedBelievesOnlyAnApprovedPhone()
+    {
+        var rig = new FeedRig();
+        // The PC has not approved this phone, so it was offered no codecs.
+        rig.Feed.View("7", offered: false);
+        rig.Info("7", IdA);
+        Check(rig.Feed.State == (null, true, 0), "An announcement from a phone the PC has not approved is ignored");
+        rig.Type5(StreamA, 0, 1);
+        Check(rig.Pump().Count == 0 && rig.Sent.Count == 0, "Its type 5 frames are not drawn or acknowledged");
+        rig.Type1(2);
+        Check(Drew(rig.Pump(), 2), "Its type 1 frames are, as they always were");
+        rig.Info("7", paused: true);
+        rig.Type1(3);
+        Check(Drew(rig.Pump(), 3), "Nor can it switch the picture off");
+
+        // Approved while the window is open: the window asks again, offering codecs.
+        rig.Feed.View("7", offered: true);
+        rig.Info("7", IdA);
+        rig.Type5(StreamA, 0, 4);
+        Check(Drew(rig.Pump(), 4) && rig.Sent.Count == 1, "Once approved, its stream is taken");
+
+        // And no longer approved.
+        rig.Feed.View("7", offered: false);
+        Check(rig.Feed.State == (null, true, 0), "What it announced while approved no longer holds");
+        rig.Type5(StreamA, 1, 5);
+        Check(rig.Pump().Count == 0, "So its stream's frames are refused");
+
+        // The same window asking again changes nothing.
+        rig.Feed.View("7", offered: true);
+        rig.Info("7", IdA);
+        rig.Type5(StreamA, 2, 6);
+        rig.Pump();
+        rig.Feed.View("7", offered: true);
+        Check(rig.Feed.State.Stream == StreamA, "A start-view sent again keeps the stream that is running");
+        rig.Feed.View("9", offered: true);
+        Check(rig.Feed.State.Stream == null, "A window on another phone starts from nothing");
+        Console.WriteLine("PASS: a stream is taken only on the word of a phone this PC has approved");
+    }
+
+    private static void CheckFeedKeepsTheNewest()
+    {
+        var rig = new FeedRig { Now = 1000 };
+        rig.Feed.View("7", offered: true);
+        rig.Info("7", IdA);
+        // Three frames before the feed's thread gets a turn.
+        rig.Type5(StreamA, 0, 1);
+        rig.Now = 1010;
+        rig.Type5(StreamA, 1, 2);
+        rig.Now = 1020;
+        rig.Type5(StreamA, 2, 3);
+        Check(Drew(rig.Pump(), 3), "Only the newest picture is decoded: each JPEG is the whole screen");
+        Check(rig.Feed.State.Gaps == 0, "The ones passed over arrived, and are no gap");
+        Check(rig.Sent.Count == 1 && rig.Sent[0].Contains("\"seq\":0"), "One acknowledgement has gone");
+        rig.Now = 1029;
+        Check(!rig.Feed.Pump(), "The next is not due yet");
+        rig.Now = 1030;
+        Check(rig.Feed.Pump() && rig.Sent.Count == 2 && rig.Sent[1] == """{"type":"frame-ack","to":"7","stream":"00000000000000aa","seq":2}""",
+            "30 ms after the first, the highest frame that arrived is acknowledged");
+        Check(!rig.Feed.Pump(), "And then there is nothing left to do");
+
+        // A type 1 picture still waiting when a stream is announced is of the time before.
+        rig.Info("7");
+        rig.Type1(4);
+        rig.Info("7", IdB);
+        Check(rig.Pump().Count == 0, "A type 1 frame is not drawn after the stream that follows it is announced");
+
+        // A decoder that fails loses one picture, not the feed.
+        var failing = new PhoneFeed(_ => throw new InvalidOperationException("not a picture"), _ => { }, () => 0, ownThread: false);
+        failing.View("7", offered: false);
+        failing.OnFrame([Crypto.ChVideo, 1]);
+        Check(failing.Pump(), "A picture that will not decode is passed over");
+        Console.WriteLine("PASS: the feed decodes the newest picture only, and acknowledges the last frame even when frames come in a burst");
+    }
+
+    private static void CheckFeedOnItsOwnThread()
+    {
+        // The real thing: a thread of its own, and a real clock.
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var drawn = new List<byte>();
+        var sent = new List<string>();
+        using var all = new ManualResetEventSlim();
+        void Done() { lock (drawn) if (drawn.Contains(3) && sent.Count > 1 && sent[^1].Contains("\"seq\":2")) all.Set(); }
+        using var feed = new PhoneFeed(
+            p => { lock (drawn) drawn.Add(p.Data[p.Offset]); Done(); },
+            msg => { lock (drawn) sent.Add(msg.ToJsonString()); Done(); },
+            () => clock.ElapsedMilliseconds);
+        feed.View("7", offered: true);
+        feed.OnScreenInfo(Json($$"""{"type":"screen-info","from":"7","stream":"{{IdA}}"}"""));
+        feed.OnFrame([Crypto.ChPhone, .. PhoneFrame.Build(Header(StreamA, 0), [1])]);
+        feed.OnFrame([Crypto.ChPhone, .. PhoneFrame.Build(Header(StreamA, 1), [2])]);
+        feed.OnFrame([Crypto.ChPhone, .. PhoneFrame.Build(Header(StreamA, 2), [3])]);
+        Check(all.Wait(TimeSpan.FromSeconds(10)), "The feed's thread draws the newest picture and sends the acknowledgement that was owed");
+        lock (drawn)
+        {
+            Check(drawn[^1] == 3, "The last picture drawn is the newest");
+            Check(sent[0].Contains("\"seq\":0") && sent[^1].Contains("\"seq\":2"), "The first frame and the last are acknowledged");
+        }
+        Console.WriteLine("PASS: on its own thread the feed draws without being asked and sends an acknowledgement that came due");
+    }
+
+    private static void CheckStartView()
+    {
+        Check(PhoneFeed.StartView("7", offerCodecs: true).ToJsonString() == """{"type":"start-view","to":"7","codecs":["jpeg"]}""",
+            "A phone this PC has approved is offered JPEG in type 5 frames");
+        Check(PhoneFeed.StartView("7", offerCodecs: false).ToJsonString() == """{"type":"start-view","to":"7"}""",
+            "A phone it has not approved is asked as it always was");
+        // The window sends every start-view through this one function, the
+        // first and each one after, so a later one cannot take the offer back.
+        Console.WriteLine("PASS: every start-view to an approved phone says what this viewer can draw");
     }
 
     private static JsonObject Json(string text) => JsonNode.Parse(text)!.AsObject();

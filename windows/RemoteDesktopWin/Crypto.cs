@@ -9,7 +9,8 @@ namespace RemoteDesktopWin;
 /// associated data. The relay only ever sees ciphertext + routing metadata.
 ///
 /// Wire format: nonce(12) || ciphertext || tag(16).
-/// Channels: 0 = JSON control, 1 = video, 2 = file chunk.
+/// Channels: 0 = JSON control, 1 = video, 2 = file chunk, 3 = screen patch,
+/// 4 = H.264 from a PC, 5 = a phone's picture with its header.
 ///
 /// The constants and vectors here are verified against the same values in
 /// server/crypto.mjs and the Kotlin Crypto object (see <see cref="SelfTest"/>).
@@ -25,6 +26,7 @@ public static class Crypto
     public const byte ChFile = 2;
     public const byte ChPatch = 3; // dirty-rect screen patch
     public const byte ChH264 = 4;  // H.264 access unit
+    public const byte ChPhone = 5; // a phone's picture behind a header (see PhoneFrame)
 
     /// <returns>(32-byte AES key, lowercase-hex pairing id sent to the server)</returns>
     public static (byte[] encKey, string pairId) DeriveKeys(string sessionKey)
@@ -97,6 +99,16 @@ public static class Crypto
         var dec = Decrypt(enc, blob, ChJson);
         if (dec == null || Encoding.UTF8.GetString(dec) != plaintext) return false;
         if (Decrypt(enc, blob, ChVideo) != null) return false; // AAD binding
+
+        // A phone frame (PhoneFrame.Vector) on its own channel.
+        const string phoneBlob =
+            "000102030405060708090a0b94cfa1257157e9eb0ca847bb5530f5d2670534023049dd9bf5c7c4c85dc7fd49ca1773758a5994f402";
+        var frame = Convert.FromHexString(PhoneFrame.Vector);
+        var sealedFrame = EncryptWithNonce(enc, frame, ChPhone, nonce);
+        if (Convert.ToHexString(sealedFrame).ToLowerInvariant() != phoneBlob) return false;
+        var opened = Decrypt(enc, sealedFrame, ChPhone);
+        if (opened == null || Convert.ToHexString(opened).ToLowerInvariant() != PhoneFrame.Vector) return false;
+        if (Decrypt(enc, sealedFrame, ChVideo) != null) return false;
         return true;
     }
 }
