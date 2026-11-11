@@ -424,7 +424,7 @@ A review the same day reported seven findings, all confirmed and fixed, in the t
 
 Run check C1 first; it decides whether D9 is needed. Then C3. Step 0.7 must be in place.
 
-**2.1 The encoder on the phone.** New `PhoneVideoEncoder.kt`, with the OpenGL part in its own class.
+**2.1 The encoder on the phone.** Built on 2026-11-11, after check C3 (section 7), whose answers were all yes. The text below describes what was built.
 
 ```
 screen ─ VirtualDisplay ─► SurfaceTexture (GL texture)
@@ -440,20 +440,51 @@ screen ─ VirtualDisplay ─► SurfaceTexture (GL texture)
         prepend SPS/PPS to keyframes ─► type 5 header ─► ConnectionManager
 ```
 
-- One thread owns the EGL context, the texture and all drawing. EGL config with `EGL_RECORDABLE_ANDROID`; `EGLExt.eglPresentationTimeANDROID` before each swap. Call `SurfaceTexture.setDefaultBufferSize` when the texture is created and on every resize, or pictures arrive 1×1.
-- The pacer is `FramePacer<Unit>` at 33 ms, asking `InFlight` for room. Every encode waits for room: new pictures, keyframes and repeats alike.
-- The capture time travels through the encoder as the presentation timestamp and comes back in the output buffer's info, which is where `captureMs` is read. Timestamps must always increase; a repeat uses the current time and sets the repeat flag.
-- Encoder choice and settings are in appendix A. In short: hardware H.264, constant bitrate where offered, no B-frames, 30 pictures a second.
-- Size: the capture size (`StreamSize`: shorter side at most 1080 px, so up to 2400 × 1080 on its side), even numbers. Ask `VideoCapabilities.areSizeAndRateSupported` first. If the encoder refuses or fails to start, try 0.75× and 0.5×, then give up and use JPEG.
-- Keyframes, as D8 lists them: `PARAMETER_KEY_REQUEST_SYNC_FRAME`, then draw the current texture again even if the screen has not changed. `request-keyframe` is honoured at most once a second in total.
-- A still screen: draw the current picture again 150 ms and 600 ms after the last change, each marked repeat, then nothing. This sharpens a picture that was encoded mid-motion, and pushes the last real frame out of an encoder that holds one back.
-- The encoder is told SPS and PPS once, in a config buffer. Keep them and put them in front of every keyframe, unless the keyframe already starts with an SPS. `KEY_PREPEND_HEADER_TO_SYNC_FRAMES` is not used: an encoder without it fails to configure.
+The classes that touch Android decide nothing, and the ones that decide touch nothing of Android's:
 
-**2.2 The capture service.** `ScreenCaptureService` keeps the projection and the virtual display and gains a second output next to the `ImageReader`. `setSurface` switches between them when the chosen format changes (5.3).
-- A size change (0.6) rebuilds the encoder at the new size; its first frame is a keyframe.
-- A short pause of the gate stops the pacer and nothing else. On resume the stream gets a new id and a keyframe from the same encoder.
-- Any encoder or GL error tears the video output down and switches to JPEG. Two failures in one run of the service keep it on JPEG until the service restarts.
-- An H.264 frame, once encoded, is always sent (D2). `sendBinary` must not refuse it for queue size.
+| Class | What it is |
+|---|---|
+| `PhoneVideoEncoder`, `VideoGl` | MediaCodec and the OpenGL step. Set up as appendix A lists; whatever goes wrong is thrown or reported. Checked on the S26. |
+| `PhoneVideo` | Everything decided about the encoder: which to try, when a picture is drawn, what comes out as, and what counts as failure. Plain; it knows the encoder only as an interface (`VideoPipe`), so every path is tested with a made-up one. |
+| `VideoPacer` | When the texture is drawn into the encoder, and as what. Plain. |
+| `VideoSetup` | The order encoders and sizes are tried in, and the bitrate. Plain. |
+| `AnnexB` | Reads NAL units: puts parameter sets in front of keyframes, leaves filler out. Plain. |
+
+- One thread, the capture thread, owns the EGL context, the texture and all drawing. EGL config with `EGL_RECORDABLE_ANDROID`; `EGLExt.eglPresentationTimeANDROID` before each swap; `SurfaceTexture.setDefaultBufferSize` when the texture is made. The fragment shader asks for high precision where the phone has it: at medium a picture 2,340 pixels tall is sampled off by a fraction of a pixel. On the S26 a pattern of one-pixel lines and flat colours came back exact.
+- The pacer is a class of its own, `VideoPacer`, not `FramePacer<Unit>`: there is no picture to hold, since the texture always has the newest, and it also decides keyframes and repeats. At most one draw per 33 ms. Every encode waits for room (`PhoneScreenCapture.hasRoom`, which is `InFlight` and the app's own queue): new pictures, keyframes and repeats alike. While there is none it looks again every 15 ms. Nothing is drawn before the screen's first picture has reached the texture, or the first keyframe would be black.
+- The capture time is Android's stamp on the texture's picture (checked as for JPEGs, `PhoneFrame.captureTime`), goes through the encoder as the presentation timestamp and comes back with the output buffer, where `captureMs` is read. Timestamps always increase. A repeat uses the current time and sets the repeat flag. So does a picture that changed during a pause, when pictures go again: nobody waited for it.
+- What was drawn and has not come out is kept in a small ledger by timestamp, which is how a frame coming out is known to be a repeat, and how a dead encoder is noticed.
+- Encoder choice and settings are in appendix A. In short: hardware H.264, constant bitrate where offered, no B-frames, 30 pictures a second.
+- Size: the capture size (`StreamSize`), each side made even. `VideoCapabilities.areSizeAndRateSupported` is asked first. Each size is tried on every hardware encoder, then 0.75× and 0.5× (where a software encoder may be tried too, at a long side of 1280 or less), then JPEG. At a smaller size the mirror stays full size and the OpenGL step scales; `screen-info` and the frame header say the encoded size.
+- Keyframes, as D8 lists them: `PARAMETER_KEY_REQUEST_SYNC_FRAME`, then the texture is drawn again even if the screen has not changed. On the S26 the request takes hold on the very next frame drawn. A viewer's `request-keyframe` is honoured at most once a second in total, and one that comes sooner is honoured when the second is up, not dropped. The phone's own keyframes (a stream starting, a viewer joining a running stream, a picture the socket would not take, the last picture unacknowledged) do not wait for that. A request is dropped when it names another stream, and when a keyframe sent in the last second has not yet been acknowledged by the viewer that asks: the two have crossed.
+- If a keyframe is asked for and an ordinary picture comes out, it is asked for again. Eight in a row count as a failure.
+- A still screen: the picture is drawn again 150 ms and 600 ms after the last change or keyframe, each marked repeat, then nothing. On the S26 every picture came out by itself about 15 ms after it was drawn, so there the repeats only sharpen; on an encoder that holds one back they also push it out.
+- The encoder gives its SPS and PPS once, in a buffer of their own (and again in the output format, which is read too). They are kept and put in front of every keyframe that does not already begin with them, whether or not it was asked for: the frame is looked at, not the request. A leading access unit delimiter stays first. Filler (NAL type 12) is left out. `KEY_PREPEND_HEADER_TO_SYNC_FRAMES` is not used: an encoder without it fails to configure.
+- **What counts as the encoder failing**, each ending the same way (2.2): nothing starts at any size; a draw throws or the encoder reports an error; a draw does not come back within 2 s (an encoder that has stopped taking pictures blocks the swap, so the encoder is released from another thread to free it); the screen gives the texture no picture within 3 s of being attached while the phone's screen is on; three or more pictures have gone in over 2 s and nothing has come out; a keyframe comes with no parameter sets known; eight keyframe requests in a row are ignored. An encoder that keeps its newest picture until the next comes, or passes one over, is not failing.
+
+**What it costs, on the S26** (2026-11-11, the capture service's own pipeline on the real screen, written to a file, no viewer):
+
+| | |
+|---|---|
+| Android's stamp on the picture to the encoded frame in the app's hands | 21 to 23 ms median, 27 to 28 ms at the 95th, about 50 ms for the first frame of a new encoder |
+| The OpenGL draw and swap | 0.6 ms median, 4 ms at most |
+| Starting the encoder and OpenGL | 22 to 35 ms, and the first picture 23 to 27 ms after the screen is attached |
+| Processor, scrolling Settings at 30 pictures a second | The app about 12% of one core, the phone's codec service about 16% of one core. The app's own processor time came to 4.4 ms a picture, file writing included. |
+| Processor, still screen | None: nothing is drawn. |
+| Data, scrolling Settings | 11 KB a picture (median), 22 KB at the 95th, about 2.1 Mbit/s at 30 a second. JPEG was 96 KB a picture at 10 a second (section 11). |
+| A keyframe | 15 to 30 KB for a still home screen or list, 95 to 165 KB when asked for in the middle of a busy picture |
+
+**2.2 The capture service.** Built on 2026-11-11. `ScreenCaptureService` keeps the projection and the virtual display and has a second output next to the `ImageReader`. `ScreenOutputs` (plain, tested) decides which of the two the screen is mirrored into, and `VideoWish` (plain) whether video is to be tried.
+- The format is chosen by `StreamFormat` (5.3), from what every current viewer offered. `PhoneScreenCapture.send` carries JPEGs and `sendVideo` H.264; a stream is one or the other, and changing is a new stream id. A v1.0.53 PC, a PC that does not offer `h264` and a phone get exactly what they got before.
+- A size change (0.6) ends the encoder before the mirror takes its new shape and starts one at the new size, with a new OpenGL context; its first frame is a keyframe. The stream id stays, and `screen-info` with the new size goes first.
+- A short pause of the gate stops the pacer and nothing else. On resume the stream gets a new id and a keyframe from the same encoder. **Changed from the plan:** when nobody has viewed for 5 s (0.6's idle rule) the encoder and its OpenGL context are let go of, not only the mirror. A phone has few hardware encoders and its camera may want one. Starting again costs about 60 ms.
+- Any encoder or GL failure (2.1) tears the video output down, points the mirror at the `ImageReader`, which makes Android draw the screen at once, and tells the viewers of a new JPEG stream. The phone's connection history gets a line, "Smooth video went back to pictures", with the reason and the raw error. A failed try is not made again until pictures next start or the viewers next come to agree on H.264; two failures in one run of the service keep it on JPEG until the service restarts.
+- An H.264 frame, once encoded, is always sent (D2): `sendBinary` does not refuse it for queue size. If the socket itself will not take one, it takes no sequence number and nothing but a keyframe is sent after it. The same holds at the start of every stream, so a stream's first frame is a keyframe whatever the encoder was in the middle of.
+- The last frame going unacknowledged (D8) has the screen encoded again as a keyframe marked repeat; `InFlight` times it as it does a JPEG sent again.
+- When sharing stops, the display is released first, then the encoder and the context on the capture thread, which then ends. Nothing is started after that.
+- Tests: `PhoneVideoTest` (every way of failing, with a made-up encoder), `VideoPacerTest`, `VideoSetupTest` (with `StreamFormat` and `VideoWish`), `AnnexBTest`, `ScreenOutputsTest` (viewers coming and going, a pause, a turn, a failure, sharing stopping), `PhoneH264StreamTest` (who gets H.264, stream ids, a frame never dropped, keyframe requests), and a case in `ConnectionHistoryTest`.
+- **On the S26** (2026-11-11, no viewer: a throwaway addition stood in for one and wrote the frames to a file): 30 frames a second while Settings was scrolled; a keyframe on request on a still screen; a frame thrown away on purpose was followed by a keyframe 39 ms later; a 2 s pause kept the encoder and resumed with a keyframe; a turn each way gave a new encoder and a keyframe at the new size; the encoder's thread was gone 5 s after the last "viewer" and both threads were gone when sharing stopped; a failure forced in the middle put the mirror back on the `ImageReader`, and a second one kept it there. Windows' decoder (the C1 tool) gave every picture of those files as it was fed.
+- **Not seen:** anything with a real viewer (acknowledgements, holding back, `request-keyframe` over the wire, the PC drawing it), which waits for the rig; the S20 and any other maker's encoder; an hour of it for heat. `SCRATCH\step-10\E2E-CHECKS.md` lists the checks.
 
 **2.3 The decoder on the PC.** Built: `H264Decoder.cs`, `Nv12Converter.cs` and `MediaFoundationStartup.cs`, with their checks in `H264Tests.cs` of `RemoteDesktopWin.PhoneViewTests`. Nothing calls them until 2.4.
 - **The decoder** is Microsoft's H.264 decoder, made by its class id (`CLSID_CMSH264DecoderMFT`) so that it is the software one and not whatever enumerates first. No Direct3D device is given to it. Media Foundation is started through `MediaFoundationStartup`, which `H264Encoder.cs` now uses too.
@@ -656,13 +687,25 @@ Also seen:
 
 Not answered: the S20 (Android 13), where nothing is installed; whether other makers' phones allow the start; what the screen turning off does to a prompt that is up, which would have locked the phone.
 
-**C3. Does the GL path behave on the S26?** At the start of Phase 2, as a throwaway screen in the debug build showing a generated pattern:
-- a picture arrives as soon as the surface is attached, without the screen changing;
-- drawing the same texture again after a keyframe request produces a keyframe on a still screen;
-- a frame comes out of the encoder without another one being fed in after it;
-- `VirtualDisplay.resize` after a turn needs no new consent;
-- time from capture to encoded frame;
-- it can write its encoded stream to a file, for C1's second pass.
+**C3. Does the GL path behave on the S26?** Run on the S26 (Android 17) on 2026-11-11, over adb, with no viewer and no rig, by a throwaway addition to the debug build that was never committed. It drove the app's real encoder classes (2.1): first on a generated pattern, then on the real screen through the capture service's own virtual display, with the home screen and Settings in front. Android's prompt was pressed over adb, for this check only. Afterwards the debug app was put back to the build without the addition and the phone was left not sharing.
+
+| Question | Result |
+|---|---|
+| Does a picture arrive as soon as the surface is attached, without the screen changing? | **Yes.** 23 to 27 ms after the virtual display was pointed at the texture's surface, on a still screen, every time (four attaches). Nothing more came while the screen stayed still. |
+| Does drawing the same texture again after a keyframe request give a keyframe on a still screen? | **Yes.** `PARAMETER_KEY_REQUEST_SYNC_FRAME` and one draw of the unchanged texture gave an IDR picture 31 to 40 ms later, every time. The request takes hold on the very next frame drawn. |
+| Does a frame come out without another being fed in after it? | **Yes.** Each picture came out about 15 ms after it was drawn (median; 30 ms at the 95th). A single draw on a still screen came out alone in about 20 ms. |
+| Does `VirtualDisplay.resize` after a turn need new consent? | **No.** The sharing went on through a turn each way with no prompt. A new encoder at 2340 × 1080 opened in 25 ms and had its first picture 23 ms after being attached. |
+| Time from capture to encoded frame | **About 20 ms.** From Android's stamp on the picture to the encoded frame: 19 to 23 ms median, 26 to 28 ms at the 95th, 45 to 57 ms for the first frame of a new encoder. The stamp is on the uptime clock, about 1 ms before the picture reaches the app. The OpenGL draw is 0.6 ms. |
+| Can it write its stream to a file, for C1's second pass? | **Yes.** `SCRATCH\step-10\app-clip-1080x2340.h264` (the pattern) and two clips of the real screen, each as it would go into frames. Windows' decoder gave every picture of all three as it was fed, 698 of 698, none held back. |
+
+Also seen:
+
+- **The encoders.** `c2.qti.avc.encoder` and `OMX.qcom.video.encoder.avc` are hardware, offer a constant bitrate and take 1080 × 2340 either way round at 30 a second. The two software encoders refuse that size, as expected.
+- **The stream.** High profile, level 5.0, CABAC, one slice a picture, no B-frames, `max_num_reorder_frames` 0. The SPS says BT.709, limited range. No filler, no SEI and no delimiters in 698 frames at a constant bitrate. SPS and PPS come once, in a buffer of their own; IDR pictures come bare, so the app has to put them in front. With the app's settings no keyframe came that was not asked for.
+- **The picture.** The right way up. Flat patches of ten known colours decoded to within 1 of their values, and lines one pixel wide came back as drawn.
+- **A still screen costs nothing**, and the encoder gave no error when nothing was fed for many seconds.
+
+Not answered: the S20's Exynos encoder and Android 13, where nothing is installed; any other maker's phone; anything that needs a viewer.
 
 ## 8. Testing
 

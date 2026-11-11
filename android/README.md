@@ -88,11 +88,22 @@ connected; manufacturer battery restrictions can affect reconnection. Protected
 content cannot be captured. Capture failures replace the previous picture with
 "Screen unavailable" and retry. Rotation updates the desktop's screen dimensions.
 
-Enable **Smooth screen sharing** for the existing faster stream (up to 10 FPS).
+Enable **Smooth screen sharing** for the faster stream.
 It takes over from Accessibility until stopped, then default viewing resumes
 automatically. It follows the screen when the phone turns. While nobody is
 viewing, the screen is not mirrored at all. The phone asks Android for the
 whole screen, so the prompt comes up on "Share entire screen".
+
+To a PC on a current app, smooth sharing is sent as video (H.264, from the
+phone's own hardware encoder): up to 30 pictures a second, each about a tenth
+the size of a JPEG. Everyone else gets JPEGs, up to 10 a second, as before: a
+PC on an older app, a PC whose Windows has no H.264 decoder, another phone,
+and every viewer while one of those is viewing too. Either way a still screen
+sends nothing. If the phone's encoder cannot be started, or stops working, the
+phone goes back to JPEGs by itself and the viewer keeps its picture; after two
+such failures it stays with JPEGs until smooth sharing is next turned on.
+**Connection history** (below) then has a line, "Smooth video went back to
+pictures", with the reason. No encoder is held while nobody is viewing.
 
 A PC that is viewing the phone can ask for it too: **Smooth video** in the
 menu of its phone window. Android's prompt then appears on the phone, and
@@ -170,7 +181,8 @@ gone when the phone gets back, the viewer closes.
 first, each time this phone connected, lost the connection, failed to connect
 or changed network, with its own reason, how long the connection had lasted
 and the network it was on. "App started" after a gap means Android stopped the
-app. The history survives restarts (the last 200 entries). **Copy** puts it on
+app. It also says when smooth sharing had to go back from video to pictures,
+and why. The history survives restarts (the last 200 entries). **Copy** puts it on
 the clipboard with UTC times, to line up with the relay's log (`[leave]`
 reasons, see `server/README.md`).
 
