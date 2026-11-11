@@ -53,18 +53,33 @@ internal static unsafe class H264Tests
 
         CheckRoundTrips(kinds);
         CheckColoursEitherSideOfTheGuess(kinds);
-        Clip small = Clip.Make(kinds[0], 320, 240, 12) ?? throw new Exception("setup: no 320 x 240 stream");
-        Clip turned = Clip.Make(kinds[0], 242, 322, 12) ?? throw new Exception("setup: no 242 x 322 stream");
-        CheckFillerDoesNotHoldAPictureBack(small);
-        CheckAFreshStartWantsAKeyframe(small);
-        CheckReset(small);
-        CheckGarbage(small);
-        Clip tall = Clip.Make(kinds[0], 1080, 2400, 3) ?? throw new Exception("setup: no 1080 x 2400 stream");
-        CheckAKeyframeWithoutAPictureIsAFailure(tall);
-        CheckATurnedPhone(small, turned);
-        CheckTheHandler(small);
-        CheckDisposeWhileDecoding(small);
-        CheckThreads(small);
+        // The rest once for each encoder there is: their streams are built
+        // differently (one slice to a picture or a dozen, padding or none).
+        foreach (bool hardware in kinds)
+        {
+            _say = hardware == kinds[^1];
+            Clip small = Clip.Make(hardware, 320, 240, 12) ?? throw new Exception("setup: no 320 x 240 stream");
+            Clip turned = Clip.Make(hardware, 242, 322, 12) ?? throw new Exception("setup: no 242 x 322 stream");
+            Clip tall = Clip.Make(hardware, 1080, 2400, 3) ?? throw new Exception("setup: no 1080 x 2400 stream");
+            CheckFillerDoesNotHoldAPictureBack(small);
+            CheckAFreshStartWantsAKeyframe(small);
+            CheckReset(small);
+            CheckGarbage(small);
+            CheckAKeyframeWithoutAPictureIsAFailure(tall);
+            CheckATurnedPhone(small, turned);
+            CheckTheHandler(small);
+            CheckDisposeWhileDecoding(small);
+            CheckThreads(small);
+        }
+        _say = true;
+    }
+
+    // A check that runs once for each encoder says PASS once, at the last.
+    private static bool _say = true;
+
+    private static void Pass(string what)
+    {
+        if (_say) Console.WriteLine("PASS: " + what);
     }
 
     // ---------------- the converter ----------------
@@ -351,11 +366,37 @@ internal static unsafe class H264Tests
             var (x, y) = PatchAt(i, w, h);
             int at = ((y + size / 2) * w + x + size / 2) * 4;
             int r = shot.Bgra[at + 2], g = shot.Bgra[at + 1], b = shot.Bgra[at];
-            int off = Math.Max(Math.Abs(r - Patches[i].r), Math.Max(Math.Abs(g - Patches[i].g), Math.Abs(b - Patches[i].b)));
+            var want = Expected(Patches[i].r, Patches[i].g, Patches[i].b, p.Matrix);
+            int off = Math.Max(Math.Abs(r - want.r), Math.Max(Math.Abs(g - want.g), Math.Abs(b - want.b)));
             _worstColour = Math.Max(_worstColour, off);
             Check(off <= ColourTolerance,
-                $"{what}: the patch at the {Patches[i].name} ({Patches[i].r}, {Patches[i].g}, {Patches[i].b}) came back as ({r}, {g}, {b})");
+                $"{what}: the patch at the {Patches[i].name} ({Patches[i].r}, {Patches[i].g}, {Patches[i].b}) came back as ({r}, {g}, {b}), read as {p.Matrix}");
         }
+    }
+
+    /// <summary>
+    /// What a colour should come back as. H264Encoder codes with BT.709. A
+    /// picture read as BT.709 gives the colour back. One read as BT.601 does
+    /// not, and what it gives instead is worked out here, so that the
+    /// decoder's checks hold for it too. That happens to a small picture
+    /// whose stream does not name its standard: Windows' software encoder
+    /// writes none, whatever it is asked. The app does not send that
+    /// encoder's streams, and <see cref="CheckColoursEitherSideOfTheGuess"/>
+    /// holds the one it does send to the true colours.
+    /// </summary>
+    private static (int r, int g, int b) Expected(int r, int g, int b, Nv12Matrix readAs)
+    {
+        if (readAs == Nv12Matrix.Bt709) return (r, g, b);
+        var (ys, yo, vr, ug, vg, ub) = Nv12Converter.Coefficients(Nv12Matrix.Bt709, fullRange: false);
+        // Into Y, U and V the BT.709 way: the converter's own numbers, turned round.
+        double luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        double y = yo + luma / ys, u = (b - luma) / ub, v = (r - luma) / vr;
+        // And out again the BT.601 way.
+        var (ys6, yo6, vr6, ug6, vg6, ub6) = Nv12Converter.Coefficients(Nv12Matrix.Bt601, fullRange: false);
+        double yy = (y - yo6) * ys6;
+        return ((int)Math.Clamp(Math.Round(yy + vr6 * v), 0, 255),
+            (int)Math.Clamp(Math.Round(yy - ug6 * u - vg6 * v), 0, 255),
+            (int)Math.Clamp(Math.Round(yy + ub6 * u), 0, 255));
     }
 
     // ---------------- the decoder ----------------
@@ -401,11 +442,12 @@ internal static unsafe class H264Tests
         // What a phone shows of this PC's screen. A decoder turns the picture
         // back into colours by the standard the stream names. Where a stream
         // names none, Android guesses by size, BT.601 up to 720 x 576 and
-        // BT.709 above, and H264Decoder guesses the same way. So the colours
-        // must come back right at a size on each side of that line, whether
-        // or not the encoder wrote the name in.
+        // BT.709 above, and H264Decoder guesses the same way. The app sends
+        // the graphics card's encoder's streams, and those must come back in
+        // their true colours at a size on each side of that line.
         _worstColour = 0;
         var said = new List<string>();
+        bool looked = false;
         foreach (bool hardware in kinds)
         {
             foreach (var (w, h) in new[] { (320, 240), (720, 576), (1280, 720) })
@@ -415,17 +457,20 @@ internal static unsafe class H264Tests
                 using var decoder = NewDecoder();
                 var (result, shots) = Decode(decoder, clip.Units[0], 1);
                 Check(result == H264Decoded.Picture && shots.Count == 1, $"setup: {clip} decodes ({result} {decoder.LastFailure})");
-                CheckIsThePattern(shots[0], w, h, $"{clip}, colours");
                 var f = decoder.Format;
-                said.Add($"{w} x {h}: {(f.MatrixGiven ? f.Matrix.ToString() : "no standard named")}, {(f.RangeGiven ? (f.FullRange ? "full range" : "16 to 235") : "no range named")}");
+                said.Add($"{Clip.EncoderName(hardware)} at {w} x {h}: {(f.MatrixGiven ? f.Matrix.ToString() : "no standard")}, {(f.RangeGiven ? (f.FullRange ? "full range" : "16 to 235") : "no range")}");
                 // H264Encoder asks for BT.709, 16 to 235, and converts to that. An
                 // encoder may leave the name out, but must not write another.
                 Check(!f.MatrixGiven || f.Matrix == Nv12Matrix.Bt709, $"{clip}: the stream does not name another standard than the one its colours were made with");
                 Check(!f.RangeGiven || !f.FullRange, $"{clip}: the stream does not claim the full range");
+                if (!hardware) continue;
+                looked = true;
+                Check(f.Matrix == Nv12Matrix.Bt709, $"{clip}: the stream the app sends is read as BT.709, which is what its colours were coded with");
+                CheckIsThePattern(shots[0], w, h, $"{clip}, colours");
             }
         }
-        Check(said.Count > 0, "Some stream was made to look at");
-        Console.WriteLine($"PASS: the colours that went into the encoder come back, small pictures and large (off by {_worstColour} of 255 at most; the streams say: {string.Join("; ", said.Distinct())})");
+        if (!looked) Console.WriteLine("  (no graphics card's encoder here, which is the only one the app sends from: its colours were not looked at)");
+        Console.WriteLine($"PASS: the colours that go into the encoder the app uses come back, small pictures and large{(looked ? $" (off by {_worstColour} of 255 at most)" : "")}; the streams name: {string.Join("; ", said)}");
     }
 
     private static void CheckEncoderColourNumbers()
@@ -492,7 +537,7 @@ internal static unsafe class H264Tests
             Check(result == H264Decoded.Picture && shots.Count == 1 && shots[0].Info.Tag == i,
                 $"With filler after it, access unit {i} still gives its own picture at once ({result}, {shots.Count})");
         }
-        Console.WriteLine("PASS: an encoder's padding does not make the decoder run a picture behind");
+        Pass("an encoder's padding does not make the decoder run a picture behind");
     }
 
     private static void CheckAFreshStartWantsAKeyframe(Clip clip)
@@ -513,7 +558,7 @@ internal static unsafe class H264Tests
         Check(result == H264Decoded.Picture && shots.Count == 1, "The whole keyframe gives a picture");
         CheckIsThePattern(shots[0], clip.Width, clip.Height, "after frames that could not be used");
         Check(Decode(decoder, clip.Units[1], 6).result == H264Decoded.Picture, "And the frame after it gives the next");
-        Console.WriteLine("PASS: a decoder at a fresh start takes nothing but a whole keyframe, and says so");
+        Pass("a decoder at a fresh start takes nothing but a whole keyframe, and says so");
     }
 
     private static void CheckReset(Clip clip)
@@ -536,7 +581,7 @@ internal static unsafe class H264Tests
         decoder.Reset();
         decoder.Reset();
         Check(Decode(decoder, clip.Units[0], 200).result == H264Decoded.Picture, "Resets on end do no harm");
-        Console.WriteLine("PASS: a reset forgets the stream, and the next keyframe starts it again");
+        Pass("a reset forgets the stream, and the next keyframe starts it again");
     }
 
     private static void CheckGarbage(Clip clip)
@@ -587,7 +632,7 @@ internal static unsafe class H264Tests
             Check(again == H264Decoded.Picture && shots.Count >= 1, $"After {name} with no reset, a keyframe still gives a picture ({again} {second.LastFailure})");
             CheckIsThePattern(shots[^1], clip.Width, clip.Height, $"after {name} with no reset");
         }
-        Console.WriteLine("PASS: rubbish in the stream throws nothing, and the next keyframe brings the picture back");
+        Pass("rubbish in the stream throws nothing, and the next keyframe brings the picture back");
     }
 
     private static void CheckAKeyframeWithoutAPictureIsAFailure(Clip clip)
@@ -601,7 +646,7 @@ internal static unsafe class H264Tests
         Check(decoder!.LastFailure.Contains("keyframe"), $"And the reason is kept: \"{decoder.LastFailure}\"");
         Check(Decode(decoder, clip.Units[1], 2).result == H264Decoded.NeedsKeyframe, "After a failure the decoder wants a keyframe");
         Check(Decode(decoder, clip.Units[0], 3).result == H264Decoded.Failed, "And fails again on the next, so the viewer can count to two and give up");
-        Console.WriteLine("PASS: a decoder that cannot decode the stream is found out at its first keyframe");
+        Pass("a decoder that cannot decode the stream is found out at its first keyframe");
     }
 
     private static void CheckATurnedPhone(Clip upright, Clip turned)
@@ -624,7 +669,7 @@ internal static unsafe class H264Tests
         Check(decoder.Format.Width == turned.Width && decoder.Format.Height == turned.Height, "And says what it is");
         Play(upright, "turned back");
         Check(decoder.SizeAnnouncements == 3, "And again when the phone is turned back");
-        Console.WriteLine("PASS: a stream that changes size half way goes on through the same decoder");
+        Pass("a stream that changes size half way goes on through the same decoder");
     }
 
     private sealed class HandlerTrouble : Exception { }
@@ -662,7 +707,7 @@ internal static unsafe class H264Tests
         });
         Check(last == H264Decoded.Picture && kept != null, "A handler may dispose the decoder it is called by");
         Check(Decode(decoder, clip.Units[6], 8).result == H264Decoded.Disposed, "After which the decoder is gone");
-        Console.WriteLine("PASS: pictures are handed over on the caller's thread, one call at a time");
+        Pass("pictures are handed over on the caller's thread, one call at a time");
     }
 
     private static void CheckDisposeWhileDecoding(Clip clip)
@@ -721,7 +766,7 @@ internal static unsafe class H264Tests
             one.Dispose();
             Check(worker.Join(TimeSpan.FromSeconds(10)), "A decoder disposed at any moment lets its thread finish");
         }
-        Console.WriteLine("PASS: a decoder disposed while it decodes finishes the picture in hand and then goes");
+        Pass("a decoder disposed while it decodes finishes the picture in hand and then goes");
     }
 
     private static void CheckThreads(Clip clip)
@@ -751,7 +796,7 @@ internal static unsafe class H264Tests
             return mine == null ? H264Decoded.Failed : Decode(mine, clip.Units[0], 1).result;
         }).Result;
         Check(pooled == H264Decoded.Picture, "A decoder made and used on a pool thread works too");
-        Console.WriteLine("PASS: the decoder does not care which thread makes it, uses it or lets it go");
+        Pass("the decoder does not care which thread makes it, uses it or lets it go");
     }
 
     // ---------------- helpers ----------------

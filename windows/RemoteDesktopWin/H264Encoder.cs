@@ -7,9 +7,21 @@ using Vortice.MediaFoundation;
 namespace RemoteDesktopWin;
 
 /// <summary>
-/// H.264 encoder built on a Media Foundation Transform, preferring whatever
-/// hardware encoder the GPU registers (NVENC, Quick Sync, AMF all appear here
-/// as MFTs) and falling back to the software one.
+/// H.264 encoder built on a Media Foundation Transform: whatever hardware
+/// encoder the GPU registers (NVENC, Quick Sync, AMF all appear here as MFTs).
+///
+/// Windows' own software encoder can be driven too, and the tests do, but
+/// <see cref="TryCreate(int, int, int, int)"/> does not hand it out. It was
+/// meant as the fall-back from the start; a slip kept it from ever being
+/// returned, and its half of the code had never run. So a PC without a
+/// hardware encoder has always been sent as JPEG, and still is. Measured on
+/// a 12-core desktop, the software encoder takes 4 to 8 ms a frame by the
+/// clock and 15 to 25 ms of processor time, against next to none for a
+/// graphics card. A PC with no hardware encoder is seldom a fast one, and
+/// whether it should pay that is a decision nobody has taken. The software
+/// encoder also names no colour standard in its stream, whatever it is
+/// asked, so a picture of 720 x 576 or less would be shown in the wrong
+/// colours by a phone (see <see cref="BgraToNv12"/>).
 ///
 /// Why bother, given the dirty-rect JPEG path: JPEG re-encodes every changed
 /// pixel from scratch. A window playing video is one large rectangle changing
@@ -60,12 +72,18 @@ public sealed class H264Encoder : IDisposable
 
     // MF_E_TRANSFORM_NEED_MORE_INPUT
     private const int NeedMoreInput = unchecked((int)0xC00D6D72);
+    // MF_E_NOTACCEPTING
+    private const int NotAccepting = unchecked((int)0xC00D36B5);
 
     private readonly IMFTransform _mft;
     private readonly IMFMediaEventGenerator? _events; // async MFTs only
     private long _sampleTime;
     private readonly long _frameDuration;
     private readonly byte[] _nv12;
+    // A software encoder brings no samples for its output: this one is
+    // filled again for every access unit.
+    private IMFSample? _outSample;
+    private IMFMediaBuffer? _outBuffer;
     private bool _disposed;
 
     public int Width { get; }
@@ -98,15 +116,15 @@ public sealed class H264Encoder : IDisposable
         height &= ~1;
         if (width < 16 || height < 16) return null;
 
-        // Hardware first. Failing that the software MFT, which is slower but
-        // still beats re-encoding a moving region as fresh JPEG every frame.
-        return TryCreate(width, height, bitrate, fps, hardware: true)
-            ?? TryCreate(width, height, bitrate, fps, hardware: false);
+        // The graphics card's encoder or none: see the note at the top on
+        // the software one.
+        return TryCreate(width, height, bitrate, fps, hardware: true);
     }
 
     /// <summary>
-    /// The same, from one kind of encoder only: the graphics card's, or
-    /// Windows' own in software. Tests use it to try both.
+    /// The same, from one kind of encoder: the graphics card's, or Windows'
+    /// own in software. The tests use the second to make their streams, so
+    /// that they run on a PC whose graphics card has no encoder.
     /// </summary>
     internal static H264Encoder? TryCreate(int width, int height, int bitrate, int fps, bool hardware)
     {
@@ -141,9 +159,12 @@ public sealed class H264Encoder : IDisposable
                 {
                     string name = SafeName(activate);
                     mft = activate.ActivateObject<IMFTransform>();
-                    var configured = Configure(mft, hardware, width, height, bitrate, fps);
-                    if (configured == null) { mft.Dispose(); continue; }
-                    return new H264Encoder(mft, configured, hardware, name, width, height, fps);
+                    // Throws if the transform will not take these formats.
+                    var events = Configure(mft, hardware, width, height, bitrate, fps);
+                    // A graphics card's encoder is driven by its events and
+                    // cannot be used without them. The software one has none.
+                    if (hardware && events == null) { mft.Dispose(); continue; }
+                    return new H264Encoder(mft, events, hardware, name, width, height, fps);
                 }
                 catch
                 {
@@ -265,8 +286,18 @@ public sealed class H264Encoder : IDisposable
 
     private byte[]? EncodeSync(IMFSample sample)
     {
-        _mft.ProcessInput(0, sample, 0);
-        return DrainOne();
+        byte[]? held = null;
+        try
+        {
+            _mft.ProcessInput(0, sample, 0);
+        }
+        catch (SharpGenException e) when (e.ResultCode.Code == NotAccepting)
+        {
+            // It still holds an access unit. Take that, and it has room.
+            held = DrainOne();
+            _mft.ProcessInput(0, sample, 0);
+        }
+        return held ?? DrainOne();
     }
 
     /// <summary>
@@ -310,7 +341,23 @@ public sealed class H264Encoder : IDisposable
     {
         var buffers = new OutputDataBuffer[1];
         buffers[0].StreamID = 0;
+        // A hardware encoder hands out its own sample. The software one
+        // writes into ours.
+        bool ours = _events == null;
+        if (ours)
+        {
+            if (_outSample == null)
+            {
+                int size = Math.Max(_mft.GetOutputStreamInfo(0).Size, Width * Height * 3 / 2);
+                _outBuffer = MediaFactory.MFCreateMemoryBuffer(size);
+                _outSample = MediaFactory.MFCreateSample();
+                _outSample.AddBuffer(_outBuffer);
+            }
+            _outBuffer!.CurrentLength = 0;
+            buffers[0].Sample = _outSample;
+        }
         var result = _mft.ProcessOutput(ProcessOutputFlags.None, 1, ref buffers[0], out _);
+        try { buffers[0].Events?.Dispose(); } catch { }
         if (result.Failure)
         {
             // Needing more input is the normal pipelining case, not an error.
@@ -332,7 +379,7 @@ public sealed class H264Encoder : IDisposable
             }
             finally { contiguous.Unlock(); }
         }
-        finally { outSample.Dispose(); }
+        finally { if (!ours) outSample.Dispose(); }
     }
 
     private static IMFSample BuildSample(byte[] nv12)
@@ -414,6 +461,8 @@ public sealed class H264Encoder : IDisposable
         try { _mft.ProcessMessage(TMessageType.MessageNotifyEndOfStream, UIntPtr.Zero); } catch { }
         try { _mft.ProcessMessage(TMessageType.MessageNotifyEndStreaming, UIntPtr.Zero); } catch { }
         try { _events?.Dispose(); } catch { }
+        try { _outSample?.Dispose(); } catch { }
+        try { _outBuffer?.Dispose(); } catch { }
         try { _mft.Dispose(); } catch { }
     }
 }
