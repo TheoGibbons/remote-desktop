@@ -3,14 +3,12 @@ namespace RemoteDesktopWin;
 /// <summary>Holds the app's instance lock until shutdown, including while hidden in the tray.</summary>
 internal sealed class SingleInstanceGuard : IDisposable
 {
-    // Use a stable name so copies launched from different folders share the lock.
-    // Local scopes the lock to the interactive Windows session.
-    private const string MutexName = @"Local\RemoteDesktopWin.SingleInstance";
     private readonly Mutex _mutex;
 
     private SingleInstanceGuard(Mutex mutex) => _mutex = mutex;
 
-    internal static SingleInstanceGuard? TryAcquire(TimeSpan timeout, string name = MutexName)
+    /// <param name="name">The lock's name: <see cref="AppProfile.InstanceLock"/> for the app itself.</param>
+    internal static SingleInstanceGuard? TryAcquire(TimeSpan timeout, string name)
     {
         Mutex mutex;
         try { mutex = new Mutex(initiallyOwned: false, name); }

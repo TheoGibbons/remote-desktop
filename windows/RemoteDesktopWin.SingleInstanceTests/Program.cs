@@ -16,6 +16,8 @@ internal static class Program
             return 0;
         }
 
+        CheckProfiles();
+
         string name = @"Local\RemoteDesktopWin.SingleInstanceTests." + Guid.NewGuid().ToString("N");
         using (var first = SingleInstanceGuard.TryAcquire(TimeSpan.Zero, name)
             ?? throw new Exception("First instance did not acquire the lock"))
@@ -61,6 +63,41 @@ internal static class Program
         }
         finally { Stop(crashed); }
         return 0;
+    }
+
+    /// <summary>A development copy (REMOTEDESKTOP_PROFILE, debug builds) must not share
+    /// the installed app's data folder or lock, and the installed app's must not move.</summary>
+    private static void CheckProfiles()
+    {
+        Expect(AppProfile.StorageFolder(null) == "RemoteDesktopWin", "The installed app's data folder changed");
+        Expect(AppProfile.InstanceLock(null) == @"Local\RemoteDesktopWin.SingleInstance", "The installed app's lock changed");
+        Expect(AppProfile.Parse(null) == null && AppProfile.Parse("") == null, "An unset profile must be the ordinary app");
+        Console.WriteLine("PASS: without a profile the app keeps its usual data folder and lock");
+
+        Expect(AppProfile.Parse("rig") == "rig", "A plain name must be accepted");
+        Expect(AppProfile.StorageFolder("rig") == "RemoteDesktopWin-rig", "A profile must have its own data folder");
+        Expect(AppProfile.InstanceLock("rig") != AppProfile.InstanceLock(null), "A profile must have its own lock");
+        foreach (var bad in new[] { @"..\RemoteDesktopWin", "a/b", "a b", ".", new string('x', 33) })
+        {
+            try { AppProfile.Parse(bad); }
+            catch (ArgumentException) { continue; }
+            throw new Exception($"Profile name '{bad}' was accepted");
+        }
+        Console.WriteLine("PASS: a profile gets its own data folder and lock, and a bad name is refused");
+
+        string profile = "test-" + Guid.NewGuid().ToString("N")[..16];
+        using (SingleInstanceGuard.TryAcquire(TimeSpan.Zero, AppProfile.InstanceLock(profile))
+            ?? throw new Exception("The profile's first copy did not acquire its lock"))
+        {
+            ExpectProbe(AppProfile.InstanceLock(profile), acquired: false);
+            ExpectProbe(AppProfile.InstanceLock(profile + "-b"), acquired: true);
+        }
+        Console.WriteLine("PASS: a profile allows one copy of itself, beside copies under other profiles");
+    }
+
+    private static void Expect(bool condition, string failure)
+    {
+        if (!condition) throw new Exception(failure);
     }
 
     private static Process Start(string mode, string name)

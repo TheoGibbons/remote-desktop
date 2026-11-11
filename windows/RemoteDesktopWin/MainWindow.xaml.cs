@@ -153,6 +153,14 @@ public partial class MainWindow : Window
             ElevateCaption.Text = "Admin-only windows like Task Manager can be viewed and controlled.";
             Title += " (administrator)";
         }
+        if (AppProfile.Name is { } profile)
+        {
+            // A development copy beside the installed app: told apart by name,
+            // and kept from the settings the two would otherwise share.
+            Title += $" [{profile}]";
+            StartupCheck.IsEnabled = false;
+            ElevateButton.IsEnabled = false;
+        }
 
         // Frames are drawn below input and rendering, so a stream the PC cannot
         // keep up with costs frames rather than a frozen window.
@@ -205,7 +213,7 @@ public partial class MainWindow : Window
     {
         _tray = new System.Windows.Forms.NotifyIcon
         {
-            Text = "Remote Desktop",
+            Text = AppProfile.Name is { } profile ? $"Remote Desktop [{profile}]" : "Remote Desktop",
             Visible = true,
         };
         try
@@ -267,6 +275,9 @@ public partial class MainWindow : Window
 
     private void OnLatestRelease(string? version)
     {
+        // A development copy stays the build it is. Never hearing of a release
+        // also keeps "update now" from a paired device from doing anything.
+        if (AppProfile.Name != null) return;
         _updater.OnLatest(version);
         _ = _updater.PrepareAsync();
         RefreshDeviceList(); // other PCs that are behind can now be asked to update
@@ -449,6 +460,8 @@ public partial class MainWindow : Window
 
     private void Elevate_Click(object sender, RoutedEventArgs e)
     {
+        // The elevated copy may not inherit the profile, and would then start as the installed app.
+        if (AppProfile.Name != null) return;
         try
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
@@ -506,6 +519,8 @@ public partial class MainWindow : Window
     /// </summary>
     private void ApplyStartupRegistration()
     {
+        // The startup entry has one name, and it belongs to the installed app.
+        if (AppProfile.Name != null) return;
         var exe = Environment.ProcessPath!;
         try
         {

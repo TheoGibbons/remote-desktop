@@ -32,7 +32,7 @@ public partial class App : Application
         var timeout = e.Args.Contains(RestartSwitch, StringComparer.OrdinalIgnoreCase)
             ? TimeSpan.FromSeconds(10)
             : TimeSpan.Zero;
-        _instanceGuard = SingleInstanceGuard.TryAcquire(timeout);
+        _instanceGuard = SingleInstanceGuard.TryAcquire(timeout, AppProfile.InstanceLock(AppProfile.Name));
         if (_instanceGuard == null)
         {
             MessageBox.Show(

@@ -37,6 +37,13 @@ does not perform that signing. For setup and publishing steps, see
 (You can also open the folder in Visual Studio 2022 — it will detect the
 `.csproj` — and press F5.)
 
+To run a build beside the installed app, start a debug build with the
+environment variable `REMOTEDESKTOP_PROFILE` set to a short name, such as `dev`.
+That copy keeps its settings, identity and trusted devices in
+`%AppData%\RemoteDesktopWin-dev`, holds its own instance lock, and joins a
+session as a separate PC. It never registers to start with Windows, updates
+itself or restarts as administrator. Release builds ignore the variable.
+
 Run the deterministic H.264 idle/recovery regression checks from the repository
 root with `dotnet run --project windows/RemoteDesktopWin.Tests`. They exercise
 the production capture loop with capture, encoder and transport doubles, including
@@ -45,7 +52,8 @@ inter frame. They take about 11 seconds and do not require a relay or GPU encode
 
 Run `dotnet run --project windows/RemoteDesktopWin.SingleInstanceTests` for
 cross-process checks of duplicate-launch rejection, normal shutdown, restart
-handoff, and recovery after a crash. These checks use an isolated lock and do
+handoff, and recovery after a crash, and that a `REMOTEDESKTOP_PROFILE` copy
+gets a lock and data folder of its own. These checks use an isolated lock and do
 not launch the UI or connect to a relay.
 
 Run `dotnet run --project windows/RemoteDesktopWin.FileTransferTests` for file

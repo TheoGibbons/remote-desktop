@@ -28,7 +28,8 @@ public class AppSettings
 
     // Also holds identity.bin and trusted-devices.json (see DeviceAuth.cs).
     public static string StorageDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "RemoteDesktopWin");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            AppProfile.StorageFolder(AppProfile.Name));
 
     private static string FilePath => Path.Combine(StorageDir, "settings.json");
 

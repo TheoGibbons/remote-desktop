@@ -13,5 +13,6 @@
     <Compile Include="../RemoteDesktopWin/DownloadsFolderOpener.cs" Link="DownloadsFolderOpener.cs" />
     <Compile Include="../RemoteDesktopWin/AppSettings.cs" Link="AppSettings.cs" />
     <Compile Include="../RemoteDesktopWin/AppDefaults.cs" Link="AppDefaults.cs" />
+    <Compile Include="../RemoteDesktopWin/AppProfile.cs" Link="AppProfile.cs" />
   </ItemGroup>
 </Project>
