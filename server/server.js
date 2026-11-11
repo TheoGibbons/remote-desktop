@@ -151,25 +151,16 @@ wss.on("connection", (ws, req) => {
   ws.on("pong", () => (client.alive = true));
 
   ws.on("message", (data, isBinary) => {
-    if (isBinary) {
-      relayBinary(client, data);
-      return;
-    }
-    let msg;
+    // An error that escapes this listener ends the process, and with it every
+    // session on the relay. Whatever a device sends, the most it may cost is
+    // that device's own connection.
     try {
-      msg = JSON.parse(data.toString());
-    } catch {
-      return;
-    }
-    // `null`, a number, a string and a list are all valid JSON and none is a
-    // message. Reading `type` off null threw, which took the relay down with
-    // every session on it, for one frame from anyone who could connect.
-    if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return;
-    if (!client.sessionHash) {
-      if (msg.type !== "hello") return;
-      handleHello(client, msg, helloTimer);
-    } else {
-      relayJson(client, msg);
+      handleMessage(client, data, isBinary, helloTimer);
+    } catch (e) {
+      const what = e instanceof Error ? e.message.slice(0, 120) : "error";
+      console.log(`[bad-message] from ${client.ip}: ${what}`);
+      client.dropReason = "sent a message the relay could not handle";
+      ws.terminate();
     }
   });
 
@@ -180,6 +171,32 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+function handleMessage(client, data, isBinary, helloTimer) {
+  if (isBinary) {
+    relayBinary(client, data);
+    return;
+  }
+  let msg;
+  try {
+    msg = JSON.parse(data.toString());
+  } catch {
+    return;
+  }
+  // `null`, a number, a string and a list are all valid JSON and none is a
+  // message. Reading `type` off null threw, which took the relay down with
+  // every session on it, for one frame from anyone who could connect.
+  if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return;
+  if (!client.sessionHash) {
+    if (msg.type !== "hello") return;
+    handleHello(client, msg, helloTimer);
+  } else {
+    relayJson(client, msg);
+  }
+}
+
+// A field of a device's message is used only when it is the kind of value
+// expected. Turning one into text with String() throws for an object such as
+// {"toString":0}, and anyone who can connect can send that.
 function handleHello(client, msg, helloTimer) {
   const ipS = getIpState(client.ip);
   const now = Date.now();
@@ -209,7 +226,7 @@ function handleHello(client, msg, helloTimer) {
   clearTimeout(helloTimer);
   client.sessionHash = sessionHash;
   client.device = msg.device === "windows" ? "windows" : "android";
-  client.name = String(msg.name || client.device).slice(0, 64);
+  client.name = (typeof msg.name === "string" && msg.name ? msg.name : client.device).slice(0, 64);
   client.uid = typeof msg.uid === "string" && msg.uid ? msg.uid.slice(0, 64) : null;
   // The app's version, so each device can tell when another is behind.
   client.version = typeof msg.version === "string" && VERSION_RE.test(msg.version) ? msg.version : null;
@@ -295,10 +312,15 @@ function leaveSession(client, reason) {
 function relayJson(client, msg) {
   const peers = sessions.get(client.sessionHash);
   if (!peers) return;
+  // Peer ids are text. An address that is anything else names nobody, and is
+  // not sent to everybody in its place.
+  let to = msg.to;
+  if (typeof to === "number" && to) to = String(to);
+  if (to && typeof to !== "string") return;
   msg.from = client.id;
   const payload = JSON.stringify(msg);
-  if (msg.to) {
-    const target = peers.get(String(msg.to));
+  if (to) {
+    const target = peers.get(to);
     if (target && target.ws.readyState === target.ws.OPEN) target.ws.send(payload);
   } else {
     for (const p of peers.values()) {

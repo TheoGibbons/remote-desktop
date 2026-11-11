@@ -166,6 +166,58 @@ async function main() {
   ok("JSON that is no message is not passed on, and what follows it is",
     pc.msgs.length === 1 && pc.msgs[0].type === "still-here" && pc.msgs[0].from === phone2.welcome.id);
 
+  // 3e. A field that is an object with a broken toString cannot be turned
+  // into text, and trying used to end the relay: with a name, before any
+  // session key was looked at. Such a name is not used, and such an address
+  // names nobody.
+  const hostile = { toString: 0, valueOf: 0 };
+  const rude = new WebSocket(URL);
+  const rudeMsgs = [];
+  rude.on("message", (d) => rudeMsgs.push(JSON.parse(d.toString())));
+  await once(rude, "open");
+  pc.msgs.length = 0;
+  rude.send(JSON.stringify({ type: "hello", session: KEY, device: "android", name: hostile }));
+  await sleep(200);
+  ok("a name that cannot be made into text does not end the relay", server.exitCode === null);
+  ok("a device with such a name joins under its kind of device",
+    rudeMsgs.some((m) => m.type === "welcome") &&
+    pc.msgs.some((m) => m.type === "peer-joined" && m.peer.name === "android"));
+  for (const c of [pc, phone, phone2]) c.msgs.length = 0;
+  for (const to of [hostile, { toString: 0 }, [pc.welcome.id], true]) {
+    rude.send(JSON.stringify({ type: "odd-address", to }));
+  }
+  rude.send(JSON.stringify({ type: "after-odd-address", to: pc.welcome.id }));
+  await sleep(200);
+  ok("an address that cannot be made into text does not end the relay", server.exitCode === null);
+  ok("a message with such an address reaches nobody, and what follows it arrives",
+    pc.msgs.length === 1 && pc.msgs[0].type === "after-odd-address" &&
+    phone.msgs.length === 0 && phone2.msgs.length === 0);
+
+  // 3f. Whatever else goes wrong while one message is handled costs the device
+  // that sent it its connection, and nobody else anything. A message nested
+  // 20,000 deep can be read but not written out again for the others: that
+  // failed inside the relay and ended it. (Should a later Node write it out
+  // after all, there is nothing to catch and the message is simply passed on.)
+  const deep = `{"type":"deep","a":${"[".repeat(20000)}${"]".repeat(20000)}}`;
+  let cannotBeWritten = false;
+  try { JSON.stringify(JSON.parse(deep)); } catch { cannotBeWritten = true; }
+  pc.msgs.length = 0;
+  rude.send(deep);
+  for (let i = 0; i < 40 && cannotBeWritten && rude.readyState !== WebSocket.CLOSED; i++) await sleep(50);
+  phone.ws.send(JSON.stringify({ type: "after-deep", to: pc.welcome.id }));
+  await sleep(200);
+  ok("a message the relay fails on does not end the relay", server.exitCode === null);
+  ok("a message the relay fails on costs its sender the connection",
+    !cannotBeWritten || rude.readyState === WebSocket.CLOSED);
+  ok("a message the relay fails on leaves the other devices talking",
+    pc.msgs.some((m) => m.type === "after-deep" && m.from === phone.welcome.id) &&
+    (!cannotBeWritten || !pc.msgs.some((m) => m.type === "deep")));
+  ok("the relay's log says which device it dropped, and why",
+    !cannotBeWritten || (relayLog.includes("[bad-message] from ") &&
+      /^\[leave\] android \(android\) after \d+s: sent a message the relay could not handle, session peers=3$/
+        .test(leaveLine("android"))));
+  rude.close();
+
   phone2.ws.close(1000, "bye");
   await sleep(150);
   ok("leave log says the device closed, and how",
