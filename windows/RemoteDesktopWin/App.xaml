@@ -321,6 +321,81 @@
             </Setter>
         </Style>
 
+        <!-- A slider in such a menu (the phone's volume). Like RdMenuButton it
+             never takes the keyboard focus. A click on the track moves the
+             thumb there, and it stops on whole steps. -->
+        <Style x:Key="RdMenuSliderThumb" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <!-- Taller than the dot, so it is easy to catch. -->
+                        <Grid Width="16" Height="28" Background="Transparent">
+                            <Ellipse x:Name="Dot" Width="14" Height="14" Fill="{StaticResource RdPrimaryBrush}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Dot" Property="Fill" Value="{StaticResource RdPrimaryHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="Dot" Property="Fill" Value="{StaticResource RdPrimaryHoverBrush}"/>
+                                <Setter TargetName="Dot" Property="Width" Value="16"/>
+                                <Setter TargetName="Dot" Property="Height" Value="16"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- The track either side of the thumb. Tag is the colour of its line. -->
+        <Style x:Key="RdMenuSliderTrack" TargetType="RepeatButton">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Border Background="Transparent">
+                            <Border Height="4" VerticalAlignment="Center"
+                                    Background="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="RdMenuSlider" TargetType="Slider">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="IsMoveToPointEnabled" Value="True"/>
+            <Setter Property="IsSnapToTickEnabled" Value="True"/>
+            <Setter Property="TickFrequency" Value="1"/>
+            <Setter Property="SmallChange" Value="1"/>
+            <Setter Property="LargeChange" Value="1"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Track x:Name="PART_Track" Height="28">
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Style="{StaticResource RdMenuSliderTrack}" Command="Slider.DecreaseLarge"
+                                              Tag="{StaticResource RdPrimaryBrush}"/>
+                            </Track.DecreaseRepeatButton>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Style="{StaticResource RdMenuSliderTrack}" Command="Slider.IncreaseLarge"
+                                              Tag="{StaticResource RdOutlineStrongBrush}"/>
+                            </Track.IncreaseRepeatButton>
+                            <Track.Thumb>
+                                <Thumb Style="{StaticResource RdMenuSliderThumb}"/>
+                            </Track.Thumb>
+                        </Track>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- A button in a title bar drawn by WindowCaption, beside the system's
              minimise, maximise and close (Segoe MDL2 Assets glyph as content).
              It fills the bar's height, never takes the keyboard focus, and

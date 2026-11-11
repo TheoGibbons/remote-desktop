@@ -18,7 +18,7 @@ One plan at a time, one commit per step, working tree clean between steps.
 |---|------|------|---------------------------|--------|
 | 0 | Debug build installs beside the release app (`.debug` id) | Video 0.1 | Nothing for users in it | Built: debug build is `co.remotedesktop.debug`; not installed on a phone. |
 | 1 | Title bar, menu, window fit, `RemoteDesktopWin.PhoneViewTests` | Menu Phase 1 | Yes. Windows only, works with phones on v1.0.53. | Built. On the S26: Back, Home, Recents and Notifications from the menu, and typing. Not checked: anything that needs a real mouse (clicking minimise / maximise / close, hover, snap flyout, dragging, resizing), and Windows 10. |
-| 2 | Phone state, volume, Quick settings, Screenshot, Lock | Menu Phase 2 | Yes |  |
+| 2 | Phone state, volume, Quick settings, Screenshot, Lock | Menu Phase 2 | Yes | Built. On the S26: volume and mute from the menu, the level read back, Quick settings, and Screenshot with its card on the PC. Not checked: *Lock screen* on a real phone (first tried in step 5), and dragging the slider with a real mouse. |
 | 3 | Rotation, and smooth sharing following a turned phone | Menu Phase 3 | Yes |  |
 | 4 | Docs | Menu Phase 4 | Release |  |
 | 5 | Wake, `lock-state`, captions, notifications row | Unlock Phase 1 | Yes. No new permission. |  |

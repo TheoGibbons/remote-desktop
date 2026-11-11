@@ -25,7 +25,10 @@ internal static class Program
         CheckStaysOnScreen();
         CheckThrottle();
         CheckSecondDrag();
+        CheckRestingMidDrag();
+        CheckVolumeAnswers();
         CheckPhoneState();
+        CheckMenuRows();
     }
 
     // ---------------- the menu ----------------
@@ -412,10 +415,95 @@ internal static class Program
         Console.WriteLine("PASS: a second drag is sent even when it ends where the first one did");
     }
 
+    private static void CheckRestingMidDrag()
+    {
+        var throttle = new SendThrottle(TimeSpan.FromMilliseconds(100));
+        Check(throttle.NextDue == null && throttle.Tick(At(0)) == null, "Nothing is due before anything moves");
+        Check(throttle.Offer(5, At(0)) == 5, "setup: sent");
+        Check(throttle.NextDue == null, "Nothing is due when nothing is held");
+        Check(throttle.Offer(6, At(40)) == null, "setup: held");
+        Check(throttle.NextDue == At(100), "A held value is due when the interval is up");
+        Check(throttle.Tick(At(99)) == null, "Not before");
+        Check(throttle.Tick(At(100)) == 6, "A value the slider rests on goes without waiting for the drag to end");
+        Check(throttle.NextDue == null && throttle.Tick(At(300)) == null, "Once");
+        Check(throttle.Finish(At(400)) == null, "And letting go has nothing left to send");
+        Console.WriteLine("PASS: a value the slider rests on mid-drag is sent when its turn comes");
+    }
+
+    private static void CheckVolumeAnswers()
+    {
+        // A drag from 5 to 8. The phone answers each message a little later.
+        var volume = new VolumeSender();
+        Check(volume.Heard(At(0)), "A state nobody is waiting on is shown");
+        volume.DragStarted();
+        Check(volume.Dragging, "setup: dragging");
+        Check(volume.Moved(6, At(1000)) == 6, "The first level goes at once");
+        Check(volume.Moved(7, At(1050)) == null, "The next is held");
+        Check(volume.NextDue == At(1100), "And is due when the interval is up");
+        Check(!volume.Heard(At(1080)), "The phone's answers are not shown during a drag");
+        Check(volume.Tick(At(1100)) == 7, "The held level goes when its turn comes");
+        Check(volume.Moved(8, At(1150)) == null, "Held again");
+        Check(volume.DragEnded(At(1160)) == 8, "Letting go sends where the slider stopped");
+        Check(!volume.Dragging, "The drag is over");
+        // Three went out and one answer came during the drag. The answer to 7
+        // arrives after the drag: the thumb must not jump back to 7.
+        Check(!volume.Heard(At(1200)), "An answer to an earlier message doesn't pull the thumb back");
+        Check(volume.Heard(At(1260)), "The answer to the last message is shown");
+        Check(volume.Heard(At(5000)), "And so is anything the phone says later");
+
+        // A click on the track, with no drag.
+        Check(volume.Moved(3, At(6000)) == 3, "A click on the track is sent at once");
+        Check(volume.Heard(At(6100)), "And its answer is shown");
+        Check(volume.Moved(8, At(7000)) == 8, "setup: clicked to 8");
+        Check(volume.Heard(At(7100)), "setup: answered");
+        Check(volume.Moved(3, At(8000)) == 3, "A click back on a level sent before is sent again");
+        Check(volume.Heard(At(8100)), "setup: answered");
+
+        // Mute counts as a message of the slider's.
+        volume.Sent(At(9000));
+        Check(volume.Moved(4, At(9010)) == 4, "setup: a level straight after a mute");
+        Check(!volume.Heard(At(9100)), "The answer to the mute is overtaken by the level");
+        Check(volume.Heard(At(9110)), "The answer to the level is shown");
+
+        // A phone that stops answering doesn't leave the slider deaf.
+        Check(volume.Moved(9, At(20000)) == 9, "setup: sent");
+        Check(volume.Moved(10, At(20200)) == 10, "setup: sent again");
+        Check(volume.Heard(At(20200) + VolumeSender.AnswerWait), "Answers owed for too long are given up on");
+        Check(volume.Heard(At(30000)), "And the next state is shown");
+
+        // The menu closes under a drag (the window was left): the drag ends there.
+        volume.DragStarted();
+        Check(volume.Moved(12, At(40000)) == 12, "setup: sent");
+        Check(volume.Moved(13, At(40020)) == null, "setup: held");
+        Check(volume.DragEnded(At(40030)) == 13, "A drag cut short still sends where it had got to");
+        Console.WriteLine("PASS: the slider shows the phone's answer to its last message, not to earlier ones");
+    }
+
     // ---------------- what the phone says ----------------
 
     private static void CheckPhoneState()
     {
+        // The same text is built by the phone in PhoneControlsTest
+        // (phoneStateIsBuiltAsTheWindowsAppReadsIt), so the two apps can't come to
+        // disagree about a field's name or type. Change both together.
+        var shared = PhoneState.Parse(Json("""
+            {"type":"phone-state","to":"pc","volume":7,"volumeMax":15,"muted":false,"rotation":"auto","can":["volume","quick-settings","lock","screenshot"]}
+            """));
+        Check(shared is { Volume: 7, VolumeMax: 15, Muted: false, Rotation: PhoneState.Auto, IsSilent: false }, "What the phone builds is read");
+        Check(shared!.Can.SetEquals(["volume", "quick-settings", "lock", "screenshot"]), "With the rows it offers");
+
+        var muted = PhoneState.Parse(Json("""{"volume":0,"volumeMax":15,"muted":true,"can":["volume"]}"""));
+        Check(muted is { Muted: true, IsSilent: true }, "A muted phone is silent");
+        var down = PhoneState.Parse(Json("""{"volume":0,"volumeMax":15,"muted":false,"can":["volume"]}"""));
+        Check(down is { Muted: false, IsSilent: true }, "So is one turned right down");
+
+        // The speaker icon.
+        Check(shared.SpeakerClick(7) == (true, null), "A click on the speaker mutes a phone that is making sound");
+        Check(muted!.SpeakerClick(7) == (false, null), "And unmutes a muted one, which goes back to its own level");
+        Check(down!.SpeakerClick(9) == (null, 9), "A phone turned right down goes back to the last level it was heard at");
+        Check(down.SpeakerClick(0) == (null, 1), "Or to the quietest step when none is known");
+        Check(down.SpeakerClick(40) == (null, 15), "Never past the top");
+
         var state = PhoneState.Parse(Json("""
             {"type":"phone-state","to":"pc","volume":7,"volumeMax":15,"muted":false,"rotation":"landscape",
              "can":["volume","rotate","quick-settings","lock","screenshot"]}
@@ -442,6 +530,41 @@ internal static class Program
         var negative = PhoneState.Parse(Json("""{"volume":-4,"volumeMax":15.0,"can":"volume"}"""));
         Check(negative is { Volume: 0, VolumeMax: 15 } && negative.Can.Count == 0, "Numbers and lists in other forms don't break it");
         Console.WriteLine("PASS: phone-state is read, and anything odd in it is made safe");
+    }
+
+    private static void CheckMenuRows()
+    {
+        var none = new MenuRows(false, false, false, false, false);
+
+        // Nothing has come from the phone: it may not have approved this PC yet.
+        Check(MenuRows.For(null, null, At(0)) == none, "Before the phone sends anything there are no extra rows");
+        Check(MenuRows.For(null, null, At(60000)) == none, "However long it says nothing, a phone that shows no picture isn't called old");
+        Check(MenuRows.UpdateLineDue(null, null) == null, "And nothing is waited for");
+
+        // A picture arrived at 1000, so the phone is answering this PC.
+        Check(MenuRows.For(null, At(1000), At(1500)) == none, "A phone gets a moment to say what it can do");
+        Check(MenuRows.UpdateLineDue(null, At(1000)) == At(1000) + MenuRows.AnswerWait, "The update line is due after the wait");
+        Check(MenuRows.For(null, At(1000), At(1000) + MenuRows.AnswerWait) == none with { UpdateLine = true },
+            "A phone that shows a picture and never says what it can do gets the update line, and no rows");
+
+        var full = PhoneState.Parse(Json("""{"volume":7,"volumeMax":15,"can":["volume","quick-settings","lock","screenshot"]}"""));
+        Check(MenuRows.For(full, At(1000), At(1100)) == new MenuRows(true, true, true, true, false), "A phone that can do everything gets every row");
+        Check(MenuRows.For(full, null, At(1100)) == new MenuRows(true, true, true, true, false), "Whether or not a picture has come yet");
+        Check(MenuRows.For(full, At(1000), At(90000)) is { UpdateLine: false }, "And never the update line");
+        Check(MenuRows.UpdateLineDue(full, At(1000)) == null, "Nor a wait for it");
+
+        // Android 8: no lock, no screenshot.
+        var partial = PhoneState.Parse(Json("""{"volume":7,"volumeMax":15,"can":["volume","quick-settings"]}"""));
+        Check(MenuRows.For(partial, At(1000), At(5000)) == new MenuRows(true, true, false, false, false), "Only the rows the phone lists are shown");
+
+        // The accessibility service is off and the volume is fixed.
+        var nothing = PhoneState.Parse(Json("""{"volume":0,"volumeMax":0,"can":["volume"]}"""));
+        Check(MenuRows.For(nothing, At(1000), At(5000)) == none, "A phone that can do none of it gets no rows and no update line");
+
+        // A newer phone lists something this app has no row for.
+        var newer = PhoneState.Parse(Json("""{"volume":3,"volumeMax":15,"can":["rotate","torch","lock"]}"""));
+        Check(MenuRows.For(newer, At(1000), At(5000)) == none with { Lock = true }, "Names this app doesn't know add nothing");
+        Console.WriteLine("PASS: the menu shows the rows the phone lists, or says to update a phone that lists nothing");
     }
 
     private static JsonObject Json(string text) => JsonNode.Parse(text)!.AsObject();

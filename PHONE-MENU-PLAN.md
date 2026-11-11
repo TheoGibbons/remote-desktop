@@ -1,6 +1,6 @@
 # Phone menu in the Windows viewer: plan
 
-Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Phase 1 is built; the rest is not.
+Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Phases 1 and 2 are built; the rest is not.
 
 This is the first of three plans to be built. `PHONE-PLANS-ORDER.md` gives the order (this plan is its steps 1 to 4, after a step 0 that lets a debug build sit beside the release app) and settles where this plan met `PHONE-UNLOCK-PLAN.md` and `PHONE-VIDEO-PLAN.md`. This file has been edited to match.
 
@@ -119,8 +119,10 @@ The alternative, writing the system rotation setting, needs a new "Modify system
 - **Never closes during a slider drag,** even if the pointer leaves the menu.
 - **Never takes keyboard focus.** The window types into the phone whenever it is focused, so the `⋯` button and everything in the menu are `Focusable="False"`. Otherwise a click would move focus onto a button, and the next Space typed for the phone would press it. While the menu is open, Esc closes the menu instead of sending Back.
 - **Built as a WPF `Popup`,** not a `ContextMenu`: a context menu takes focus and mouse capture and closes on every click. `StaysOpen="True"`, `AllowsTransparency="True"`, placed under the button with right edges aligned. It looks like the app's other `⋯` menus (the `RdMenu` card: white, 10 px corners, soft shadow), with a button style that copies `RdMenuItem`.
-- **State (from Phase 2):** the window asks the phone for its state when it opens and each time the menu opens. Until the first answer, the phone-update rows are hidden behind one line: "Update Remote Desktop on this phone for volume, rotation and more." Phase 1 shows neither the rows nor the line: until Phase 2 is out there is no update that would bring them.
-- **Volume slider:** 0 to `volumeMax`, snapping to whole steps. Sends at most one message per 100 ms while dragging and always the final value. Ignores incoming state while dragging so the thumb doesn't jump back. What it last sent is forgotten when a drag starts and when the phone reports its state, so a drag that ends where the last one did is still sent.
+- **State:** the window asks the phone for its state when it opens and each time the menu opens, since the phone does not push it. The rows that need an updated phone are hidden until it answers. A phone that is showing a picture and has not answered two seconds after its first one is running an older app, and gets one line in their place: "Update Remote Desktop on this phone for volume, screenshots and more." (Phase 3 changes it to name rotation.) A phone that shows no picture gets neither: it has not let this PC in yet, and updating would not help.
+- **Volume slider:** 0 to `volumeMax`, snapping to whole steps. Sends at most one message per 100 ms while dragging and always the final value. Ignores incoming state while dragging so the thumb doesn't jump back. What it last sent is forgotten when a drag starts and when the phone reports its state, so a drag that ends where the last one did is still sent. A level the thumb rests on mid-drag is sent when its 100 ms come round. A click on the track moves the thumb there and sends at once.
+- **Answers to the slider:** the phone answers every `volume` with its state, so the answers to a drag's earlier messages arrive after the drag has ended. The slider counts what it has sent and shows only the answer to the last, so the thumb doesn't jump back and forth. Answers still owed two seconds after the last message are given up on.
+- **Speaker icon:** mutes a phone that is making sound and unmutes a muted one. A phone turned right down is not muted, so there the icon sets the last level heard in this window, or the quietest step if none, as the icon on Android's own volume panel does. Android reports a volume of 0 while muted, so the thumb sits at the left then.
 - **Rotation:** highlights what the phone reports. After choosing Portrait or Landscape, if the picture hasn't changed shape within 3 seconds, toast: "The phone didn't rotate. The app on screen may not allow it."
 - Right-click for Back and middle-click for Home stay as they are.
 
@@ -130,11 +132,11 @@ All go in PROTOCOL.md under *Input: controlling Android*, and the new viewer-to-
 
 | type | direction | fields | notes |
 |------|-----------|--------|-------|
-| `quick-settings` / `lock` / `screenshot` | viewer → phone | – | Global actions, like `back`. `lock` and `screenshot` need Android 9. A screenshot is saved on the phone and then offered to the PC by the existing `fs-offer`. |
-| `volume` | viewer → phone | `level`? (int), `mute`? (bool) | Media volume, `0..volumeMax`. The phone answers with `phone-state`. |
+| `quick-settings` / `lock` / `screenshot` | viewer → phone | – | Global actions, like `back`. `lock` and `screenshot` need Android 9. A screenshot is saved on the phone and then offered to the PC by the existing `fs-offer` (seen on the S26). On the S26 the first `back` after `quick-settings` shows the notifications and the second closes them. |
+| `volume` | viewer → phone | `level`? (int), `mute`? (bool) | Media volume, `0..volumeMax`. The phone answers the sender with `phone-state`. |
 | `rotate` | viewer → phone | `orientation` (`auto` \| `portrait` \| `landscape`) | Only from a device that is currently viewing. Held until `auto`, or until the phone has no viewers left. The phone answers with `phone-state`. |
-| `get-phone-state` | viewer → phone | – | |
-| `phone-state` | phone → viewer | `to`, `volume`, `volumeMax`, `muted`, `rotation`, `can` | `can` lists what this phone supports right now: any of `volume`, `rotate`, `quick-settings`, `lock`, `screenshot`. A viewer shows only those. Older phones never send it. |
+| `get-phone-state` | viewer → phone | – | The phone answers the sender with `phone-state`. |
+| `phone-state` | phone → viewer | `to`, `volume`, `volumeMax`, `muted`, `rotation`, `can` | `can` lists what this phone supports right now: any of `volume`, `rotate`, `quick-settings`, `lock`, `screenshot`. A viewer shows only those. Older phones never send it. Until Phase 3, `rotation` is always `auto` and `can` never has `rotate`. |
 
 ## Work, in order
 
@@ -155,19 +157,29 @@ Ships on its own and works with the phone app people already have.
 - Checked against the S26 through UI Automation: see the build-order table in `PHONE-PLANS-ORDER.md` for what was and wasn't.
 - Still to check by hand, with a real mouse: minimise, maximise and close respond to clicks; hover opens and closes the menu; the snap flyout on maximise; dragging and double-clicking the bar; resizing from each edge and corner. And Windows 10.
 
-### Phase 2: phone state, volume and the extra actions
+### Phase 2: phone state, volume and the extra actions (built)
 
 Phone:
 
-- `android/.../PhoneControls.kt` (new): builds `phone-state`; sets volume (`setStreamVolume(STREAM_MUSIC, level, FLAG_SHOW_UI)`, `adjustStreamVolume` with `ADJUST_MUTE` / `ADJUST_UNMUTE`, level clamped, `SecurityException` caught, `isVolumeFixed` respected).
-- `ConnectionManager.handleJson`: route `volume` and `get-phone-state` to `PhoneControls` behind `mayControl(from)`; add `quick-settings`, `lock`, `screenshot` to the existing input branch.
-- `InputAccessibilityService.handle`: the three global actions (`GLOBAL_ACTION_QUICK_SETTINGS`; `GLOBAL_ACTION_LOCK_SCREEN` and `GLOBAL_ACTION_TAKE_SCREENSHOT` on API 28+). `handle` wakes the screen for every message except pointer moves, so `lock` must skip the wake. `volume` and `get-phone-state` go to `PhoneControls` and never reach `handle`; keep it that way, and the same for `rotate` in Phase 3. Only real input wakes a phone.
-- Tests: new `PhoneControlsTest` on the `AllowOtherPhonesTest` pattern (`RecordingSocket`, fields set by reflection, **no new shadow of `PeerAuth` or `ConnectionManager`**, which breaks other test classes in a full run). Cases: volume from an approved PC changes the stream and is answered; ignored with control off, from an unapproved device, and from a phone while *Allow other phones* is off; `get-phone-state` reports range and `can`; each global action is performed. Finish with the full suite.
+- `android/.../PhoneControls.kt` (new): answers `volume` and `get-phone-state` with `phone-state`. Volume is `setStreamVolume(STREAM_MUSIC, level, FLAG_SHOW_UI)` and `adjustStreamVolume` with `ADJUST_MUTE` / `ADJUST_UNMUTE`; the level is clamped, a `level` or `mute` of the wrong type changes nothing, `SecurityException` is caught and `isVolumeFixed` respected. `phone-state` is built by a plain function from the numbers, so it is tested without a phone.
+- `ConnectionManager.handleJson`: `volume` and `get-phone-state` go to `PhoneControls` behind `mayControl(from)`; `quick-settings`, `lock` and `screenshot` join the input branch.
+- `InputAccessibilityService.handle`: the three global actions (`GLOBAL_ACTION_QUICK_SETTINGS`; `GLOBAL_ACTION_LOCK_SCREEN` and `GLOBAL_ACTION_TAKE_SCREENSHOT` on API 28+). `menuActions` says which of them this phone can do now, for `can`.
+- Waking: `InputAccessibilityService.wakesPhone(msg)` lists the messages that are real input, as row 9 of `PHONE-PLANS-ORDER.md` has them. `handle` wakes the screen for those and nothing else, so `lock` does not wake, and a message a later step routes into `handle` does not wake unless it is added to the list. `volume` and `get-phone-state` never reach `handle`; the same goes for `rotate` in Phase 3.
+- Tests: `PhoneControlsTest`, on the `AllowOtherPhonesTest` pattern (`RecordingSocket`, fields set by reflection, **no new shadow of `PeerAuth` or `ConnectionManager`**, which breaks other test classes in a full run). Volume from an approved PC changes the stream and is answered; levels out of range and nonsense; mute and unmute; ignored with control off, from an unapproved device, and from a phone while *Allow other phones* is off; `phone-state` reports range and `can`, on Android 8 and with the service off; each global action is performed; which messages wake a sleeping phone.
 
 Windows:
 
 - `MainWindow.OnJson`: `phone-state` from the viewed phone goes to `_phoneView.OnPhoneState`.
-- `PhoneViewWindow`: ask on open, on `ResendStartView` and on each menu open; show rows per `can`; the slider; the mute icon; the "update the phone" line. `PhoneState.Parse`, `SendThrottle` and `MenuHover.DragStarted` / `DragEnded` are there from Phase 1.
+- `PhoneViewWindow`: asks on open, on `ResendStartView` and on each menu open; shows the rows; the slider; the speaker icon; the "update the phone" line.
+- `PhoneMenu.cs` gained the decisions: `VolumeSender` (what the slider sends and which answers it shows), `MenuRows` (which rows, and when the update line), `PhoneState.SpeakerClick`, and a timer hook on `SendThrottle` so a level the thumb rests on mid-drag is sent without waiting for the drag to end.
+- `App.xaml`: `RdMenuSlider`, a slider that never takes the focus.
+- Tests in `RemoteDesktopWin.PhoneViewTests` for all of the above.
+
+One `phone-state` message is in both test suites as the same text (`phoneStateIsBuiltAsTheWindowsAppReadsIt` on the phone, `CheckPhoneState` on Windows): the phone must build it and Windows must read it, so the two can't come to disagree on a field's name or type.
+
+Checked on the S26 through the rig (Android 17, debug build): the slider moved the media volume and the phone's own volume panel showed; mute and unmute; after the phone's volume keys changed the level, the reopened menu showed it; Quick settings opened; Screenshot saved a file in `DCIM/Screenshots` and the PC's "New screenshot" card appeared about two seconds later, through the existing `fs-offer` with nothing added. Checked by eye, from pictures of the menu: all rows, the update line, and several partial `can` lists.
+
+Not checked: `lock` on a real phone (left to the unlock plan, where the lock screen is the subject), and anything needing a real mouse: dragging the thumb, clicking the track, and that the menu stays open while the thumb is dragged outside it.
 
 ### Phase 3: rotation
 
@@ -183,10 +195,12 @@ Phone:
 Windows:
 
 - The three-way control, the highlight from `phone-state.rotation`, the "didn't rotate" toast. The window re-fit from Phase 1 does the rest.
+- The row goes between the volume row and Notifications (a comment in `PhoneViewWindow.xaml` marks the place), shown when `can` has `rotate`: add it to `MenuRows`. The update line then reads "…for volume, rotation and more."
+- The phone side adds `rotate` to `can` and reports the real `rotation` from `PhoneControls.state`. PROTOCOL.md already describes both fields; it needs the `rotate` message.
 
 ### Phase 4: docs and release
 
-- PROTOCOL.md (table above, enforcement list).
+- PROTOCOL.md: Phase 2's messages went in with Phase 2, since any release ships what is on `main`. Check `rotate` is there too.
 - README.md "PC → Phone" list; windows/README.md "a phone →" paragraph; android/README.md if it describes what a viewer can do. README.md still says a secure lock can't be unlocked remotely; the unlock plan rewrites that, so don't add to it here.
 - Both apps must ship. Usual release steps in RELEASING.md.
 
@@ -202,9 +216,9 @@ Windows:
 
 Phase 1 can be checked against the released phone app. Phases 2 and 3 need a build on a phone. Step 0 of `PHONE-PLANS-ORDER.md` gives the debug build its own app id (`.debug`), so it installs beside the release app as a separate device with its own approvals. Theo agreed to that on the S26 (SM-S942W, Android 17) only. Nothing is installed on the S20 (Android 13): its half of these checks is done by Theo when a release reaches it.
 
-1. Volume: slider moves the phone's media volume and the phone's panel shows; mute and unmute; menu reopened shows the real level.
-2. Screenshot: the capture card pops up on the PC.
-3. Lock: the phone locks, and the next click in the viewer wakes it. Getting back in is blind until `PHONE-UNLOCK-PLAN.md` is built.
+1. Volume: slider moves the phone's media volume and the phone's panel shows; mute and unmute; menu reopened shows the real level. Done on the S26, except dragging with a real mouse.
+2. Screenshot: the capture card pops up on the PC. Done on the S26.
+3. Lock: the phone locks, and the next click in the viewer wakes it. Getting back in is blind until `PHONE-UNLOCK-PLAN.md` is built. Not done: it is first tried in that plan's Phase 1.
 4. Rotation on the S26: home screen, a portrait-only app, a video app. Taps land where clicked after turning. The S20 at release.
 5. Rotation, then lock the phone: the override is gone and the lock screen is the phone's usual one.
 6. Rotation, then close the viewer window, and separately kill the PC app: the phone returns to its own orientation both times.

@@ -975,6 +975,12 @@ public partial class MainWindow : Window
                 if (_pcView != null && _pcView.PeerId == from) _pcView.OnScreenInfo(siW, siH);
                 break;
 
+            case "phone-state":
+                // The phone being viewed says what its menu can offer, and its volume.
+                if (_phoneView != null && _phoneView.PeerId == from && msg is JsonObject phoneState)
+                    _phoneView.OnPhoneState(phoneState);
+                break;
+
             case "fs-list":
             case "fs-get":
             case "fs-begin":

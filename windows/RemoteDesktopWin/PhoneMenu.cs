@@ -231,6 +231,13 @@ internal sealed class SendThrottle(TimeSpan interval)
         return Send(value, now);
     }
 
+    /// <summary>When a held value may go, so one the slider rests on mid-drag
+    /// isn't kept back until the drag ends.</summary>
+    public DateTime? NextDue => _held != null && _lastSent is { } last ? last + interval : null;
+
+    /// <summary>Returns the held value if its time has come.</summary>
+    public int? Tick(DateTime now) => NextDue is { } due && now >= due ? Finish(now) : null;
+
     private int Send(int value, DateTime now)
     {
         _lastSent = now;
@@ -241,6 +248,105 @@ internal sealed class SendThrottle(TimeSpan interval)
 }
 
 /// <summary>
+/// The volume slider's dealings with the phone: what to send as it moves, and
+/// which of the phone's answers to show. The phone answers every
+/// <c>volume</c> with its state, so the answers to a drag's earlier messages
+/// arrive after the drag has ended, each with a level the slider has since
+/// left. Only the answer to the last message sent says where the phone is.
+/// </summary>
+internal sealed class VolumeSender
+{
+    public static readonly TimeSpan Interval = TimeSpan.FromMilliseconds(100);
+    /// <summary>Answers still owed this long after the last message are given
+    /// up on, so a phone that stopped answering doesn't deafen the slider.</summary>
+    public static readonly TimeSpan AnswerWait = TimeSpan.FromSeconds(2);
+
+    private readonly SendThrottle _throttle = new(Interval);
+    private int _owed;
+    private DateTime _lastSent;
+
+    public bool Dragging { get; private set; }
+
+    public void DragStarted()
+    {
+        Dragging = true;
+        _throttle.Forget();
+    }
+
+    /// <summary>The slider moved, by a drag or a click on its track. Returns
+    /// the level to send now, if any.</summary>
+    public int? Moved(int level, DateTime now)
+    {
+        if (!Dragging) _throttle.Forget();
+        return Counted(_throttle.Offer(level, now), now);
+    }
+
+    /// <summary>Returns the level the drag ended on, if the phone hasn't had it.</summary>
+    public int? DragEnded(DateTime now)
+    {
+        Dragging = false;
+        return Counted(_throttle.Finish(now), now);
+    }
+
+    /// <summary>When <see cref="Tick"/> next has something to send, if ever.</summary>
+    public DateTime? NextDue => _throttle.NextDue;
+
+    public int? Tick(DateTime now) => Counted(_throttle.Tick(now), now);
+
+    /// <summary>A <c>volume</c> message went out that the slider didn't send
+    /// (mute). Its answer is owed like any other.</summary>
+    public void Sent(DateTime now)
+    {
+        _owed++;
+        _lastSent = now;
+    }
+
+    /// <summary>The phone reported its state. Returns whether to show it:
+    /// not during a drag, which would pull the thumb from under the pointer,
+    /// and not while a later message of ours is still to be answered.</summary>
+    public bool Heard(DateTime now)
+    {
+        if (_owed > 0 && now - _lastSent < AnswerWait) _owed--;
+        else _owed = 0;
+        if (Dragging || _owed > 0) return false;
+        _throttle.Forget();
+        return true;
+    }
+
+    private int? Counted(int? level, DateTime now)
+    {
+        if (level != null) Sent(now);
+        return level;
+    }
+}
+
+/// <summary>
+/// Which rows the menu shows below Back, Home and Recents. Notifications is
+/// always there. The rest need a phone that says it can do them, in
+/// <c>phone-state</c>; a phone that is being viewed and has never sent one is
+/// running an older app, and gets a line saying to update it instead.
+/// </summary>
+internal readonly record struct MenuRows(bool Volume, bool QuickSettings, bool Screenshot, bool Lock, bool UpdateLine)
+{
+    /// <summary>How long a phone has to answer before it is taken for an older app.</summary>
+    public static readonly TimeSpan AnswerWait = TimeSpan.FromSeconds(2);
+
+    /// <param name="state">The phone's last <c>phone-state</c>, if it ever sent one.</param>
+    /// <param name="viewingSince">When the phone first sent a picture's size,
+    /// which is when it began answering this PC; null if it hasn't.</param>
+    public static MenuRows For(PhoneState? state, DateTime? viewingSince, DateTime now)
+    {
+        if (state == null) return new MenuRows(false, false, false, false, UpdateLine: UpdateLineDue(state, viewingSince) <= now);
+        return new MenuRows(state.Can.Contains("volume"), state.Can.Contains("quick-settings"),
+            state.Can.Contains("screenshot"), state.Can.Contains("lock"), UpdateLine: false);
+    }
+
+    /// <summary>When the update line appears if the phone goes on saying nothing.</summary>
+    public static DateTime? UpdateLineDue(PhoneState? state, DateTime? viewingSince) =>
+        state == null && viewingSince is { } since ? since + AnswerWait : null;
+}
+
+/// <summary>
 /// What a phone says about itself in <c>phone-state</c>: its media volume, how
 /// it is turned, and which of the menu's rows it can act on right now. Phones
 /// on v1.0.53 and earlier never send one.
@@ -248,6 +354,24 @@ internal sealed class SendThrottle(TimeSpan interval)
 internal sealed record PhoneState(int Volume, int VolumeMax, bool Muted, string Rotation, IReadOnlySet<string> Can)
 {
     public const string Auto = "auto", Portrait = "portrait", Landscape = "landscape";
+
+    /// <summary>No sound either way: muted, or turned right down. Android
+    /// reports a volume of 0 while muted.</summary>
+    public bool IsSilent => Muted || Volume == 0;
+
+    /// <summary>
+    /// What a click on the speaker icon asks of the phone: to mute, to
+    /// unmute, or a level. A phone turned right down is not muted, and
+    /// unmuting it would change nothing, so it goes back to the last level
+    /// it was heard at (<paramref name="lastAudible"/>, 0 if none is known),
+    /// or to the quietest step, as the icon on Android's own volume panel does.
+    /// </summary>
+    public (bool? Mute, int? Level) SpeakerClick(int lastAudible)
+    {
+        if (!IsSilent) return (true, null);
+        if (Muted) return (false, null);
+        return (null, Math.Clamp(lastAudible, 1, Math.Max(1, VolumeMax)));
+    }
 
     /// <summary>Reads a <c>phone-state</c> message, or null if it makes no
     /// sense. Anything the phone leaves out of <c>can</c> is not offered.</summary>

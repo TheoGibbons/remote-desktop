@@ -69,8 +69,9 @@ terminal shortcuts. They never touch the real clipboard or press keys.
 
 Run `dotnet run --project windows/RemoteDesktopWin.PhoneViewTests` for the phone
 viewer: when its title-bar menu opens and closes, how the window is sized round
-the phone's picture and follows a phone that turns, and how it reads what a
-phone says about itself. They need no window, phone or relay.
+the phone's picture and follows a phone that turns, how its volume slider paces
+what it sends and which of the phone's answers it shows, and which rows the
+menu offers for what a phone says about itself. They need no window, phone or relay.
 
 ## Clipboard
 

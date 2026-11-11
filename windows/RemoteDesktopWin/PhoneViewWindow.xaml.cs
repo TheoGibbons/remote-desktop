@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -20,7 +21,9 @@ namespace RemoteDesktopWin;
 /// The "⋯" button in the title bar opens a menu with Back, Home, Recents and
 /// Notifications, for a phone that uses gestures; clicking the phone's own
 /// buttons in the picture works too. The menu opens when the pointer rests on
-/// the button and closes when it leaves (see <see cref="MenuHover"/>).
+/// the button and closes when it leaves (see <see cref="MenuHover"/>). A phone
+/// that says it can (<c>phone-state</c>) also gets its media volume, Quick
+/// settings, Screenshot and Lock screen there (see <see cref="MenuRows"/>).
 ///
 /// While it is focused, the keyboard types into the phone's focused text
 /// field: characters as <c>text</c>, composed here with this PC's layout, and
@@ -51,6 +54,16 @@ public partial class PhoneViewWindow : Window
     private readonly MenuHover _menu = new();
     private readonly DispatcherTimer _menuTimer;
     private bool _escClosedMenu;        // Esc is still held from closing the menu
+
+    // What the phone last said about itself; null until it does, and for
+    // good with a phone app too old to say.
+    private PhoneState? _phoneState;
+    private DateTime? _viewingSince;    // when the phone first sent a picture's size
+    private readonly DispatcherTimer _updateLineTimer;
+    private readonly VolumeSender _volume = new();
+    private readonly DispatcherTimer _volumeTimer;
+    private bool _showingPhoneVolume;   // the slider is being moved to what the phone said
+    private int _lastAudible;           // the last level above 0 the phone had or was sent; 0 if none yet
 
     // The size of the phone's picture, and the one the window was last sized
     // round. They differ while the window is maximised or minimised.
@@ -94,7 +107,14 @@ public partial class PhoneViewWindow : Window
         };
         Closed += (_, _) => CloseMenu();
 
+        _updateLineTimer = new DispatcherTimer();
+        _updateLineTimer.Tick += (_, _) => ShowMenuRows();
+        _volumeTimer = new DispatcherTimer(DispatcherPriority.Input);
+        _volumeTimer.Tick += (_, _) => SendVolume(_volume.Tick(DateTime.UtcNow));
+        Closed += (_, _) => { _updateLineTimer.Stop(); _volumeTimer.Stop(); };
+
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
+        AskPhoneState();
         Closed += (_, _) => _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _phoneId });
 
         // Holding the button without moving becomes a long-press on the phone.
@@ -140,9 +160,20 @@ public partial class PhoneViewWindow : Window
     {
         if (MenuPopup.IsOpen != _menu.IsOpen)
         {
+            if (_menu.IsOpen)
+            {
+                // The volume may have been changed on the phone since.
+                AskPhoneState();
+                ShowMenuRows();
+                MenuButton.Background = MenuOpenBrush;
+            }
+            else
+            {
+                MenuButton.ClearValue(BackgroundProperty);
+                // A drag the menu closed under still sends where it had got to.
+                if (_volume.Dragging) EndVolumeDrag();
+            }
             MenuPopup.IsOpen = _menu.IsOpen;
-            if (_menu.IsOpen) MenuButton.Background = MenuOpenBrush;
-            else MenuButton.ClearValue(BackgroundProperty);
         }
         _menuTimer.Stop();
         if (_menu.NextDue is { } due)
@@ -200,8 +231,116 @@ public partial class PhoneViewWindow : Window
 
     /// <summary>Ask for the stream again — the first start-view is dropped when
     /// the phone hasn't approved this device yet.</summary>
-    public void ResendStartView() =>
+    public void ResendStartView()
+    {
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
+        AskPhoneState();
+    }
+
+    // ---------------- what the phone can do, and its volume ----------------
+
+    /// <summary>Asked when the window opens and each time the menu does. A
+    /// phone app from before the menu never answers.</summary>
+    private void AskPhoneState() => SendAction("get-phone-state");
+
+    public void OnPhoneState(JsonObject msg)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (PhoneState.Parse(msg) is not { } state) return;
+            // Answers the slider has since moved on from are skipped.
+            if (!_volume.Heard(DateTime.UtcNow) && _phoneState != null) return;
+            _phoneState = state;
+            if (state.Volume > 0) _lastAudible = state.Volume;
+            ShowMenuRows();
+        });
+    }
+
+    /// <summary>Shows the rows the phone can act on, with its volume, or the
+    /// line saying to update a phone that has said nothing.</summary>
+    private void ShowMenuRows()
+    {
+        _updateLineTimer.Stop();
+        var now = DateTime.UtcNow;
+        var rows = MenuRows.For(_phoneState, _viewingSince, now);
+        if (!rows.UpdateLine && MenuRows.UpdateLineDue(_phoneState, _viewingSince) is { } due)
+        {
+            _updateLineTimer.Interval = due > now ? due - now : TimeSpan.Zero;
+            _updateLineTimer.Start();
+        }
+
+        static Visibility Shown(bool show) => show ? Visibility.Visible : Visibility.Collapsed;
+        VolumeRow.Visibility = Shown(rows.Volume);
+        QuickSettingsButton.Visibility = Shown(rows.QuickSettings);
+        ScreenshotButton.Visibility = Shown(rows.Screenshot);
+        LockButton.Visibility = Shown(rows.Lock);
+        UpdateLine.Visibility = Shown(rows.UpdateLine);
+
+        if (_phoneState is not { } state || !rows.Volume) return;
+        _showingPhoneVolume = true;
+        VolumeSlider.Maximum = state.VolumeMax;
+        VolumeSlider.Value = state.Volume;
+        _showingPhoneVolume = false;
+        // Segoe MDL2 Assets: a speaker, and a speaker crossed out.
+        MuteButton.Content = state.IsSilent ? "\uE74F" : "\uE767";
+        MuteButton.ToolTip = state.IsSilent ? "Unmute" : "Mute";
+        AutomationProperties.SetName(MuteButton, state.IsSilent ? "Unmute" : "Mute");
+    }
+
+    private void MuteButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_phoneState is not { } state) return;
+        var (mute, level) = state.SpeakerClick(_lastAudible);
+        var msg = new JsonObject { ["type"] = "volume", ["to"] = _phoneId };
+        if (mute is { } on) msg["mute"] = on;
+        if (level is { } to) msg["level"] = to;
+        _volume.Sent(DateTime.UtcNow);
+        _ws.SendJson(msg);
+    }
+
+    private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_showingPhoneVolume) return;
+        SendVolume(_volume.Moved((int)Math.Round(e.NewValue), DateTime.UtcNow));
+    }
+
+    private void VolumeSlider_DragStarted(object sender, DragStartedEventArgs e)
+    {
+        _menu.DragStarted();
+        _volume.DragStarted();
+        ShowMenuState();
+    }
+
+    private void VolumeSlider_DragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        EndVolumeDrag();
+        ShowMenuState();
+    }
+
+    private void EndVolumeDrag()
+    {
+        var now = DateTime.UtcNow;
+        _menu.DragEnded(now);
+        SendVolume(_volume.DragEnded(now));
+    }
+
+    /// <summary>Sends a level the slider has decided on, if any, and sets the
+    /// timer for one it is holding back.</summary>
+    private void SendVolume(int? level)
+    {
+        if (level is { } value)
+        {
+            if (value > 0) _lastAudible = value;
+            _ws.SendJson(new JsonObject { ["type"] = "volume", ["to"] = _phoneId, ["level"] = value });
+        }
+        _volumeTimer.Stop();
+        if (_volume.NextDue is { } due)
+        {
+            var wait = due - DateTime.UtcNow;
+            _volumeTimer.Interval = wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
+            _volumeTimer.Start();
+        }
+    }
 
     // ---------------- window size ----------------
 
@@ -210,6 +349,11 @@ public partial class PhoneViewWindow : Window
         Dispatcher.BeginInvoke(() =>
         {
             _phoneTypes = typing;
+            if (_viewingSince == null)
+            {
+                _viewingSince = DateTime.UtcNow;
+                ShowMenuRows();
+            }
             if (width <= 0 || height <= 0) return;
             _picture = (width, height);
             FitToPicture();

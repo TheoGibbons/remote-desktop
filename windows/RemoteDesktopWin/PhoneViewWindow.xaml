@@ -94,13 +94,45 @@
                             </StackPanel>
                         </Button>
                     </UniformGrid>
-                    <!-- Rows that need an updated phone go here when they are
-                         built: media volume, then rotation, each under a
-                         separator of its own. -->
+                    <!-- Below here, every row but Notifications needs a phone that
+                         says it can do it (phone-state), and is hidden until
+                         one does: see MenuRows. -->
+                    <!-- The phone's media volume. The icon mutes and unmutes. -->
+                    <StackPanel x:Name="VolumeRow" Visibility="Collapsed">
+                        <Separator Style="{StaticResource RdMenuSeparator}"/>
+                        <Grid Margin="0,0,14,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="MuteButton" Style="{StaticResource RdMenuButton}" Padding="13,8"
+                                    FontFamily="Segoe MDL2 Assets" FontSize="16" Content="&#xE767;"
+                                    AutomationProperties.Name="Mute" ToolTip="Mute" Click="MuteButton_Click"/>
+                            <Slider x:Name="VolumeSlider" Grid.Column="1" Style="{StaticResource RdMenuSlider}"
+                                    Minimum="0" Maximum="15" AutomationProperties.Name="Media volume"
+                                    ValueChanged="VolumeSlider_ValueChanged"
+                                    Thumb.DragStarted="VolumeSlider_DragStarted"
+                                    Thumb.DragCompleted="VolumeSlider_DragCompleted"/>
+                        </Grid>
+                    </StackPanel>
+                    <!-- Rotation goes here when it is built, under a separator of its own. -->
                     <Separator Style="{StaticResource RdMenuSeparator}"/>
                     <Button x:Name="NotificationsButton" Style="{StaticResource RdMenuButton}" Tag="notifications"
                             Content="Notifications" Click="MenuAction_Click"/>
-                    <!-- And here: Quick settings, Screenshot, Lock screen. -->
+                    <Button x:Name="QuickSettingsButton" Style="{StaticResource RdMenuButton}" Tag="quick-settings"
+                            Content="Quick settings" Visibility="Collapsed" Click="MenuAction_Click"/>
+                    <Button x:Name="ScreenshotButton" Style="{StaticResource RdMenuButton}" Tag="screenshot"
+                            Content="Screenshot" Visibility="Collapsed" Click="MenuAction_Click"/>
+                    <Button x:Name="LockButton" Style="{StaticResource RdMenuButton}" Tag="lock"
+                            Content="Lock screen" Visibility="Collapsed" Click="MenuAction_Click"/>
+                    <!-- For a phone whose app is too old to say what it can do. -->
+                    <StackPanel x:Name="UpdateLine" Visibility="Collapsed">
+                        <Separator Style="{StaticResource RdMenuSeparator}"/>
+                        <TextBlock x:Name="UpdateText" Margin="14,6,14,8" MaxWidth="244" HorizontalAlignment="Left"
+                                   TextWrapping="Wrap" FontFamily="Segoe UI" FontSize="12"
+                                   Foreground="{StaticResource RdOnSurfaceVariantBrush}"
+                                   Text="Update Remote Desktop on this phone for volume, screenshots and more."/>
+                    </StackPanel>
                 </StackPanel>
             </Border>
         </Popup>
