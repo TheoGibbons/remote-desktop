@@ -50,7 +50,7 @@
             <Image x:Name="ScreenImage" Stretch="Uniform"
                    MouseLeftButtonDown="Screen_MouseDown" MouseLeftButtonUp="Screen_MouseUp"
                    MouseMove="Screen_MouseMove" MouseWheel="Screen_MouseWheel"
-                   MouseUp="Screen_OtherButtonUp"/>
+                   MouseUp="Screen_OtherButtonUp" LostMouseCapture="Screen_LostMouseCapture"/>
             <!-- The unlock screen, which Android leaves out of the picture:
                  the pattern's dots or the PIN's keys, drawn where the phone
                  says they are, with its message and the trail of the drag

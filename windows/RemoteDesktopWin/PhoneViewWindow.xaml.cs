@@ -51,6 +51,7 @@ public partial class PhoneViewWindow : Window
     private Point? _downPos;
     private DateTime _downTime;
     private bool _touching;             // a touch-down has been sent to the phone
+    private (double x, double y)? _lastTouch;   // where the phone's finger was last put or moved
     private DateTime _lastMoveSent;
     private readonly DispatcherTimer _holdTimer;
 
@@ -729,7 +730,9 @@ public partial class PhoneViewWindow : Window
         return (nx, ny);
     }
 
-    private void SendTouch(string action, double x, double y) =>
+    private void SendTouch(string action, double x, double y)
+    {
+        _lastTouch = (x, y);
         _ws.SendJson(new JsonObject
         {
             ["type"] = "touch",
@@ -738,6 +741,7 @@ public partial class PhoneViewWindow : Window
             ["x"] = x,
             ["y"] = y,
         });
+    }
 
     private void BeginTouch(Point at)
     {
@@ -777,16 +781,23 @@ public partial class PhoneViewWindow : Window
 
     private void Screen_MouseUp(object sender, MouseButtonEventArgs e)
     {
-        ScreenImage.ReleaseMouseCapture();
         _holdTimer.Stop();
         ClearTrail();
-        if (_downPos is not { } down) return;
-        var up = e.GetPosition(ScreenImage);
-        _downPos = null;
-
-        if (_touching)
+        if (_downPos is not { } down)
         {
-            _touching = false;
+            ScreenImage.ReleaseMouseCapture();
+            return;
+        }
+        bool touching = _touching;
+        // Forgotten before the capture is let go: letting go is otherwise
+        // taken for a drag that was cut short (see DragLost).
+        _downPos = null;
+        _touching = false;
+        ScreenImage.ReleaseMouseCapture();
+        var up = e.GetPosition(ScreenImage);
+
+        if (touching)
+        {
             var n = Normalize(up) ?? Normalize(down);
             if (n is { } end) SendTouch("up", end.x, end.y);
         }
@@ -795,6 +806,26 @@ public partial class PhoneViewWindow : Window
             // Short press with no movement: plain tap.
             _ws.SendJson(new JsonObject { ["type"] = "tap", ["to"] = _phoneId, ["x"] = a.x, ["y"] = a.y });
         }
+    }
+
+    private void Screen_LostMouseCapture(object sender, MouseEventArgs e) => DragLost();
+
+    /// <summary>
+    /// The mouse was taken away with the button still down: Alt+Tab, another
+    /// window coming to the front. No button-up will come. The finger held
+    /// down on the phone is lifted, where it was, and the trail drawn over a
+    /// pattern grid is cleared. A press that had not become a touch yet is
+    /// dropped: nobody finished that click.
+    /// </summary>
+    private void DragLost()
+    {
+        if (_downPos is not { } down) return;
+        _holdTimer.Stop();
+        bool touching = _touching;
+        _downPos = null;
+        _touching = false;
+        ClearTrail();
+        if (touching && (_lastTouch ?? Normalize(down)) is { } at) SendTouch("up", at.x, at.y);
     }
 
     private void Screen_MouseWheel(object sender, MouseWheelEventArgs e)
