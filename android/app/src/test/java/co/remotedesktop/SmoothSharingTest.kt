@@ -13,7 +13,7 @@ import org.junit.Test
 /** Who may ask a phone for smooth sharing, when its prompt is shown and taken away, and who is told what. */
 class SmoothSharingTest {
     private val viewer = Asker(approved = true, controlOn = true, kindAllowed = true, viewing = true)
-    private val ready = Phone(sharing = false, inUse = true, sending = true, canShowPrompt = true)
+    private val ready = Phone(sharing = false, inUse = true, sending = true, canShowPrompt = true, otherCapture = true)
     private val rules = SmoothSharing()
 
     private fun tell(state: String, reason: String? = null, vararg to: String) = Tell(to.toList(), state, reason)
@@ -42,7 +42,8 @@ class SmoothSharingTest {
                 assertEquals("$asker $phone", emptyList<Any>(), rules.request("x", asker, phone, now = 0))
                 assertFalse(rules.prompting)
             }
-            assertEquals(emptyList<Any>(), rules.stop(asker, sharing = true))
+            assertEquals(emptyList<Any>(), rules.stop("x", asker, sharing = true, otherCapture = true))
+            assertEquals(emptyList<Any>(), rules.stop("x", asker, sharing = true, otherCapture = false))
         }
     }
 
@@ -181,8 +182,23 @@ class SmoothSharingTest {
 
     @Test
     fun stoppingIsForViewersToo() {
-        assertEquals(listOf<Any>(StopSharing), rules.stop(viewer, sharing = true))
-        assertEquals(emptyList<Any>(), rules.stop(viewer, sharing = false))
+        assertEquals(listOf<Any>(StopSharing), rules.stop("pc", viewer, sharing = true, otherCapture = true))
+        assertEquals(emptyList<Any>(), rules.stop("pc", viewer, sharing = false, otherCapture = true))
+    }
+
+    /** Android 10 and earlier, or the Accessibility service off: without smooth sharing there is no picture. */
+    @Test
+    fun aViewerCannotStopTheOnlyWayThePhoneHasOfShowingItsScreen() {
+        assertEquals(listOf(tell("unavailable", SmoothSharing.ONLY_WAY, "pc")),
+            rules.stop("pc", viewer, sharing = true, otherCapture = false))
+        assertEquals(emptyList<Any>(), rules.stop("pc", viewer, sharing = false, otherCapture = false))
+
+        // Asked to start on such a phone, the viewer is told the prompt cannot be answered from where it is.
+        val blind = ready.copy(otherCapture = false)
+        assertEquals(listOf(tell("prompting", SmoothSharing.ANSWER_ON_PHONE, "pc"), ShowPrompt),
+            rules.request("pc", viewer, blind, now = 0))
+        assertEquals(listOf(tell("prompting", SmoothSharing.ANSWER_ON_PHONE, "phone")),
+            rules.request("phone", viewer, blind, now = 1))
     }
 
     @Test
@@ -201,8 +217,11 @@ class SmoothSharingTest {
 
     @Test
     fun whatAViewersMenuIsOffered() {
-        assertEquals("on", SmoothSharing.offer(sharing = true, canShowPrompt = false))
-        assertEquals("available", SmoothSharing.offer(sharing = false, canShowPrompt = true))
-        assertEquals("unavailable", SmoothSharing.offer(sharing = false, canShowPrompt = false))
+        assertEquals("on", SmoothSharing.offer(sharing = true, canShowPrompt = false, otherCapture = true))
+        // On, and not to be stopped from a viewer: nothing else would show the screen.
+        assertEquals("only", SmoothSharing.offer(sharing = true, canShowPrompt = true, otherCapture = false))
+        assertEquals("available", SmoothSharing.offer(sharing = false, canShowPrompt = true, otherCapture = true))
+        assertEquals("available", SmoothSharing.offer(sharing = false, canShowPrompt = true, otherCapture = false))
+        assertEquals("unavailable", SmoothSharing.offer(sharing = false, canShowPrompt = false, otherCapture = true))
     }
 }

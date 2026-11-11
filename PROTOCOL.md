@@ -151,7 +151,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `privacy-mode` | `to`, `enabled` (boolean) | Windows only: hide physical monitors and block local keyboard/mouse while preserving app-injected remote input. Enabling requires remote-control consent, an approved active viewer, and all peers trusted. Disabling requires remote-control consent and an approved peer. Privacy stays active after viewing stops or peers/relay disconnect unless a departing viewer opted into autoUnprivacy; reconnecting approved viewers receive the current state. |
 | `get-privacy-state` | `to` | Approved peer asks Windows for privacy availability and current state. |
 | `privacy-state` | `to`, `enabled`, `supported`, `allowed`, `error?` | Windows acknowledges a toggle and announces local unlock or automatic cleanup. Viewers must use this state rather than optimistically toggling. Older hosts may omit it. |
-| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`?, `typing`?, `stream`?, `codec`?, `capture`?, `paused`?, `smooth`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. A phone sets `typing: true` when it can type `text` and `key` into its text fields; older apps omit it. Sent when streaming starts and whenever the geometry changes. A phone sends it to each viewer by itself (older phone apps broadcast it), and tells a viewer that sent `codecs` how its pictures are coming in `stream`, `codec`, `capture` and `paused`: see [Phone frames](#phone-frames). To the same viewers it says in `smooth` whether smooth sharing is `on`, or can be asked for (`available`), or cannot (`unavailable`): see [Smooth sharing on request](#smooth-sharing-on-request). |
+| `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`?, `typing`?, `stream`?, `codec`?, `capture`?, `paused`?, `smooth`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. A phone sets `typing: true` when it can type `text` and `key` into its text fields; older apps omit it. Sent when streaming starts and whenever the geometry changes. A phone sends it to each viewer by itself (older phone apps broadcast it), and tells a viewer that sent `codecs` how its pictures are coming in `stream`, `codec`, `capture` and `paused`: see [Phone frames](#phone-frames). To the same viewers it says in `smooth` whether smooth sharing is `on`, or on and not to be stopped by a viewer (`only`), or can be asked for (`available`), or cannot (`unavailable`): see [Smooth sharing on request](#smooth-sharing-on-request). |
 | `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH`, `h264`? | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. `h264: true` additionally advertises that the viewer can decode binary frame type `4`. See [Viewport streaming](#viewport-streaming). |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
 | `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. A phone answers only a device that is viewing it; phone apps up to v1.0.53 never answer. The PC's phone window sends one every two seconds while its Stats readout is open, and works out from the answers how old each picture is when it is drawn: the phone's `hostTimeMs` less the time the ping was sent is the difference between the two clocks plus the ping's trip, and the smallest such figure of the last minute, less half the shortest round trip, is taken as the difference. |
@@ -300,7 +300,7 @@ can ask the phone to show that prompt, and to stop sharing again:
 | type             | fields | notes |
 |------------------|--------|-------|
 | `request-smooth` | `to` | Viewer to phone: show Android's screen-sharing prompt. |
-| `stop-smooth`    | `to` | Viewer to phone: end smooth sharing. Accessibility viewing takes over. |
+| `stop-smooth`    | `to` | Viewer to phone: end smooth sharing. Accessibility viewing takes over. Refused where the phone has no Accessibility viewing to take over: see `only` below. |
 | `smooth-status`  | `to`, `state`, `reason`? | Phone to viewer: what came of it. `state` is `prompting`, `started`, `declined`, `ended` or `unavailable`. `reason` is a sentence in the phone's own words that a viewer shows as it is. |
 
 The phone acts on the two requests only from a device that is viewing it: one
@@ -314,10 +314,10 @@ What a viewer that asked is told:
 
 | `state` | when |
 |---------|------|
-| `prompting` | The prompt is on the phone's screen. Sent again, with a `reason`, if the phone could only put up a notification that opens the prompt when tapped. |
+| `prompting` | The prompt is on the phone's screen. It has a `reason` when the prompt cannot be answered from a viewer: the phone has no picture to show until smooth sharing is on, so someone has to approve it on the phone. Sent again, with a `reason`, if the phone could only put up a notification that opens the prompt when tapped. |
 | `started` | Smooth sharing is running: the prompt was approved, or it was running already. |
 | `declined` | The prompt was refused (no `reason`), nobody answered it within a minute, or the phone's screen turned off under it. |
-| `unavailable` | No prompt was shown, and `reason` says why: the phone is locked or asleep ("Unlock the phone first."), it is holding pictures back while a device waits to be approved, the prompt was declined in the last ten seconds, or it has no way to show one. |
+| `unavailable` | No prompt was shown, and `reason` says why: the phone is locked or asleep ("Unlock the phone first."), it is holding pictures back while a device waits to be approved, the prompt was declined in the last ten seconds, or it has no way to show one. Also the answer to a `stop-smooth` the phone refuses. |
 | `ended` | Smooth sharing has stopped. Sent to every device viewing at that moment that sent `codecs`, whether or not it asked. `reason` says whether a viewer stopped it (and which), it was stopped on the phone, or the phone was locked: Android 15 and later end screen sharing when the phone locks. |
 
 The prompt is Android's own, and only a person answers it: whoever holds the
@@ -333,6 +333,15 @@ viewer or another, is answered `prompting` and waits for the same prompt. The
 phone takes the prompt away when every viewer that asked has stopped viewing,
 without telling anyone. A request to a phone that is already sharing is
 answered `started`.
+
+A phone can show its screen without smooth sharing only by Accessibility
+pictures, which need Android 11 and its Accessibility service switched on.
+Where it cannot, smooth sharing is the only picture a viewer has, and a viewer
+that stopped it would be left with none, and with no way to see the prompt
+that brings it back. Such a phone says `smooth: "only"` while it is sharing,
+and answers a `stop-smooth` with `unavailable` and the reason. A viewer shows
+smooth sharing as on and offers no way to stop it. It can still be stopped on
+the phone.
 
 A viewer offers this only to a phone whose `screen-info` carries `smooth`.
 Apps before these messages never send it, and ignore the requests. `smooth`

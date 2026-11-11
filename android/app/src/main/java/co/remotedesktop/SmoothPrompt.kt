@@ -61,7 +61,8 @@ internal object SmoothPrompt {
     val pending: Boolean get() = rules.prompting
 
     /** `smooth` in `screen-info`. */
-    fun offer(context: Context): String = SmoothSharing.offer(ScreenCaptureService.isRunning, canShowPrompt(context))
+    fun offer(context: Context): String = SmoothSharing.offer(ScreenCaptureService.isRunning, canShowPrompt(context),
+        PhoneScreenCapture.canViewWithoutSharing)
 
     private fun canShowPrompt(context: Context) =
         InputAccessibilityService.instance != null || PermissionsActivity.notificationsOn(context)
@@ -73,8 +74,9 @@ internal object SmoothPrompt {
             appContext = app
             val sharing = ScreenCaptureService.isRunning
             if (type == "stop-smooth") {
-                val steps = rules.stop(asker, sharing)
-                if (steps.isNotEmpty()) stoppedBy = ConnectionManager.peers.firstOrNull { it.id == from }?.name ?: "a viewer"
+                val steps = rules.stop(from, asker, sharing, PhoneScreenCapture.canViewWithoutSharing)
+                if (SmoothSharing.StopSharing in steps)
+                    stoppedBy = ConnectionManager.peers.firstOrNull { it.id == from }?.name ?: "a viewer"
                 run(steps)
                 return@post
             }
@@ -83,6 +85,7 @@ internal object SmoothPrompt {
                 inUse = LockState.read(app).inUse,
                 sending = PhoneScreenCapture.maySendFrames(app),
                 canShowPrompt = canShowPrompt(app),
+                otherCapture = PhoneScreenCapture.canViewWithoutSharing,
             )
             run(rules.request(from, asker, phone, SystemClock.uptimeMillis()))
         }

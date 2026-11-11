@@ -42,9 +42,15 @@ object PhoneScreenCapture {
     private var appContext: Context? = null
     val stateListeners = CopyOnWriteArrayList<() -> Unit>()
 
-    val isAvailable: Boolean
-        get() = ScreenCaptureService.isRunning ||
-            (Build.VERSION.SDK_INT >= 30 && InputAccessibilityService.instance?.canCaptureScreen == true)
+    val isAvailable: Boolean get() = ScreenCaptureService.isRunning || canViewWithoutSharing
+
+    /**
+     * Whether this phone can show its screen without smooth sharing: by
+     * Accessibility pictures, which need Android 11 and the service
+     * switched on. Where it cannot, smooth sharing is all a viewer has.
+     */
+    val canViewWithoutSharing: Boolean
+        get() = Build.VERSION.SDK_INT >= 30 && InputAccessibilityService.instance?.canCaptureScreen == true
 
     fun init(context: Context) {
         if (appContext != null) return

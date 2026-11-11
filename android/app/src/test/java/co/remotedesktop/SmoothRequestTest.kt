@@ -41,6 +41,10 @@ class SmoothRequestTest {
     private val instanceField = InputAccessibilityService::class.java.getDeclaredField("instance")
         .apply { isAccessible = true }
     private lateinit var service: InputAccessibilityService
+    private val captureField = InputAccessibilityService::class.java.getDeclaredField("screenCapture")
+        .apply { isAccessible = true }
+    private val sharingField = ScreenCaptureService::class.java.getDeclaredField("instance").apply { isAccessible = true }
+    private var sharingService: org.robolectric.android.controller.ServiceController<ScreenCaptureService>? = null
 
     private fun connectionField(name: String) = ConnectionManager::class.java.getDeclaredField(name)
         .apply { isAccessible = true }
@@ -82,6 +86,8 @@ class SmoothRequestTest {
         PhoneScreenCapture.init(context)
         service = Robolectric.buildService(InputAccessibilityService::class.java).create().get()
         instanceField.set(null, service)
+        // A phone on Android 11 or later with the service on: it can show its screen without smooth sharing.
+        otherPicture(true)
         // Whatever an earlier test left behind.
         SmoothPrompt.rules = SmoothSharing()
         ScreenCaptureService.awake = KeepAwake()
@@ -95,6 +101,8 @@ class SmoothRequestTest {
 
     @After
     fun cleanup() {
+        sharingField.set(null, null)
+        otherPicture(false)
         instanceField.set(null, null)
         PhoneScreenCapture.onViewStopped()
         idle()
@@ -106,6 +114,28 @@ class SmoothRequestTest {
         trustedPeers.clear()
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit()
     }
+
+    /** Whether the phone can show its screen by Accessibility pictures, smooth sharing or not. */
+    private fun otherPicture(can: Boolean) {
+        (captureField.get(service) as AccessibilityScreenCapture?)?.close()
+        captureField.set(service, if (!can) null else
+            AccessibilityScreenCapture(Robolectric.buildService(CaptureTestService::class.java).create().get()))
+    }
+
+    /** Smooth sharing is running: the capture service, without Android's screen sharing behind it. */
+    private fun sharing(): org.robolectric.android.controller.ServiceController<ScreenCaptureService> =
+        Robolectric.buildService(ScreenCaptureService::class.java).create().also {
+            sharingService = it
+            sharingField.set(null, it.get())
+            PhoneScreenCapture.refresh()
+            idle()
+        }
+
+    private fun stopAsked(): Boolean = generateSequence { shadowOf(context).nextStoppedService }.toList()
+        .any { it.component?.className == ScreenCaptureService::class.java.name }
+
+    private fun screenInfo(to: String) =
+        socket.messages.last { it.getString("type") == "screen-info" && it.getString("to") == to }
 
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()
     private fun later(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ms))
@@ -419,6 +449,50 @@ class SmoothRequestTest {
             ScreenShareRequestActivity.intent(context)).setup()
         assertNull(consent(prompt.get()))
         assertTrue(prompt.get().isFinishing)
+    }
+
+    @Test
+    fun aViewerStopsSmoothSharingAndEveryViewerHearsWhoDid() {
+        view("pc")
+        view("other-pc")
+        val shared = sharing()
+        assertEquals("on", screenInfo("pc").getString("smooth"))
+
+        receive("pc", "stop-smooth")
+        assertTrue(stopAsked())
+        // Android stops the service, and that is when it is over.
+        assertEquals(emptyList<JSONObject>(), statuses())
+        shared.destroy()
+        idle()
+        for (viewer in listOf("pc", "other-pc"))
+            assertEquals(listOf("ended: Smooth video was stopped from Test PC."), statuses(viewer).map(::said))
+    }
+
+    /**
+     * Android 10 and earlier, or the Accessibility service off: smooth
+     * sharing is the only picture there is. Stopped from a viewer, the PC
+     * would have no picture, and no way to see the prompt that brings it back.
+     */
+    @Test
+    fun aViewerCannotStopSmoothSharingWhereNothingElseShowsTheScreen() {
+        otherPicture(false)
+        view("pc")
+        sharing()
+        assertEquals("only", screenInfo("pc").getString("smooth"))
+
+        receive("pc", "stop-smooth")
+        assertFalse(stopAsked())
+        assertEquals(listOf("unavailable: " + SmoothSharing.ONLY_WAY), statuses("pc").map(::said))
+        assertTrue(ScreenCaptureService.isRunning)
+    }
+
+    @Test
+    fun whereThereIsNoPictureTheViewerIsToldThePromptIsAnsweredOnThePhone() {
+        otherPicture(false)
+        view("pc")
+        receive("pc", "request-smooth")
+        assertEquals(listOf("prompting: " + SmoothSharing.ANSWER_ON_PHONE), statuses("pc").map(::said))
+        assertNotNull(promptStart())
     }
 
     @Test

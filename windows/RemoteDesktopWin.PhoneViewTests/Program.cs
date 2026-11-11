@@ -728,6 +728,17 @@ internal static class Program
         Check(smooth.Choose(At(0)) == null, "a greyed row asks nothing");
         smooth.Offer(SmoothVideo.On);
         Check(smooth.Row == new SmoothRow(true, true, true, SmoothVideo.OnTip), "on: ticked");
+        // On, on a phone with no other way to show its screen: ticked, and not to be
+        // switched off from here, which would leave this window with no picture.
+        smooth.Offer(SmoothVideo.Only);
+        Check(smooth.Row == new SmoothRow(true, false, true, SmoothVideo.OnlyTip), "only: ticked and greyed");
+        Check(smooth.Row.ToolTip.Contains("only way this phone can show its screen"), "the tooltip says why it can't be switched off");
+        Check(smooth.Choose(At(0)) == null, "the only picture is not stopped from here");
+        Check(smooth.Status(Status("started")) == "Smooth video is on." && smooth.Row == new SmoothRow(true, false, true, SmoothVideo.OnlyTip),
+            "started does not make it stoppable");
+        // Stopped on the phone, it can be asked for again; the phone says where the prompt has to be answered.
+        Check(smooth.Status(Status("ended", "Smooth video was stopped on the phone.")) != null && smooth.Row is { Enabled: true, Ticked: false },
+            "after the only picture ends it can be asked for");
         // The phone stops saying: this PC no longer approves it, say.
         smooth.Offer(null);
         Check(!smooth.Row.Shown, "the row goes when the phone stops saying");

@@ -519,10 +519,12 @@ internal readonly record struct SmoothRow(bool Shown, bool Enabled, bool Ticked,
 /// <summary>
 /// The menu's Smooth video row: asking the phone to share its screen as
 /// video, and to stop. The phone says whether it can in <c>smooth</c> of its
-/// <c>screen-info</c>: <c>on</c>, <c>available</c> or <c>unavailable</c>. A
-/// phone on an app from before this never says, and gets no row. What comes
-/// of a request arrives as <c>smooth-status</c>, and is told to the person as
-/// it comes.
+/// <c>screen-info</c>: <c>on</c>, <c>available</c> or <c>unavailable</c>, or
+/// <c>only</c> when it is on and is the one way that phone can show its
+/// screen, which a viewer may not stop: it would be left with no picture,
+/// and no way to see the prompt that brings one back. A phone on an app from
+/// before this never says, and gets no row. What comes of a request arrives
+/// as <c>smooth-status</c>, and is told to the person as it comes.
 ///
 /// Android shows a prompt on the phone, and somebody has to approve it: on
 /// the phone, or here, by clicking its button in the picture like anything
@@ -530,7 +532,7 @@ internal readonly record struct SmoothRow(bool Shown, bool Enabled, bool Ticked,
 /// </summary>
 internal sealed class SmoothVideo
 {
-    public const string On = "on", Available = "available", Unavailable = "unavailable";
+    public const string On = "on", Only = "only", Available = "available", Unavailable = "unavailable";
 
     /// <summary>How long the phone has to say anything before the person is
     /// told it did not answer. A phone that refuses the asker says nothing.</summary>
@@ -545,6 +547,9 @@ internal sealed class SmoothVideo
     public const string OnTip =
         "Smooth video is on. Choose this to go back to ordinary viewing. " +
         "Android blanks password fields and one-time codes while the screen is shared as video.";
+    public const string OnlyTip =
+        "Smooth video is on. It is the only way this phone can show its screen, so it can't be switched off from here. " +
+        "It can be stopped on the phone.";
     public const string UnavailableTip =
         "This phone can't be asked from here right now. Smooth screen sharing can be turned on in its Permissions screen.";
     public const string PromptText =
@@ -560,7 +565,7 @@ internal sealed class SmoothVideo
     /// nothing, so no row is shown that might do something else.</summary>
     public void Offer(string? smooth)
     {
-        var offer = smooth is On or Available or Unavailable ? smooth : null;
+        var offer = smooth is On or Only or Available or Unavailable ? smooth : null;
         // What was being waited for has happened, or can no longer.
         if (offer != _offer) _asked = null;
         _offer = offer;
@@ -569,8 +574,8 @@ internal sealed class SmoothVideo
     public SmoothRow Row => new(
         Shown: _offer != null,
         Enabled: _offer is On or Available,
-        Ticked: _offer == On,
-        ToolTip: _offer switch { On => OnTip, Unavailable => UnavailableTip, _ => AskTip });
+        Ticked: _offer is On or Only,
+        ToolTip: _offer switch { On => OnTip, Only => OnlyTip, Unavailable => UnavailableTip, _ => AskTip });
 
     /// <summary>The row was chosen. Returns the message to send the phone, or
     /// null when there is nothing to ask.</summary>
@@ -607,13 +612,14 @@ internal sealed class SmoothVideo
                 // With words of its own, the phone is asking some other way: by a notification.
                 return reason ?? PromptText;
             case "started":
-                _offer = On;
+                // Whether it may be stopped from here is the phone's to say, in screen-info.
+                if (_offer != Only) _offer = On;
                 return "Smooth video is on.";
             case "declined":
                 return reason ?? "The prompt was declined on the phone.";
             case "ended":
                 // A phone that has no other way to show its screen sends no screen-info to say so.
-                if (_offer == On) _offer = Available;
+                if (_offer is On or Only) _offer = Available;
                 return reason ?? "Smooth video has ended.";
             default:
                 return reason ?? "The phone can't start smooth video right now.";

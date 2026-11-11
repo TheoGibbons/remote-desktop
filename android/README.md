@@ -105,7 +105,9 @@ its side the prompt's buttons are out of view until it is scrolled. Where a
 phone will not show the prompt from the background, a notification asks
 instead; tap it to see the prompt. The same row on the PC stops smooth sharing,
 and the PC is told why whenever it ends: stopped from a device, stopped on the
-phone, or the phone was locked.
+phone, or the phone was locked. A PC cannot stop it where it is the only way
+the phone can show its screen (Android 8 to 10, or the Accessibility service
+is off): the PC would be left with no picture. Stop it on the phone then.
 
 Android 15 and later end smooth sharing when the phone locks, and blank
 password fields and one-time codes while it is on. So while a device is

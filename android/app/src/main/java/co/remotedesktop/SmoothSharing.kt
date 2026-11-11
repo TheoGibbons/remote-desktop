@@ -15,6 +15,9 @@ package co.remotedesktop
  *    may ask. Anyone else is not answered at all.
  *  - This class never approves the prompt. It can show it and take it away.
  *    The answer is a person's, on the phone or by a click in a viewer.
+ *  - A viewer may stop smooth sharing only where the phone can go on showing
+ *    its screen without it. Otherwise stopping would leave every viewer
+ *    with no picture, and no way to see the prompt that brings it back.
  *  - One prompt at a time. A second request while one is up joins the wait.
  *  - After someone declines, nobody may ask again for [repeatWaitMs].
  *  - A prompt is taken away after [answerMs] without an answer, when everyone
@@ -50,6 +53,8 @@ internal class SmoothSharing(
         val sending: Boolean,
         /** The prompt, or a notification that opens it, can be put on the screen. */
         val canShowPrompt: Boolean,
+        /** The phone can show its screen without smooth sharing, so a viewer has a picture either way. */
+        val otherCapture: Boolean,
     )
 
     /** How a prompt that was up came to an end. */
@@ -95,13 +100,15 @@ internal class SmoothSharing(
     fun request(from: String, asker: Asker, phone: Phone, now: Long): List<Step> {
         if (!asker.mayAsk) return emptyList()
         fun no(reason: String) = listOf(Tell(listOf(from), UNAVAILABLE, reason))
+        // With no picture to see the prompt in, the viewer is told where it has to be answered.
+        val asking = Tell(listOf(from), PROMPTING, if (phone.otherCapture) null else ANSWER_ON_PHONE)
         return when {
             phone.sharing -> listOf(Tell(listOf(from), STARTED))
             !phone.inUse -> no(UNLOCK_FIRST)
             !phone.sending -> no(WAITING_FOR_APPROVAL)
             prompting -> {
                 waiting.add(from)
-                listOf(Tell(listOf(from), PROMPTING))
+                listOf(asking)
             }
             declinedAt?.let { now - it < repeatWaitMs } == true -> no(JUST_DECLINED)
             !phone.canShowPrompt -> no(CANNOT_SHOW)
@@ -110,14 +117,21 @@ internal class SmoothSharing(
                 waiting.add(from)
                 promptSince = now
                 // Told first: showing it may fail at once, and that is the later news.
-                listOf(Tell(listOf(from), PROMPTING), ShowPrompt)
+                listOf(asking, ShowPrompt)
             }
         }
     }
 
-    /** `stop-smooth`. Whoever is viewing hears that it ended when the service has stopped. */
-    fun stop(asker: Asker, sharing: Boolean): List<Step> =
-        if (asker.mayAsk && sharing) listOf(StopSharing) else emptyList()
+    /**
+     * `stop-smooth` from [from]. Whoever is viewing hears that it ended when
+     * the service has stopped. Where smooth sharing is the only way the phone
+     * can show its screen ([otherCapture] false) it is refused, with the reason.
+     */
+    fun stop(from: String, asker: Asker, sharing: Boolean, otherCapture: Boolean): List<Step> = when {
+        !asker.mayAsk || !sharing -> emptyList()
+        !otherCapture -> listOf(Tell(listOf(from), UNAVAILABLE, ONLY_WAY))
+        else -> listOf(StopSharing)
+    }
 
     /** The prompt came to an end by itself, or by a person's answer. */
     fun answered(outcome: Outcome, now: Long): List<Step> {
@@ -198,10 +212,16 @@ internal class SmoothSharing(
 
         // `smooth` of `screen-info`.
         const val ON = "on"
+        /** On, and the only way this phone can show its screen: a viewer cannot stop it. */
+        const val ONLY = "only"
         const val AVAILABLE = "available"
 
         // Reasons. A viewer shows them as they are.
         const val UNLOCK_FIRST = "Unlock the phone first."
+        const val ONLY_WAY = "Smooth video is the only way this phone can show its screen, so it can't be stopped from here. " +
+            "It can be stopped on the phone."
+        const val ANSWER_ON_PHONE = "The phone is asking. Someone has to approve it on the phone itself: " +
+            "it has no picture to show until smooth video is on."
         const val WAITING_FOR_APPROVAL = "The phone is waiting for a new device to be approved."
         const val JUST_DECLINED = "The prompt was just declined on the phone. Try again in a moment."
         const val CANNOT_SHOW = "The phone can't show its prompt. Turn on smooth screen sharing in its Permissions screen."
@@ -214,8 +234,8 @@ internal class SmoothSharing(
         const val TAP_NOTIFICATION = "Tap the notification on the phone to see the prompt."
 
         /** `smooth` in `screen-info`: what a viewer's menu row can do. */
-        fun offer(sharing: Boolean, canShowPrompt: Boolean): String = when {
-            sharing -> ON
+        fun offer(sharing: Boolean, canShowPrompt: Boolean, otherCapture: Boolean): String = when {
+            sharing -> if (otherCapture) ON else ONLY
             canShowPrompt -> AVAILABLE
             else -> UNAVAILABLE
         }

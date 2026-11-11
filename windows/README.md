@@ -226,7 +226,10 @@ unapproved device is present in the session, streaming and file serving pause.
     so click **Share screen** there, or tap it on the phone. With the phone on
     its side, scroll the prompt up to reach its button. The row is ticked
     while smooth video is on; choose it again to go back, for example when
-    Android blanks a password field. A toast says what happened: the prompt
+    Android blanks a password field. Where smooth video is the only way a
+    phone can show its screen (Android 10 and earlier, or its Accessibility
+    service is off) the row is ticked and greyed: it can be stopped on the
+    phone, not from here, where it would leave no picture. A toast says what happened: the prompt
     was declined, nobody answered it within a minute, the phone must be
     unlocked first, or why smooth video ended (Android 15 and later end it
     when the phone locks). While you view in smooth video the phone keeps its
