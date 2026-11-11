@@ -20,7 +20,7 @@ One plan at a time, one commit per step, working tree clean between steps.
 | 1 | Title bar, menu, window fit, `RemoteDesktopWin.PhoneViewTests` | Menu Phase 1 | Yes. Windows only, works with phones on v1.0.53. | Built. On the S26: Back, Home, Recents and Notifications from the menu, and typing. Not checked: anything that needs a real mouse (clicking minimise / maximise / close, hover, snap flyout, dragging, resizing), and Windows 10. |
 | 2 | Phone state, volume, Quick settings, Screenshot, Lock | Menu Phase 2 | Yes | Built. On the S26: volume and mute from the menu, the level read back, Quick settings, and Screenshot with its card on the PC. Not checked: *Lock screen* on a real phone (first tried in step 5), and dragging the slider with a real mouse. |
 | 3 | Rotation, and smooth sharing following a turned phone | Menu Phase 3 | Yes | Built. On the S26: Landscape, Portrait and Auto on the home screen and in Settings, the phone turning back when the viewer closes or the PC app dies, and smooth sharing following the turn. Not checked: taps landing right after a turn (needs a real mouse), a portrait-only app, the toast, and release on screen-off or lock (unit tests only; first tried in step 5). |
-| 4 | Docs | Menu Phase 4 | Release |  |
+| 4 | Docs | Menu Phase 4 | Release | Written: PROTOCOL.md, README.md, windows/README.md, android/README.md. Not released. |
 | 5 | Wake, `lock-state`, captions, notifications row | Unlock Phase 1 | Yes. No new permission. |  |
 | 6 | Read the unlock screen, draw the grid or keys on Windows | Unlock Phase 2 | With step 7 |  |
 | 7 | The same overlay in the phone viewer, docs | Unlock Phase 3 | Release of its own (see below) |  |

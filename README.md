@@ -226,6 +226,10 @@ publish alongside the relay.
 
 **PC → Phone**
 - ✅ Tap / swipe on the phone screen; right-click for Back, middle-click for Home
+- ✅ A **⋯** menu in the phone window's title bar: Back, Home, Recents and
+  Notifications; the phone's media volume, with mute; **Rotation**, which holds
+  the phone's screen in portrait or landscape while you view it; Quick
+  settings; Screenshot, which then pops up on the PC; and Lock screen
 - ✅ Type into the phone with the PC's keyboard (Android 13 and later): Enter,
   Backspace, arrows and Ctrl shortcuts included, Esc for Back, and Ctrl+V pastes
   the PC's clipboard

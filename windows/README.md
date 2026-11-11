@@ -70,8 +70,9 @@ terminal shortcuts. They never touch the real clipboard or press keys.
 Run `dotnet run --project windows/RemoteDesktopWin.PhoneViewTests` for the phone
 viewer: when its title-bar menu opens and closes, how the window is sized round
 the phone's picture and follows a phone that turns, how its volume slider paces
-what it sends and which of the phone's answers it shows, and which rows the
-menu offers for what a phone says about itself. They need no window, phone or relay.
+what it sends and which of the phone's answers it shows, which rows the menu
+offers for what a phone says about itself, and when it says a phone didn't
+rotate. They need no window, phone or relay.
 
 ## Clipboard
 
@@ -187,9 +188,16 @@ unapproved device is present in the session, streaming and file serving pause.
   - **a phone** → click = tap, press-and-drag = real drag, hold in place =
     long-press, mouse wheel = pinch zoom in/out, right-click = Back,
     middle-click = Home. If the phone shows its own navigation buttons,
-    clicking them works too. The **⋯** button in the title bar opens a menu
-    with Back, Home, Recents and Notifications; rest the pointer on it or
-    click it. While the window is focused, your keyboard types
+    clicking them works too. The **⋯** button in the title bar opens a menu;
+    rest the pointer on it or click it. It has Back, Home, Recents and
+    Notifications; a slider for the phone's media volume, with a speaker icon
+    that mutes; **Rotation** (Auto, Portrait or Landscape), which holds the
+    phone's screen that way while the window is open, whichever way the
+    phone is lying; Quick settings; Screenshot, which pops up on this PC like
+    any capture the phone takes; and Lock screen. The menu stays open after
+    a click, so Back can be pressed several times. A phone whose app is older
+    shows only the first four, and a line saying to update it. While the
+    window is focused, your keyboard types
     into the phone's focused text box (Android 13 and later), with Enter,
     Backspace, arrows and Ctrl shortcuts; Esc is Back, and Ctrl+V pastes this
     PC's clipboard.

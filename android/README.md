@@ -9,7 +9,8 @@ Kotlin app (min SDK 26 / Android 8.0, compile/target SDK 36 / Android 16). It:
   on-screen keyboard** with Win / Ctrl / Alt / Shift / function keys plus
   native-IME typing for long text;
 - shares its own screen using Accessibility screenshots on Android 11+ (with
-  optional smoother MediaProjection sharing), and accepts taps/swipes from the PC;
+  optional smoother MediaProjection sharing), and accepts taps/swipes from the PC,
+  which can also set its media volume, turn its screen, take a screenshot and lock it;
 - browses the PC's files and transfers files both ways.
 
 ## Build
@@ -87,7 +88,7 @@ content cannot be captured. Capture failures replace the previous picture with
 
 Enable **Smooth screen sharing** for the existing faster stream (up to 10 FPS).
 It takes over from Accessibility until stopped, then default viewing resumes
-automatically. It is optional and does not count as a missing permission on
+automatically. It follows the screen when the phone turns. It is optional and does not count as a missing permission on
 Android 11+. Android 8–10 still require screen sharing for viewing and use
 Accessibility for input only.
 
@@ -236,11 +237,33 @@ repeat quickly while held, after a short initial delay. The
   alongside the user's own keyboard. It types only what an approved device
   sends while remote control is allowed, and reads no text.
 
+## What a viewer's menu can do
+
+Besides taps and typing, an approved device that may control this phone
+(*View and control this phone*, and *Allow other phones* for another phone)
+can:
+
+- set the media volume, and mute it. The phone shows its own volume panel, as
+  when its volume keys are pressed;
+- hold the screen in portrait or landscape while it is viewing, whichever way
+  the phone is lying and whether or not auto-rotate is on. The phone turns its
+  own way again when the last viewer stops or disconnects, and when the screen
+  turns off, so it is never left sideways and its lock screen is always its
+  usual one;
+- open Quick settings, take a screenshot (saved like any other, so it is
+  offered to your PCs if *Offer new photos to PCs* is on), and lock the phone.
+  Locking and screenshots need Android 9 or later.
+
+All of it goes through the Accessibility service except the volume, and needs
+no further permission. The Windows app has these in the **⋯** menu of the
+window that shows the phone.
+
 ## Waking a sleeping phone
 
 When an approved device starts viewing, or sends a tap or key while the screen
 is off, the phone turns its screen on. The lock screen stays in place and the
-phone sleeps again on its usual timeout.
+phone sleeps again on its usual timeout. Setting the volume, turning the
+screen and locking are not input and leave a sleeping phone asleep.
 
 ## Why the PC can't unlock the phone
 

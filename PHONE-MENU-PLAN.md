@@ -1,6 +1,6 @@
 # Phone menu in the Windows viewer: plan
 
-Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Phases 1 to 3 are built; the docs (Phase 4) are not.
+Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). All four phases are built. What is left is the release, and the hand checks listed under each phase.
 
 This is the first of three plans to be built. `PHONE-PLANS-ORDER.md` gives the order (this plan is its steps 1 to 4, after a step 0 that lets a debug build sit beside the release app) and settles where this plan met `PHONE-UNLOCK-PLAN.md` and `PHONE-VIDEO-PLAN.md`. This file has been edited to match.
 
@@ -205,10 +205,10 @@ Checked on the S26 through the rig (Android 17, auto-rotate off): Landscape, Por
 
 Not checked: that taps land where clicked after a turn (the rig has no mouse), a portrait-only app and a video app, screen-off and lock on a real phone (left to the unlock plan, where they are the subject; unit tests cover them here), the toast on a real phone, and the S20.
 
-### Phase 4: docs and release
+### Phase 4: docs and release (docs written)
 
-- PROTOCOL.md: Phase 2's messages went in with Phase 2, since any release ships what is on `main`. Check `rotate` is there too.
-- README.md "PC → Phone" list; windows/README.md "a phone →" paragraph; android/README.md if it describes what a viewer can do. README.md still says a secure lock can't be unlocked remotely; the unlock plan rewrites that, so don't add to it here.
+- PROTOCOL.md: each message went in with the phase that built it, since any release ships what is on `main`: the table under *Input: controlling Android*, `phone-state`, which messages wake the phone, and the enforcement list.
+- README.md "PC → Phone" list has the menu; windows/README.md "a phone →" paragraph lists its rows; android/README.md has a section on what a viewer's menu can do, and says smooth sharing follows a turned phone. None of them calls *Lock screen* a one-way trip, and README.md's line that a secure lock can't be unlocked remotely is left for the unlock plan to rewrite.
 - Both apps must ship. Usual release steps in RELEASING.md.
 
 ## Compatibility
