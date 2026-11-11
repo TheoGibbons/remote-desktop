@@ -631,9 +631,19 @@ Fill in during Phase 0 from the Shift+F8 copy. One row per phone and mode, the s
 
 | Date | Build | Phone | Mode and format | Upload limit | Pictures/s | KB per picture | Delay median / worst (ms) | Round trip (ms) | Phone queue, worst (KB) | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| | | | | | | | | | | |
+| 2026-11-11 | `main` at `0a1ff90`, debug builds, with all of Phase 0 in | S26 | Accessibility viewing, type `5` JPEG | none | 2.4 | 91 | 103 / 121 (± 2) | 4 to 114 | 89 | **On the rig: the relay ran on this PC, over the home Wi-Fi, not through the internet.** Scrolling Settings. Still for 10 s: no pictures at all. No frames lost. |
+| 2026-11-11 | the same | S26 | Smooth sharing, type `5` JPEG | none | 10 | 96 | 94 / 136 (± 2) | 4 to 96 | 0 | **On the rig, as above.** The last picture of the scroll was 273 ms old: it had waited its turn in the pacer. No frames lost. |
 
-Send buffer sizes (`adb shell cat /proc/sys/net/ipv4/tcp_wmem`): S20 `524288 1048576 4194304`. S26: not read yet.
+How to read these:
+
+- They were read off the readout once a second through UI Automation, not copied with Shift+F8: the rig cannot hold Shift down in the viewer. The copy's text was checked off screen and in tests.
+- The delay runs from the moment the phone has the picture to the moment the PC draws it. The wait for the next capture is on top: up to 400 ms in Accessibility viewing, which is most of what a person feels, and up to 100 ms in smooth sharing.
+- With the relay on the same network the trip is a few ms, so nearly all of the 0.1 s is the phone copying and compressing the picture and the PC decoding it. Through the internet the round trip is added, and on a slow upload the time a picture waits, which is what these figures cannot show.
+- There is no "before" row. v1.0.53 has no readout and stamps no picture. What can be compared with it is pictures a second and KB per picture, by eye or from the relay.
+
+Still to take, by hand (see the end of Phase 0): both phones through the production relay, the S20 at all, and the run with the upload limited to about 2 Mbit/s.
+
+Send buffer sizes (`adb shell cat /proc/sys/net/ipv4/tcp_wmem`): S20 `524288 1048576 4194304`. S26 `2097152 4194304 8388608`, so on the S26 the system holds 4 MB by default where the app cannot see, 8 MB at most.
 
 ## 12. Decisions, and what is still open
 
@@ -660,6 +670,14 @@ No longer open here:
 - Whether Accessibility viewing should also keep the phone awake: no (`PHONE-UNLOCK-PLAN.md`, decision 7). Not confirmed by Theo.
 
 ## 13. Seen along the way, not part of this plan
+
+- **The S26's connection to a relay on this PC sometimes goes dead as a view starts. Not explained.** Seen on the rig on 2026-11-11, 8 times in about 80 viewer opens, in two bursts of a few minutes with long clean stretches between. Each time the phone's `screen-info` arrived and its first picture never did, and 20 to 40 s later the phone gave up on the connection ("No reply to a ping within 20 s", or the connection reset) and was back 2 s after that. What is known:
+  - It is the network path and not the app's logic. The app's threads were all idle (Java stacks taken during a stall), the pictures had been handed to the socket, and the phone's TCP connection showed them unacknowledged: send queue growing to 850 KB, `cwnd:1`, the retransmit timer doubling (`ss -tin`). Other connections between the same phone and PC (adb) worked throughout, and so did a new connection to the relay.
+  - It is not Nagle being off: it happened the same with that change taken out.
+  - The app from before Phase 0 did not show it in 11 opens, in a stretch where the new one had just shown it 3 times in 8. But the new app also ran 20 and then 16 opens without it, so that comparison proves little either way. The debug app's connection history has no drop in any earlier rig session.
+  - Both devices were on NordVPN with the phone's traffic to this PC going over Wi-Fi directly, and unexplained drops of the S26 are on record from before (2026-11-01).
+  - While it lasts, a viewer sees a frozen picture, as it would have with any earlier build, and the phone's hold-back falls back to its queue rule after two seconds, so pictures pile up in the system's buffer until the phone gives up.
+  - To settle it: a packet capture on the PC (`pktmon`) during a stall, and the same hundred opens with the old and the new app in turn, or through the production relay. Worth doing before this is released.
 
 - **The PC's viewer can be left showing a dead phone.** When the PC itself reconnects (a relay redeploy drops everyone), every device comes back under a new id, and no "left" message arrives for the old one. The viewer window stays open on the old id with its last picture (`MainWindow.ApplyState` clears the peer list but closes nothing). The phone's own viewer handles this case (`PhoneViewerActivity.updateReconnectNotice`). A fix would find the same device again by its identity and re-send `start-view`.
 - **The PC will open a viewer on a device it has not approved.** Every row in the device list has a View button. D7 stops such a device supplying a video stream, but the button is still there.
