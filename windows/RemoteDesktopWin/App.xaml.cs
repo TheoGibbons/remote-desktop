@@ -23,6 +23,18 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+#if DEBUG
+        // A test harness that loads this assembly for its styles creates an
+        // App, and WPF then starts it the first time the harness pumps
+        // messages. Left alone that is the whole app, running as the installed
+        // one: it takes its lock, opens the main window, joins the session
+        // with this PC's identity and rewrites the startup entry.
+        if (System.Reflection.Assembly.GetEntryAssembly() != typeof(App).Assembly)
+        {
+            base.OnStartup(e);
+            return;
+        }
+#endif
         if (PrivacyCursorGuard.TryRun(e.Args))
         {
             Shutdown();
@@ -35,11 +47,19 @@ public partial class App : Application
         _instanceGuard = SingleInstanceGuard.TryAcquire(timeout, AppProfile.InstanceLock(AppProfile.Name));
         if (_instanceGuard == null)
         {
+#if DEBUG
+            // A debug build is started by scripts as often as by hand, and a
+            // box would land on the screen of whoever is using the installed
+            // app. Say it where a script can read it.
+            Console.Error.WriteLine("Remote Desktop is already running: another copy holds " +
+                AppProfile.InstanceLock(AppProfile.Name) + ".");
+#else
             MessageBox.Show(
                 "Remote Desktop is already running. Open it from the system tray, or exit the existing instance before starting it again.",
                 "Remote Desktop is already running",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
+#endif
             Shutdown(1);
             return;
         }
