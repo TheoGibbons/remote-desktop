@@ -279,7 +279,36 @@ class PhoneScreenCaptureTest {
             assertEquals(context.getString(R.string.screen_view_and_control),
                 activity.findViewById<TextView>(R.id.a11yTitle).text.toString())
             assertTrue(activity.findViewById<TextView>(R.id.bannerText).text.toString()
-                .contains("of 4 required permissions"))
+                .contains("of 5 required permissions"))
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    /** A Samsung phone turns its screen on for a viewer only while they are allowed. */
+    @Test fun notificationsAreCountedAndTheirRowSaysWhenTheyAreOff() {
+        val notifications = shadowOf(context.getSystemService(android.app.NotificationManager::class.java))
+        fun required() = PermissionsActivity.required(context)
+        assertEquals(5, required().size)
+        val before = required().count { it }
+        notifications.setNotificationsEnabled(false)
+        assertEquals(before - 1, required().count { it })
+
+        val controller = Robolectric.buildActivity(PermissionsActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val pill = activity.findViewById<TextView>(R.id.notificationsStatus)
+            assertEquals("Tap to enable", pill.text.toString())
+            assertEquals("Action needed", activity.findViewById<TextView>(R.id.bannerTitle).text.toString())
+
+            // The row opens this app's notification settings, where Android keeps the switch.
+            activity.findViewById<android.view.View>(R.id.notificationsRow).performClick()
+            val opened = shadowOf(activity).nextStartedActivity
+            assertEquals(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS, opened.action)
+            assertEquals(context.packageName, opened.getStringExtra(android.provider.Settings.EXTRA_APP_PACKAGE))
+
+            // Allowed there, and back.
+            notifications.setNotificationsEnabled(true)
+            controller.pause().resume()
+            assertEquals("Enabled", pill.text.toString())
         } finally { controller.pause().stop().destroy() }
     }
 
@@ -290,7 +319,7 @@ class PhoneScreenCaptureTest {
             val activity = controller.get()
             assertEquals("Tap to enable", activity.findViewById<TextView>(R.id.screenShareStatus).text.toString())
             assertTrue(activity.findViewById<TextView>(R.id.bannerText).text.toString()
-                .contains("of 5 required permissions"))
+                .contains("of 6 required permissions"))
         } finally { controller.pause().stop().destroy() }
     }
 }

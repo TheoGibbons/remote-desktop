@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.SystemClock
 import android.text.format.DateFormat
 import android.view.View
@@ -178,12 +177,7 @@ class MainActivity : AppCompatActivity() {
         statusSubtitle.visibility = if (subtitle == null) View.GONE else View.VISIBLE
         showPeers(peers)
 
-        val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
-        val persistentCapture = Build.VERSION.SDK_INT >= 30
-        val required = listOf(InputAccessibilityService.instance != null &&
-            (!persistentCapture || PhoneScreenCapture.isAvailable), filesOk,
-            prefs.allowControl, prefs.allowFileAccess) +
-            if (persistentCapture) emptyList() else listOf(ScreenCaptureService.isRunning)
+        val required = PermissionsActivity.required(this)
         val granted = required.count { it }
         permissionsSubtitle.text =
             if (granted == required.size) "All required permissions enabled — remote features fully available"

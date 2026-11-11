@@ -128,6 +128,8 @@
     <string name="offer_captures">Offer new photos to PCs</string>
     <string name="offer_captures_description">Photos, videos and screenshots you take pop up on your PCs, ready to download</string>
     <string name="offer_captures_needs_files">Needs Browse and transfer files</string>
+    <string name="notifications_permission">Notifications</string>
+    <string name="notifications_permission_description">Lets paired devices wake this phone, and shows pairing requests</string>
     <string name="viewer_section">Viewer</string>
     <string name="show_last_seen_areas">Show last-seen areas</string>
     <string name="show_last_seen_areas_description">While zoomed in, parts of the PC screen you\'ve already seen stay in grey instead of going black. Uses some extra memory on this phone.</string>

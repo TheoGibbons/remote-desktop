@@ -2,6 +2,8 @@ package co.remotedesktop
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
@@ -33,6 +35,7 @@ class PermissionsActivity : AppCompatActivity() {
     private lateinit var screenShareStatus: TextView
     private lateinit var a11yStatus: TextView
     private lateinit var fileAccessStatus: TextView
+    private lateinit var notificationsStatus: TextView
     private lateinit var offerCapturesSwitch: MaterialSwitch
     private lateinit var offerCapturesSub: TextView
 
@@ -64,6 +67,7 @@ class PermissionsActivity : AppCompatActivity() {
         screenShareStatus = findViewById(R.id.screenShareStatus)
         a11yStatus = findViewById(R.id.a11yStatus)
         fileAccessStatus = findViewById(R.id.fileAccessStatus)
+        notificationsStatus = findViewById(R.id.notificationsStatus)
         if (Build.VERSION.SDK_INT >= 30) {
             findViewById<TextView>(R.id.screenShareTitle).setText(R.string.smooth_screen_sharing)
             findViewById<TextView>(R.id.a11yTitle).setText(R.string.screen_view_and_control)
@@ -112,6 +116,12 @@ class PermissionsActivity : AppCompatActivity() {
                     android.Manifest.permission.WRITE_EXTERNAL_STORAGE), 1)
             }
         }
+        // The app's own notification settings: Android asks only once or
+        // twice by itself, and a switch turned off there stays off.
+        findViewById<View>(R.id.notificationsRow).setOnClickListener {
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+        }
     }
 
     override fun onResume() {
@@ -140,7 +150,6 @@ class PermissionsActivity : AppCompatActivity() {
     @SuppressLint("SetTextI18n")
     private fun refresh() {
         val sharing = ScreenCaptureService.isRunning
-        val a11y = InputAccessibilityService.instance != null
         val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
 
         val persistentCapture = Build.VERSION.SDK_INT >= 30
@@ -152,8 +161,9 @@ class PermissionsActivity : AppCompatActivity() {
             screenShareStatus.setTextColor(com.google.android.material.color.MaterialColors.getColor(
                 screenShareStatus, com.google.android.material.R.attr.colorOnSurfaceVariant))
         }
-        setPill(a11yStatus, a11y)
+        setPill(a11yStatus, InputAccessibilityService.instance != null)
         setPill(fileAccessStatus, filesOk)
+        setPill(notificationsStatus, notificationsOn(this))
         // A PC can only download what it's offered while file access is on.
         offerCapturesSwitch.isEnabled = prefs.allowFileAccess
         offerCapturesSub.setText(if (prefs.allowFileAccess) R.string.offer_captures_description
@@ -163,10 +173,7 @@ class PermissionsActivity : AppCompatActivity() {
             else if (persistentCapture) "Optional smoother viewing. Requires approval again after a restart."
             else "Required to view this phone. Requires approval again after a restart."
 
-        // Smooth sharing is optional on Android 11+; Accessibility handles default viewing.
-        val required = listOf(a11y && (!persistentCapture || PhoneScreenCapture.isAvailable),
-            filesOk, prefs.allowControl, prefs.allowFileAccess) +
-            if (persistentCapture) emptyList() else listOf(sharing)
+        val required = required(this)
         val granted = required.count { it }
         if (granted == required.size) {
             bannerTitle.text = "All good!"
@@ -182,6 +189,27 @@ class PermissionsActivity : AppCompatActivity() {
             bannerIcon.setColorFilter(getColor(R.color.rd_warn))
             bannerTitle.setTextColor(getColor(R.color.rd_on_warn_container))
             bannerText.setTextColor(getColor(R.color.rd_on_warn_container))
+        }
+    }
+
+    companion object {
+        /** A Samsung phone turns its screen on for a viewer only while this is true. */
+        fun notificationsOn(context: Context): Boolean =
+            context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()
+
+        /**
+         * Everything remote features need, each as whether it is on. This
+         * screen and the main one both count it. Smooth sharing is optional
+         * on Android 11+, where Accessibility does the default viewing.
+         */
+        fun required(context: Context): List<Boolean> {
+            val prefs = Prefs(context)
+            val persistentCapture = Build.VERSION.SDK_INT >= 30
+            val filesOk = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
+            return listOf(
+                InputAccessibilityService.instance != null && (!persistentCapture || PhoneScreenCapture.isAvailable),
+                filesOk, prefs.allowControl, prefs.allowFileAccess, notificationsOn(context),
+            ) + if (persistentCapture) emptyList() else listOf(ScreenCaptureService.isRunning)
         }
     }
 }
