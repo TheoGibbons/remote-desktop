@@ -119,6 +119,9 @@ object ConnectionManager {
     // UI listeners, invoked on the main thread.
     val stateListeners = CopyOnWriteArrayList<(String) -> Unit>()
     val jsonListeners = CopyOnWriteArrayList<(JSONObject) -> Unit>()
+    // Invoked on the network thread, before jsonListeners and in order with
+    // binary frames: for a message that says how to read the frames after it.
+    val networkJsonListeners = CopyOnWriteArrayList<(JSONObject) -> Unit>()
     // Frame listener invoked on the network thread (decode off the UI thread).
     val binaryListeners = CopyOnWriteArrayList<(ByteArray) -> Unit>()
 
@@ -343,14 +346,16 @@ object ConnectionManager {
         socket.send(env.toString())
     }
 
-    /** Send an encrypted binary frame (frameType 1 = video, 2 = file chunk).
-     *  With [to], a relay that supports it delivers the frame only to those
-     *  peers; otherwise, and on older relays, it is broadcast. */
+    /** Send an encrypted binary frame (frameType 1 or 5 = a picture of this
+     *  phone's screen, 2 = file chunk). With [to], a relay that supports it
+     *  delivers the frame only to those peers; otherwise, and on older
+     *  relays, it is broadcast. */
     fun sendBinary(frameType: Byte, payload: ByteArray, to: Collection<String>? = null): Boolean {
         val socket = ws ?: return false
         // Don't queue unboundedly if the link is slower than the frame rate.
         // Video is skipped much sooner: a newer picture replaces it anyway.
-        if (socket.queueSize() > if (frameType == Crypto.CH_VIDEO) VIDEO_QUEUE_LIMIT else 6_000_000L) return false
+        val video = frameType == Crypto.CH_VIDEO || frameType == Crypto.CH_PHONE
+        if (socket.queueSize() > if (video) VIDEO_QUEUE_LIMIT else 6_000_000L) return false
         val blob = Crypto.encrypt(encKey, payload, frameType)
         val route = if (!to.isNullOrEmpty() && relayAddressesBinary) addressHeader(to) else null
         val wire = ByteArray(1 + (route?.size ?: 0) + blob.size)
@@ -430,6 +435,7 @@ object ConnectionManager {
                 2 -> fs.handleFileChunk(full)               // file chunk
                 3 -> binaryListeners.forEach { it(full) }   // dirty-rect screen patch
                 4 -> binaryListeners.forEach { it(full) }   // H.264 access unit
+                5 -> binaryListeners.forEach { it(full) }   // a phone's picture behind its header
             }
         }
 
@@ -537,9 +543,16 @@ object ConnectionManager {
                 if (mayControl(from) && PhoneScreenCapture.isViewing(from)) PhoneControls.handle(appContext, from, msg)
 
             "start-view" ->
-                if (mayControl(from)) PhoneScreenCapture.onViewRequested(appContext, from)
+                if (mayControl(from)) PhoneScreenCapture.onViewRequested(appContext, from, codecs(msg))
             "stop-view" ->
                 if (PeerAuth.isTrusted(from)) PhoneScreenCapture.onViewStopped(from)
+
+            // About the pictures this phone is sending, so only from a device it is sending them to.
+            "frame-ack" ->
+                if (mayControl(from) && PhoneScreenCapture.isViewing(from)) PhoneScreenCapture.onFrameAck(from, msg)
+            "diagnostic-ping" ->
+                if (mayControl(from) && PhoneScreenCapture.isViewing(from))
+                    sendJson(PhoneScreenCapture.pong(msg.optLong("nonce", -1), ws?.queueSize() ?: 0).put("to", from))
 
             // File system requests/responses. Older relays broadcast chunks like
             // video, so serving also requires that no unapproved peer is present.
@@ -558,7 +571,14 @@ object ConnectionManager {
                 setState(state) // the Update button comes back if it failed
             }
         }
+        networkJsonListeners.forEach { it(msg) }
         main.post { jsonListeners.forEach { it(msg) } }
+    }
+
+    /** What a viewer's `start-view` says it can draw; nothing, from an app before type 5 frames. */
+    private fun codecs(msg: JSONObject): Set<String> {
+        val list = msg.optJSONArray("codecs") ?: return emptySet()
+        return (0 until list.length()).mapNotNull { list.opt(it) as? String }.toSet()
     }
 
     private fun mayControl(from: String): Boolean {

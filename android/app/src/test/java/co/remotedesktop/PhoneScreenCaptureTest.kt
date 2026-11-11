@@ -42,6 +42,8 @@ class ShadowPhoneCaptureAuth {
 class ShadowPhoneCaptureConnection {
     companion object {
         var connected = true
+        /** The frame type every picture is expected to go out as. */
+        var channel = Crypto.CH_VIDEO
         val info = mutableListOf<JSONObject>()
         val frames = mutableListOf<ByteArray>()
         val recipients = mutableListOf<Collection<String>?>()
@@ -52,7 +54,7 @@ class ShadowPhoneCaptureConnection {
         if (message.optString("type") == "screen-info") info.add(message)
     }
     @Implementation fun sendBinary(channel: Byte, bytes: ByteArray, to: Collection<String>?): Boolean {
-        assertEquals(Crypto.CH_VIDEO, channel)
+        assertEquals(Companion.channel, channel)
         frames.add(bytes)
         recipients.add(to)
         return true
@@ -87,6 +89,7 @@ class PhoneScreenCaptureTest {
         ShadowPhoneCaptureAuth.trusted.addAll(listOf("pc", "other-pc"))
         ShadowPhoneCaptureAuth.allTrusted = true
         ShadowPhoneCaptureConnection.connected = true
+        ShadowPhoneCaptureConnection.channel = Crypto.CH_VIDEO
         ShadowPhoneCaptureConnection.info.clear()
         ShadowPhoneCaptureConnection.frames.clear()
         ShadowPhoneCaptureConnection.recipients.clear()
@@ -234,14 +237,8 @@ class PhoneScreenCaptureTest {
         main.idle()
         stream.setStreaming(true)
         main.idle()
-        fun token() = AccessibilityScreenCapture::class.java.getDeclaredField("generation")
-            .apply { isAccessible = true }.getLong(stream)
-        val send = AccessibilityScreenCapture::class.java.getDeclaredMethod("send", Bitmap::class.java,
-            java.lang.Long.TYPE).apply { isAccessible = true }
-        fun frame(w: Int, h: Int, generation: Long = token()) {
-            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            try { send.invoke(stream, bitmap, generation) } finally { bitmap.recycle() }
-        }
+        fun token() = token(stream)
+        fun frame(w: Int, h: Int, generation: Long = token()) = frame(stream, w, h, generation)
         frame(1440, 2560)
         assertEquals(1080, ShadowPhoneCaptureConnection.info.last().getInt("width"))
         assertEquals(1920, ShadowPhoneCaptureConnection.info.last().getInt("height"))
@@ -272,6 +269,63 @@ class PhoneScreenCaptureTest {
         Prefs(context).allowControl = false
         frame(2560, 1440)
         assertEquals(4, ShadowPhoneCaptureConnection.frames.size)
+    }
+
+    private fun token(stream: AccessibilityScreenCapture) = AccessibilityScreenCapture::class.java
+        .getDeclaredField("generation").apply { isAccessible = true }.getLong(stream)
+
+    /** A screenshot of that size reaches the capture, as Android would hand it over. */
+    private fun frame(stream: AccessibilityScreenCapture, w: Int, h: Int, generation: Long = token(stream),
+                      capturedAt: Long = 0) {
+        val send = AccessibilityScreenCapture::class.java.getDeclaredMethod("send", Bitmap::class.java,
+            java.lang.Long.TYPE, java.lang.Long.TYPE).apply { isAccessible = true }
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        try { send.invoke(stream, bitmap, generation, capturedAt) } finally { bitmap.recycle() }
+    }
+
+    /** The same screenshots, to a viewer that said it can draw type 5 frames. */
+    @Test fun aViewerOnACurrentAppGetsEachScreenshotBehindAHeader() {
+        val service = Robolectric.buildService(CaptureTestService::class.java).create().get()
+        val stream = AccessibilityScreenCapture(service).also { capture = it }
+        PhoneScreenCapture.onViewRequested(context, "pc", setOf("jpeg"))
+        main.idle()
+        stream.setStreaming(true)
+        main.idle()
+        ShadowPhoneCaptureConnection.channel = Crypto.CH_PHONE
+
+        frame(stream, 1440, 2560, capturedAt = 4321)
+        val told = ShadowPhoneCaptureConnection.info.single()
+        assertEquals("pc", told.getString("to"))
+        assertEquals(1080 to 1920, told.getInt("width") to told.getInt("height"))
+        assertEquals("accessibility", told.getString("capture"))
+        assertEquals("jpeg", told.getString("codec"))
+        val id = PhoneFrame.parseStream(told.getString("stream"))!!
+        assertNotEquals(0L, id)
+        ShadowPhoneCaptureConnection.frames.single().let { sent ->
+            assertEquals(PhoneFrame.Header(id, 0, keyframe = true, format = PhoneFrame.JPEG, width = 1080, height = 1920,
+                captureMs = 4321), PhoneFrame.parse(sent))
+            val picture = BitmapFactory.decodeByteArray(sent, PhoneFrame.HEADER_SIZE, sent.size - PhoneFrame.HEADER_SIZE)
+            assertEquals(1080 to 1920, picture.width to picture.height)
+            picture.recycle()
+        }
+        assertEquals(listOf(listOf("pc")), ShadowPhoneCaptureConnection.recipients)
+
+        // The phone turns: the new size is said first, and the stream goes on.
+        frame(stream, 2560, 1440, capturedAt = 4721)
+        assertEquals(2, ShadowPhoneCaptureConnection.info.size)
+        ShadowPhoneCaptureConnection.info.last().let {
+            assertEquals(1920 to 1080, it.getInt("width") to it.getInt("height"))
+            assertEquals(told.getString("stream"), it.getString("stream"))
+        }
+        assertEquals(PhoneFrame.Header(id, 1, keyframe = true, format = PhoneFrame.JPEG, width = 1920, height = 1080,
+            captureMs = 4721), PhoneFrame.parse(ShadowPhoneCaptureConnection.frames.last()))
+
+        // A capture from before a pause is dropped, header and all.
+        val oldToken = token(stream)
+        stream.setStreaming(false)
+        stream.setStreaming(true)
+        frame(stream, 2560, 1440, oldToken)
+        assertEquals(2, ShadowPhoneCaptureConnection.frames.size)
     }
 
     @Test fun smoothSharingIsOptionalInTheModernPermissionsScreen() {

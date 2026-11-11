@@ -167,10 +167,13 @@ class AllowOtherPhonesTest {
         socket.queued = 400_000
         assertFalse(ConnectionManager.hasRoomForVideo())
         assertFalse(ConnectionManager.sendBinary(Crypto.CH_VIDEO, ByteArray(10)))
+        // The same picture behind a header, for a viewer on a current app.
+        assertFalse(ConnectionManager.sendBinary(Crypto.CH_PHONE, ByteArray(10)))
         assertTrue(ConnectionManager.sendBinary(Crypto.CH_FILE, ByteArray(10)))
         socket.queued = 200_000
         assertTrue(ConnectionManager.hasRoomForVideo())
         assertTrue(ConnectionManager.sendBinary(Crypto.CH_VIDEO, ByteArray(10)))
+        assertTrue(ConnectionManager.sendBinary(Crypto.CH_PHONE, ByteArray(10)))
         socket.queued = 7_000_000
         assertFalse(ConnectionManager.sendBinary(Crypto.CH_FILE, ByteArray(10)))
     }

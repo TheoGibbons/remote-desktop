@@ -13,7 +13,6 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.Display
 import androidx.annotation.RequiresApi
-import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
@@ -75,7 +74,8 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
                         if (!isCurrent(token)) return
                         hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
                         bitmap = hardware?.copy(Bitmap.Config.ARGB_8888, false)
-                        bitmap?.let { send(it, token) }
+                        // Android stamps the screenshot on the uptime clock.
+                        bitmap?.let { send(it, token, PhoneFrame.captureTime(result.timestamp, SystemClock.uptimeMillis())) }
                     } catch (e: RuntimeException) {
                         Log.w("AccessibilityCapture", "Could not encode screenshot", e)
                     } finally {
@@ -128,7 +128,7 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
                 textAlign = Paint.Align.CENTER
             }
             canvas.drawText("Screen unavailable", bitmap.width / 2f, bitmap.height / 2f, paint)
-            send(bitmap, token)
+            send(bitmap, token, SystemClock.uptimeMillis())
         } finally {
             bitmap.recycle()
         }
@@ -136,7 +136,8 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
 
     private var sentGeneration = -1L
 
-    private fun send(bitmap: Bitmap, token: Long) {
+    /** [capturedAt] is when the screen was captured, on the uptime clock. */
+    private fun send(bitmap: Bitmap, token: Long, capturedAt: Long) {
         val (width, height) = StreamSize.of(bitmap.width, bitmap.height)
         val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
         try {
@@ -145,14 +146,12 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
             val size = width to height
             // Rotation and source/session switches need fresh dimensions before the JPEG.
             if (infoRequested.getAndSet(false) || sentSize != size || sentGeneration != token) {
-                ConnectionManager.sendJson(JSONObject().put("type", "screen-info")
-                    .put("width", width).put("height", height)
-                    .put("typing", InputAccessibilityService.canType))
+                PhoneScreenCapture.sendScreenInfo(service, width, height, PhoneScreenCapture.ACCESSIBILITY)
                 sentSize = size
                 sentGeneration = token
             }
             if (isCurrent(token))
-                ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray(), PhoneScreenCapture.recipients())
+                PhoneScreenCapture.send(service, out.toByteArray(), width, height, capturedAt, PhoneScreenCapture.ACCESSIBILITY)
         } finally {
             if (scaled !== bitmap) scaled.recycle()
         }

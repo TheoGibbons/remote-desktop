@@ -429,6 +429,152 @@ class PhoneViewerActivityTest {
         assertEquals("That phone is no longer online", ShadowToast.getTextOfLatestToast())
     }
 
+    // ---------------- type 5 frames ----------------
+
+    private val streamId = "00000000000000aa"
+
+    /** `screen-info` from a phone, as it arrives: on the network thread first, then on the main one. */
+    private fun screenInfo(from: String = "phone", stream: String? = null, paused: Boolean = false) {
+        val msg = JSONObject().put("type", "screen-info").put("from", from).put("width", 360).put("height", 800)
+            .put("typing", true)
+        if (stream != null) msg.put("stream", stream).put("codec", "jpeg").put("capture", "accessibility")
+        if (paused) msg.put("paused", true)
+        ConnectionManager.networkJsonListeners.forEach { it(msg) }
+        deliver(msg)
+    }
+
+    private fun phoneFrame(stream: Long, seq: Long, picture: ByteArray = jpeg(0x3366CC)) = frame(Crypto.CH_PHONE,
+        PhoneFrame.build(PhoneFrame.Header(stream, seq, keyframe = true, format = PhoneFrame.JPEG, width = 360,
+            height = 800, captureMs = 0), picture))
+
+    /** The picture on show. Each one drawn is a new bitmap. */
+    private val shown get() = PhoneScreenView::class.java.getDeclaredField("frame").apply { isAccessible = true }.get(screen)
+
+    private fun codecsOffered() = sent("start-view").map { msg ->
+        msg.optJSONArray("codecs")?.let { list -> (0 until list.length()).map { list.getString(it) } }
+    }
+
+    @Test
+    fun itOffersJpegOnlyToAPhoneItHasApproved() {
+        open()
+        assertEquals(listOf(listOf("jpeg")), codecsOffered())
+
+        // Every start-view says it again, or the other phone would take it back.
+        socket.messages.clear()
+        resultFrom["phone"] = "trusted"
+        deliver(JSONObject().put("type", "auth-result").put("from", "phone").put("status", "trusted"))
+        assertEquals(listOf(listOf("jpeg")), codecsOffered())
+
+        // A phone this one has not approved is offered nothing, and its word
+        // about a stream is not taken: its pictures are drawn as type 1.
+        controller!!.pause()
+        socket.messages.clear()
+        trustedPeers.remove("phone")
+        controller!!.resume()
+        assertEquals(listOf<List<String>?>(null), codecsOffered())
+        screenInfo(stream = streamId)
+        phoneFrame(0xaa, 0)
+        assertFalse(screen.hasFrame)
+        assertTrue(sent("frame-ack").isEmpty())
+        frame(Crypto.CH_VIDEO)
+        assertTrue(screen.hasFrame)
+
+        // Approved while viewing: it asks again, with the offer.
+        socket.messages.clear()
+        trustedPeers.add("phone")
+        PeerAuth.changeListeners.forEach { it() }
+        idle()
+        assertEquals(listOf(listOf("jpeg")), codecsOffered())
+        // And only when something changed.
+        PeerAuth.changeListeners.forEach { it() }
+        idle()
+        assertEquals(1, sent("start-view").size)
+    }
+
+    @Test
+    fun itDrawsOnlyTheFramesOfTheStreamThePhoneAnnounced() {
+        open()
+        // Nothing announced yet, as with a phone on an older app: type 1 is drawn.
+        frame(Crypto.CH_VIDEO)
+        val first = shown
+        assertNotNull(first)
+
+        screenInfo(stream = streamId)
+        // Type 1 names no sender, so it is not drawn beside a stream.
+        frame(Crypto.CH_VIDEO, jpeg(0x112233))
+        assertSame(first, shown)
+        // Some other stream's frame.
+        phoneFrame(0xab, 0)
+        assertSame(first, shown)
+        assertTrue(sent("frame-ack").isEmpty())
+
+        phoneFrame(0xaa, 0)
+        val second = shown
+        assertNotSame(first, second)
+        sent("frame-ack").single().let {
+            assertEquals("phone", it.getString("to"))
+            assertEquals(streamId, it.getString("stream"))
+            assertEquals(0L, it.getLong("seq"))
+        }
+        // The same frame again is not drawn twice.
+        phoneFrame(0xaa, 0)
+        assertSame(second, shown)
+
+        // Another device's word about a stream is not this phone's.
+        screenInfo(from = "pc", stream = "00000000000000ab")
+        phoneFrame(0xab, 1)
+        assertSame(second, shown)
+
+        // Nothing is being sent for now: nothing that arrives is the phone's.
+        screenInfo(paused = true)
+        frame(Crypto.CH_VIDEO, jpeg(0x112233))
+        phoneFrame(0xaa, 1)
+        assertSame(second, shown)
+
+        // The next stream.
+        screenInfo(stream = "00000000000000ac")
+        phoneFrame(0xaa, 2)
+        assertSame(second, shown)
+        phoneFrame(0xac, 0)
+        val third = shown
+        assertNotSame(second, third)
+
+        // A viewer on an older app joined, so the phone sends everyone type 1.
+        screenInfo()
+        phoneFrame(0xac, 1)
+        assertSame(third, shown)
+        frame(Crypto.CH_VIDEO, jpeg(0x112233))
+        assertNotSame(third, shown)
+    }
+
+    @Test
+    fun itAcknowledgesWhatArrivesAndNeverLeavesTheLastFrameUnsaid() {
+        open()
+        screenInfo(stream = streamId)
+        fun acked() = sent("frame-ack").map { it.getLong("seq") }
+
+        // Three at once: one acknowledgement now, and the highest a moment later.
+        phoneFrame(0xaa, 0)
+        phoneFrame(0xaa, 1)
+        phoneFrame(0xaa, 2)
+        assertEquals(listOf(0L), acked())
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(29))
+        assertEquals(listOf(0L), acked())
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
+        assertEquals(listOf(0L, 2L), acked())
+
+        // Spaced out, each is acknowledged as it arrives.
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+        phoneFrame(0xaa, 3)
+        assertEquals(listOf(0L, 2L, 3L), acked())
+
+        // Nothing is said after the viewer has gone.
+        phoneFrame(0xaa, 4)
+        controller!!.pause()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+        assertEquals(listOf(0L, 2L, 3L), acked())
+    }
+
     private class RecordingSocket : WebSocket {
         val key = ByteArray(32) { 7 }
         val messages = mutableListOf<JSONObject>()

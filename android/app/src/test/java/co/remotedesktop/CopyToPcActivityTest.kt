@@ -46,9 +46,10 @@ class CopyToPcActivityTest {
     @Suppress("UNCHECKED_CAST")
     private val peerFingerprint get() = authField("peerFingerprint") as MutableMap<String, String>
 
+    /** Who is viewing this phone, and the codecs each offered. */
     @Suppress("UNCHECKED_CAST")
     private val viewers get() = PhoneScreenCapture::class.java.getDeclaredField("viewers")
-        .apply { isAccessible = true }.get(PhoneScreenCapture) as MutableSet<String>
+        .apply { isAccessible = true }.get(PhoneScreenCapture) as MutableMap<String, Set<String>>
 
     @Before
     fun setup() {
@@ -146,7 +147,7 @@ class CopyToPcActivityTest {
     @Test
     fun severalPcsAskWhichWithTheOneViewingThisPhoneFirst() {
         pcs("pc" to "Desk", "laptop" to "Laptop")
-        viewers.add("laptop")
+        viewers["laptop"] = emptySet()
         val activity = launch("hello")
         assertTrue(sent().isEmpty())
         val chooser = shadowOf(ShadowAlertDialog.getLatestAlertDialog())

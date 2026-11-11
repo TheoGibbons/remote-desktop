@@ -13,7 +13,8 @@ import javax.crypto.spec.SecretKeySpec
  * associated data. The relay only ever sees ciphertext + routing metadata.
  *
  * Wire format: nonce(12) || ciphertext || tag(16).
- * Channels: 0 = JSON control, 1 = video, 2 = file chunk.
+ * Channels: 0 = JSON control, 1 = video, 2 = file chunk, 3 = screen patch,
+ * 4 = H.264 from a PC, 5 = a phone's picture with its header.
  *
  * Verified against server/crypto.mjs and Crypto.cs via [selfTest].
  */
@@ -28,6 +29,7 @@ object Crypto {
     const val CH_FILE: Byte = 2
     const val CH_PATCH: Byte = 3 // dirty-rect screen patch
     const val CH_H264: Byte = 4  // H.264 access unit
+    const val CH_PHONE: Byte = 5 // a phone's picture behind a header (see PhoneFrame)
 
     private fun hmac(key: ByteArray, data: ByteArray): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
@@ -107,6 +109,13 @@ object Crypto {
         val dec = decrypt(enc, blob, CH_JSON) ?: return false
         if (String(dec) != plaintext) return false
         if (decrypt(enc, blob, CH_VIDEO) != null) return false // AAD binding
+
+        // A phone frame (PhoneFrame.VECTOR) on its own channel.
+        val phoneBlob = "000102030405060708090a0b94cfa1257157e9eb0ca847bb5530f5d2670534023049dd9bf5c7c4c85dc7fd49ca1773758a5994f402"
+        val frame = PhoneFrame.VECTOR.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        if (encryptWithNonce(enc, frame, CH_PHONE, nonce).toHex() != phoneBlob) return false
+        if (decrypt(enc, encryptWithNonce(enc, frame, CH_PHONE, nonce), CH_PHONE)?.toHex() != PhoneFrame.VECTOR) return false
+        if (decrypt(enc, encryptWithNonce(enc, frame, CH_PHONE, nonce), CH_VIDEO) != null) return false
         return true
     }
 }

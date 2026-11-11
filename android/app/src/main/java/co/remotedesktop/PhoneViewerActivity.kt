@@ -20,14 +20,17 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.appbar.MaterialToolbar
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * Shows another phone in the session and controls it by touch, with buttons
  * for the Back, Home, Recents and Notifications this phone's own edge
- * gestures can't send. The other phone streams whole JPEG frames (type 1).
- * Kept apart from [ViewerActivity], whose patches, video, privacy and
- * clipboard only a PC uses.
+ * gestures can't send. The other phone streams whole JPEGs: as type 5 frames
+ * of a stream whose id it tells this one, when it is on a current app and
+ * this phone has approved it, and as bare type 1 frames otherwise (see
+ * [PhoneVideoStream]). Kept apart from [ViewerActivity], whose patches,
+ * video, privacy and clipboard only a PC uses.
  */
 class PhoneViewerActivity : AppCompatActivity() {
 
@@ -56,6 +59,13 @@ class PhoneViewerActivity : AppCompatActivity() {
     private var imePrev = ""
     private var imeGuard = false
 
+    /** Which of the frames that arrive are the other phone's. Network thread. */
+    private val stream = PhoneVideoStream()
+    private val acks = AckPacer()
+    /** Whether the last start-view offered `codecs`, which it does only to a phone this one has approved. */
+    @Volatile private var offered = false
+    private val ackDue = Runnable { acknowledge(acks.due(SystemClock.uptimeMillis())) }
+
     private val noFrameHint = Runnable {
         nothingYet = true
         updateNotice()
@@ -63,17 +73,53 @@ class PhoneViewerActivity : AppCompatActivity() {
 
     // Network thread: decode here, draw on the main thread.
     private val binaryListener: (ByteArray) -> Unit = { data ->
-        // Only type 1; an older relay may also pass on a PC's patches or video.
-        if (viewing && data.size > 1 && data[0] == Crypto.CH_VIDEO) {
-            BitmapFactory.decodeByteArray(data, 1, data.size - 1)?.let { bitmap ->
-                // The other phone may say its lock has changed while this picture
-                // is on its way to the screen. What was seen in the picture was
-                // seen before that, and is not carried over.
-                val asOf = lockChanges
-                val black = blackWatch.look(bitmap, lockState, SystemClock.uptimeMillis())
-                runOnUiThread { if (viewing) showFrame(bitmap, black.takeIf { asOf == lockChanges }) }
+        // Only a phone's pictures; an older relay may also pass on a PC's patches or video.
+        if (viewing && data.size > 1) when (data[0]) {
+            // Not while the other phone has announced a stream: a type 1 frame
+            // names no sender, and anyone in the session can make one.
+            Crypto.CH_VIDEO -> if (stream.drawsType1) draw(data, 1)
+            Crypto.CH_PHONE -> PhoneFrame.parse(data, 1)?.let { header ->
+                val verdict = stream.take(header)
+                if (verdict != PhoneVideoStream.Verdict.REFUSE) {
+                    // Said as the frame arrives, before the time it takes to decode it.
+                    val now = SystemClock.uptimeMillis()
+                    val ack = acks.received(header.stream, header.seq, now)
+                    if (ack != null) acknowledge(ack)
+                    else acks.dueIn(now)?.let { handler.removeCallbacks(ackDue); handler.postDelayed(ackDue, it) }
+                    if (verdict == PhoneVideoStream.Verdict.DRAW) draw(data, 1 + PhoneFrame.HEADER_SIZE)
+                }
             }
         }
+    }
+
+    /** Decodes the JPEG that starts at [offset] and hands it to the main thread. */
+    private fun draw(data: ByteArray, offset: Int) {
+        BitmapFactory.decodeByteArray(data, offset, data.size - offset)?.let { bitmap ->
+            // The other phone may say its lock has changed while this picture
+            // is on its way to the screen. What was seen in the picture was
+            // seen before that, and is not carried over.
+            val asOf = lockChanges
+            val black = blackWatch.look(bitmap, lockState, SystemClock.uptimeMillis())
+            runOnUiThread { if (viewing) showFrame(bitmap, black.takeIf { asOf == lockChanges }) }
+        }
+    }
+
+    private fun acknowledge(ack: AckPacer.Ack?) {
+        if (ack != null && viewing) send(ack.message())
+    }
+
+    // Network thread, in order with the frames: the stream's id has to be
+    // known before the first frame that carries it.
+    private val streamListener: (JSONObject) -> Unit = { msg ->
+        // Believed only from the phone being viewed, and only if this phone
+        // has approved it, which is when it was offered codecs.
+        if (offered && msg.optString("type") == "screen-info" && msg.optString("from") == peerId)
+            stream.announce(msg.optString("stream"), msg.optBoolean("paused", false))
+    }
+
+    /** This phone has approved the other one, or no longer does: ask again, offering what it now may. */
+    private val trustListener: () -> Unit = {
+        if (viewing && PeerAuth.isTrusted(peerId) != offered) startView()
     }
 
     private val jsonListener: (JSONObject) -> Unit = { msg ->
@@ -185,7 +231,9 @@ class PhoneViewerActivity : AppCompatActivity() {
         if (peerId == null) return
         viewing = true
         ConnectionManager.binaryListeners.add(binaryListener)
+        ConnectionManager.networkJsonListeners.add(streamListener)
         ConnectionManager.jsonListeners.add(jsonListener)
+        PeerAuth.changeListeners.add(trustListener)
         ConnectionManager.stateListeners.add(stateListener)
         updateReconnectNotice()
         startView()
@@ -198,14 +246,29 @@ class PhoneViewerActivity : AppCompatActivity() {
         // Never leave a finger down on the other phone.
         screen.liftFinger()
         handler.removeCallbacks(noFrameHint)
+        handler.removeCallbacks(ackDue)
         ConnectionManager.binaryListeners.remove(binaryListener)
+        ConnectionManager.networkJsonListeners.remove(streamListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
+        PeerAuth.changeListeners.remove(trustListener)
         ConnectionManager.stateListeners.remove(stateListener)
         send(JSONObject().put("type", "stop-view"))
     }
 
     private fun startView() {
-        send(JSONObject().put("type", "start-view"))
+        // Type 5 frames are offered only to a phone this one has approved:
+        // the stream's id is believed on that phone's word. Until the next
+        // phone can decode video, whole JPEGs are all this viewer draws.
+        val offer = PeerAuth.isTrusted(peerId)
+        if (offer != offered) {
+            // What was announced under the other arrangement no longer holds.
+            stream.forget()
+            acks.forget()
+        }
+        offered = offer
+        val msg = JSONObject().put("type", "start-view")
+        if (offer) msg.put("codecs", JSONArray().put(PhoneScreenCapture.JPEG))
+        send(msg)
         // The other phone ignores start-view without saying why, e.g. with
         // control off or a device awaiting approval there. Say what to check.
         nothingYet = false

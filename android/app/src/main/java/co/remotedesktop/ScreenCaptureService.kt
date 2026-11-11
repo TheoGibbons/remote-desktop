@@ -26,7 +26,6 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Display
 import android.view.WindowManager
-import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 
 /**
@@ -169,10 +168,7 @@ class ScreenCaptureService : Service() {
 
     private fun sendScreenInfo() {
         val (w, h) = outSize()
-        ConnectionManager.sendJson(
-            JSONObject().put("type", "screen-info").put("width", w).put("height", h)
-                .put("typing", InputAccessibilityService.canType)
-        )
+        PhoneScreenCapture.sendScreenInfo(this, w, h, PhoneScreenCapture.SCREEN_SHARE)
     }
 
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -273,9 +269,11 @@ class ScreenCaptureService : Service() {
             val out = ByteArrayOutputStream(200_000)
             cropped.compress(Bitmap.CompressFormat.JPEG, jpegQuality, out)
             if (cropped !== bmp) cropped.recycle()
-            // ConnectionManager adds the frame-type byte and encrypts the JPEG.
-            if (streaming && token == streamGeneration && PhoneScreenCapture.maySendFrames(this))
-                ConnectionManager.sendBinary(Crypto.CH_VIDEO, out.toByteArray(), PhoneScreenCapture.recipients())
+            // Android stamps the picture in nanoseconds, on the uptime clock where it keeps to it.
+            val capturedAt = PhoneFrame.captureTime(image.timestamp / 1_000_000, SystemClock.uptimeMillis())
+            if (streaming && token == streamGeneration)
+                PhoneScreenCapture.send(this, out.toByteArray(), image.width, image.height, capturedAt,
+                    PhoneScreenCapture.SCREEN_SHARE)
         } catch (_: Exception) {
         } finally {
             image.close()
