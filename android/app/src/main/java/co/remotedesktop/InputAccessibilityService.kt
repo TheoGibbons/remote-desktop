@@ -67,7 +67,7 @@ class InputAccessibilityService : AccessibilityService() {
         }
         // Keeps the session connected even if the process was restarted for this
         // service without the launcher activity being recreated.
-        ConnectionManager.start(this)
+        ConnectionService.startFromAccessibility(this)
         PhoneScreenCapture.refresh()
     }
 

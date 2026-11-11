@@ -66,7 +66,8 @@ consent, file transfers, and rotation on an Android 16 device or emulator.
    The **Session ID** screen also has **Scan QR code** and **Save & connect**.
    If no ID is saved, the main-screen card shows a red message asking you to add one.
 3. Settings persist, a small foreground service keeps the session alive in the
-   background (and after reboots), and the app auto-connects from then on.
+   background (and after reboots and app updates), and the app auto-connects
+   from then on.
 
 Then grant the capabilities you want in **Permissions & Access → System
 Permissions**:

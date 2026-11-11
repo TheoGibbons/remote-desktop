@@ -32,6 +32,27 @@ class ConnectionService : Service() {
             else context.startService(i)
         }
 
+        /**
+         * For the Accessibility service, which Android starts by itself after
+         * an app update or a crash, with nothing else of the app running. The
+         * connection goes through this service then too. Without a foreground
+         * service Android cuts the app's network seconds after the phone dozes
+         * with its screen off, and paired devices lose the phone until the
+         * app is next opened.
+         */
+        fun startFromAccessibility(context: Context) {
+            val prefs = Prefs(context)
+            if (prefs.autoConnect && prefs.sessionKey.length >= 16) {
+                try {
+                    start(context)
+                    return
+                } catch (_: RuntimeException) {
+                    // Android would not start it from the background: connect without it.
+                }
+            }
+            ConnectionManager.start(context)
+        }
+
         fun stop(context: Context) {
             context.stopService(Intent(context, ConnectionService::class.java))
         }
