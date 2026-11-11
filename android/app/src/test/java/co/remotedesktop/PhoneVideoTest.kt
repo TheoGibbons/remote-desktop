@@ -56,6 +56,17 @@ internal class FakeVideoPipe(val attempt: VideoSetup.Attempt, val events: VideoP
      */
     var whileDrawing: (() -> Unit)? = null
 
+    /** Every rate the encoder was given after it started, in order. */
+    val bitrates: MutableList<Int> = java.util.Collections.synchronizedList(ArrayList<Int>())
+    var failBitrate: RuntimeException? = null
+
+    override fun setBitrate(bitsPerSecond: Int) {
+        check(closed == 0) { "Given a bitrate after it was closed" }
+        failBitrate?.let { throw it }
+        hold?.await()
+        bitrates += bitsPerSecond
+    }
+
     /** The pictures handed over to be put into the texture, in order. */
     val shown: MutableList<ScreenPicture> = java.util.Collections.synchronizedList(ArrayList<ScreenPicture>())
     var failShows: RuntimeException? = null
@@ -109,9 +120,15 @@ internal class FakeVideoPipe(val attempt: VideoSetup.Attempt, val events: VideoP
     /** The encoder gives its parameter sets, as it does once before its first picture. */
     fun config() = events.encoded(SETS, 0, config = true)
 
+    /** How many bytes each picture the encoder gives is made up to, where that is more than it has. */
+    var padTo = 0
+
     /** The encoder gives the picture for one draw: a keyframe if it was asked for one, unless told otherwise. */
-    fun answer(draw: Drawn, keyframe: Boolean = draw.keyframe) =
-        events.encoded(if (keyframe) KEY else PICTURE, draw.ptsUs, config = false)
+    fun answer(draw: Drawn, keyframe: Boolean = draw.keyframe) {
+        val unit = if (keyframe) KEY else PICTURE
+        events.encoded(if (padTo > unit.size) unit + ByteArray(padTo - unit.size) { 0x55 } else unit, draw.ptsUs,
+            config = false)
+    }
 
     private var answered = 0
 

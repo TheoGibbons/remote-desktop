@@ -165,6 +165,13 @@ internal class PhoneVideoEncoder(
         checkNotNull(gl).draw(ptsUs * 1000)
     }
 
+    override fun setBitrate(bitsPerSecond: Int) {
+        check(!closed) { "Closed" }
+        checkNotNull(codec).setParameters(Bundle().apply {
+            putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitsPerSecond)
+        })
+    }
+
     /**
      * Draws a screenshot onto the surface that feeds the texture, filling
      * it. Android then says a picture is there, exactly as it does for a

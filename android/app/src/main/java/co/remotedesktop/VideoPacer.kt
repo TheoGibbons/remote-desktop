@@ -168,6 +168,13 @@ internal class VideoPacer(
         return draw
     }
 
+    /**
+     * Whether a picture is due to be encoded at [now]: one that then waits
+     * only for room, or for the rate cap. [BitrateSteps] goes by how long
+     * pictures are kept waiting for room.
+     */
+    fun due(now: Long): Boolean = hasPicture && (changed || keyDue(now) || sharpenDue(now))
+
     /** How long until [next] is worth calling again, or null when nothing is waiting. */
     fun delay(now: Long, hasRoom: Boolean): Long? {
         if (!hasPicture) return null

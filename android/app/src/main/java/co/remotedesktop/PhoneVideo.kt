@@ -34,6 +34,12 @@ internal interface VideoPipe {
      */
     fun show(picture: ScreenPicture)
 
+    /**
+     * Has the encoder aim at [bitsPerSecond] from here on. No keyframe is
+     * needed for it. Throws when the encoder will not take it.
+     */
+    fun setBitrate(bitsPerSecond: Int)
+
     /** Lets go of everything. Nothing is heard from it afterwards. */
     fun close()
 
@@ -150,7 +156,16 @@ internal class VideoLedger {
  * - a keyframe comes out with no parameter sets known;
  * - a keyframe is asked for [KEY_TRIES] times or more over [KEY_PATIENCE_MS]
  *   and none is made. It is asked for again [KEY_RETRY_MS] after an
- *   ordinary picture came out in its place.
+ *   ordinary picture came out in its place;
+ * - the encoder throws when it is given a new bitrate.
+ *
+ * **The bitrate** is moved by [BitrateSteps], down when pictures are kept
+ * waiting for room and up again when they are not. It goes by what this
+ * class sees: how long a picture that was due had no room, and how large
+ * the pictures were that came out. A viewer's request for a keyframe counts
+ * there too. The rate outlives an encoder: one started straight after
+ * another (a turn, a failure) carries on where that one was. Screenshots are
+ * never given more than they start with.
  *
  * **When video is tried again.** The picture is tried at full size, then at
  * three quarters, then at half ([VideoSetup]). An encoder that will not
@@ -218,8 +233,9 @@ internal class PhoneVideo(
     /**
      * One encoder, from the moment it starts until it is closed. What a closed one still says is ignored.
      * @param step which of the sizes it encodes at (see [VideoSetup.Attempt.step]).
+     * @param bitrate bits a second it is aiming at.
      */
-    private inner class Session(val step: Int) : VideoPipe.Events {
+    private inner class Session(val step: Int, @Volatile var bitrate: Int) : VideoPipe.Events {
         lateinit var pipe: VideoPipe
         val ledger = VideoLedger()
         @Volatile var parameterSets: ByteArray? = null
@@ -262,6 +278,7 @@ internal class PhoneVideo(
                 failed(IllegalStateException("A keyframe came with no parameter sets"))
                 return
             }
+            steps.encoded(picture.bytes.size)
             var missed = false
             if (picture.keyframe) keyMisses = 0
             else if (entry?.draw?.keyframe == true) {
@@ -295,6 +312,7 @@ internal class PhoneVideo(
 
     @Volatile private var current: Session? = null
     private val pacer = VideoPacer()
+    private val steps = BitrateSteps(startIsMost = fed)
     private var sending = false
     @Volatile private var shutDown = false
 
@@ -350,8 +368,8 @@ internal class PhoneVideo(
     /** The encoded picture's size, while video is running. Any thread. */
     val size: Pair<Int, Int>? get() = current?.pipe?.let { it.width to it.height }
 
-    /** Bits a second the encoder aims at, while video is running. Any thread. */
-    val bitrate: Int? get() = current?.pipe?.bitrate
+    /** Bits a second the encoder aims at now, while video is running. Any thread. */
+    val bitrate: Int? get() = current?.bitrate
 
     /** The encoder that is running, for the caller to point the screen at. */
     val pipe: VideoPipe? get() = current?.pipe
@@ -395,9 +413,11 @@ internal class PhoneVideo(
             emptyList()
         }
         for (attempt in attempts) {
-            val session = Session(attempt.step)
+            // Where the last encoder left the rate, if it ended a moment ago; else what the size starts at.
+            val rate = steps.begin(attempt.bitrate, clock())
+            val session = Session(attempt.step, rate)
             try {
-                session.pipe = timed { open(attempt, sourceWidth, sourceHeight, session) }
+                session.pipe = timed { open(attempt.copy(bitrate = rate), sourceWidth, sourceHeight, session) }
             } catch (e: Exception) {
                 error = e
                 continue
@@ -426,6 +446,7 @@ internal class PhoneVideo(
         if (sending == on) return
         sending = on
         timer.remove(tickTask)
+        if (!on) steps.paused()
         // What follows a pause is a new stream, and a stream starts with a keyframe.
         if (on && !abandoned) {
             // A mirrored screen went on reaching the texture through the pause. Screenshots
@@ -438,6 +459,8 @@ internal class PhoneVideo(
     /** A keyframe is wanted: [byViewer] when a viewer asked for it, and then at most one a second is made. */
     fun keyframe(byViewer: Boolean) {
         if (current == null || abandoned) return
+        // Asked twice in a few seconds, frames are being lost on the way: the rate comes down.
+        if (byViewer) steps.keyframeAsked(clock())
         pacer.wantKeyframe(byViewer)
         tick()
     }
@@ -492,6 +515,7 @@ internal class PhoneVideo(
         closeQuietly(session)
         session.shown?.let(::closeQuietly)
         session.shown = null
+        steps.ended(clock())
     }
 
     private fun closeQuietly(picture: ScreenPicture) {
@@ -533,6 +557,9 @@ internal class PhoneVideo(
         if (!sending || abandoned) return
         val now = clock()
         val room = hasRoom()
+        steps.look(now, waiting = !room && pacer.due(now))
+        steps.step(now)
+        if (!rate(session)) return
         pacer.next(now, room)?.let { draw ->
             // Stamps only ever go up, whatever the clock the screen's pictures are stamped with does.
             val ptsUs = maxOf(draw.capturedAt * 1000, lastPtsUs + 1)
@@ -551,6 +578,24 @@ internal class PhoneVideo(
             }
         }
         pacer.delay(clock(), room)?.let { timer.postDelayed(tickTask, it) }
+    }
+
+    /**
+     * Gives the encoder the rate [steps] has come to, if it is not the one
+     * it has.
+     * @return false when the encoder would not take it, which has ended video.
+     */
+    private fun rate(session: Session): Boolean {
+        val wanted = steps.bitrate
+        if (wanted == session.bitrate) return true
+        try {
+            timed { session.pipe.setBitrate(wanted) }
+        } catch (e: Exception) {
+            fail(session, "The video encoder stopped working.", e.toString())
+            return false
+        }
+        session.bitrate = wanted
+        return true
     }
 
     /** A keyframe was asked for and an ordinary picture came out: it is asked for again, a little later. */
