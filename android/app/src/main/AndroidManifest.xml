@@ -106,6 +106,18 @@
             </intent-filter>
         </activity>
 
+        <!-- Stands under Android's screen-sharing prompt when a viewer asks for
+             smooth sharing. Not noHistory: such an activity is never given the
+             prompt's answer. It handles a turned phone itself, so the prompt
+             is not asked for twice. -->
+        <activity
+            android:name=".ScreenShareRequestActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

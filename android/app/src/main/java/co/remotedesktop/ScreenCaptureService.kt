@@ -174,13 +174,17 @@ class ScreenCaptureService : Service() {
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).registerDisplayListener(displayListener, handler)
         instance = this
         notifyStateChanged(this)
+        SmoothPrompt.sharingStarted()
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        val wasRunning = instance === this
         instance = null
         releaseScreen()
         notifyStateChanged(this)
+        // Viewers are told it is over, and why, as far as that can be known.
+        SmoothPrompt.sharingEnded(this, wasRunning)
         streaming = false
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).unregisterDisplayListener(displayListener)
         // Waits for a change of shape that is under way; none starts after it.

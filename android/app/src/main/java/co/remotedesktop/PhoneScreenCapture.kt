@@ -90,6 +90,9 @@ object PhoneScreenCapture {
         return viewers.keys.filter { mayView(context, it) }
     }
 
+    /** The viewers that know `smooth-status`: those on an app that offers `codecs`. */
+    fun statusRecipients(): List<String> = recipients().filter { !viewers[it].isNullOrEmpty() }
+
     /** Clear requests on disconnect/revocation so a later session never resumes an old view. */
     fun onViewStopped(peerId: String? = null) {
         if (peerId == null) viewers.clear() else viewers.remove(peerId)
@@ -111,7 +114,9 @@ object PhoneScreenCapture {
             forgetGone()
             // A screen turned for a viewer goes back to the phone's own way with the last of them.
             if (viewers.isEmpty()) InputAccessibilityService.instance?.releaseRotation()
-            // The screen is held on for smooth sharing only while someone is viewing.
+            // A prompt for smooth sharing goes when whoever asked for it has, and the
+            // screen is held on for smooth sharing only while someone is viewing.
+            SmoothPrompt.viewersNow(viewers.keys.toList())
             ScreenCaptureService.setViewed(viewers.isNotEmpty())
             val active = maySendFrames(context)
             // No pictures for now, e.g. while a device waits to be approved. The stream is over.
@@ -327,7 +332,9 @@ object PhoneScreenCapture {
      */
     private fun tell(viewer: String, word: String, always: Boolean) {
         val offered = !viewers[viewer].isNullOrEmpty()
-        val key = "$word $capture"
+        // Whether smooth sharing is on, or can be asked for: a viewer's menu row goes by it.
+        val smooth = appContext?.let { SmoothPrompt.offer(it) }
+        val key = "$word $capture $smooth"
         if (!always && (!offered || told[viewer] == key)) return
         if (offered) told[viewer] = key
         val msg = JSONObject().put("type", "screen-info")
@@ -335,6 +342,7 @@ object PhoneScreenCapture {
         msg.put("typing", InputAccessibilityService.canType)
         if (offered) {
             capture?.let { msg.put("capture", it) }
+            smooth?.let { msg.put("smooth", it) }
             when (word) {
                 TYPE_1 -> Unit
                 PAUSED -> msg.put("paused", true)

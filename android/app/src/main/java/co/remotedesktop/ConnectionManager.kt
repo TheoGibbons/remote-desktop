@@ -588,6 +588,18 @@ object ConnectionManager {
             "stop-view" ->
                 if (PeerAuth.isTrusted(from)) PhoneScreenCapture.onViewStopped(from)
 
+            // Starting to capture the screen because a message asked: SmoothSharing
+            // decides who may, from each of these facts about the sender.
+            "request-smooth", "stop-smooth" -> {
+                val prefs = Prefs(appContext)
+                SmoothPrompt.handle(appContext, from, msg.optString("type"), SmoothSharing.Asker(
+                    approved = PeerAuth.isTrusted(from),
+                    controlOn = prefs.allowControl,
+                    kindAllowed = prefs.allowsDevice(deviceOf(from)),
+                    viewing = PhoneScreenCapture.isViewing(from),
+                ))
+            }
+
             // About the pictures this phone is sending, so only from a device it is sending them to.
             "frame-ack" ->
                 if (mayControl(from) && PhoneScreenCapture.isViewing(from)) PhoneScreenCapture.onFrameAck(from, msg)

@@ -1,0 +1,236 @@
+package co.remotedesktop
+
+/**
+ * Everything that is decided when a viewer asks this phone to start or stop
+ * smooth sharing (`request-smooth`, `stop-smooth` and `smooth-status` in
+ * PROTOCOL.md): who may ask, when Android's prompt is shown, who is told what,
+ * and when a prompt nobody answers is taken away again.
+ *
+ * Starting to capture the screen because a message arrived is the most
+ * sensitive thing a viewer can ask of a phone, so the rules are here, in a
+ * class that touches nothing of Android and can be tried case by case:
+ *
+ *  - Only a device this phone has approved, with control switched on, of a
+ *    kind that is let in (Allow other phones), and that is viewing right now
+ *    may ask. Anyone else is not answered at all.
+ *  - This class never approves the prompt. It can show it and take it away.
+ *    The answer is a person's, on the phone or by a click in a viewer.
+ *  - One prompt at a time. A second request while one is up joins the wait.
+ *  - After someone declines, nobody may ask again for [repeatWaitMs].
+ *  - A prompt is taken away after [answerMs] without an answer, when everyone
+ *    who asked has stopped viewing, and when the screen turns off.
+ *
+ * Not thread safe: [SmoothPrompt] calls it on the main thread only.
+ */
+internal class SmoothSharing(
+    private val repeatWaitMs: Long = REPEAT_WAIT_MS,
+    private val answerMs: Long = ANSWER_MS,
+) {
+    /** What is known of the device a request came from. Each is asked afresh for every message. */
+    data class Asker(
+        /** This phone has approved the device. */
+        val approved: Boolean,
+        /** "Allow remote control" is on in Permissions & Access. */
+        val controlOn: Boolean,
+        /** It is a PC, or a phone while Allow other phones is on. */
+        val kindAllowed: Boolean,
+        /** Its `start-view` was accepted and it has not stopped since. */
+        val viewing: Boolean,
+    ) {
+        val mayAsk: Boolean get() = approved && controlOn && kindAllowed && viewing
+    }
+
+    /** How the phone stands when a request arrives. */
+    data class Phone(
+        /** Smooth sharing is running. */
+        val sharing: Boolean,
+        /** The screen is on and the phone is unlocked. */
+        val inUse: Boolean,
+        /** Pictures may go to viewers right now: no device is waiting to be approved. */
+        val sending: Boolean,
+        /** The prompt, or a notification that opens it, can be put on the screen. */
+        val canShowPrompt: Boolean,
+    )
+
+    /** How a prompt that was up came to an end. */
+    enum class Outcome {
+        /** Someone pressed its button to share. */
+        GRANTED,
+        /** Someone pressed Cancel, or Back. */
+        DECLINED,
+        /** The phone's screen turned off under it. */
+        SCREEN_OFF,
+        /** Android would not show it, and there was no other way to ask. */
+        NOT_SHOWN,
+    }
+
+    /** One thing for [SmoothPrompt] to do. */
+    sealed interface Step
+    /** Send `smooth-status` with this [state] and [reason] to each of [to]. */
+    data class Tell(val to: List<String>, val state: String, val reason: String? = null) : Step
+    /** Put Android's prompt on the phone's screen. */
+    object ShowPrompt : Step
+    /** Take the prompt, or the notification standing in for it, away. */
+    object ClosePrompt : Step
+    /** End smooth sharing because a viewer asked. */
+    object StopSharing : Step
+
+    /** Who asked for the prompt that is up, in the order they asked. */
+    private val waiting = LinkedHashSet<String>()
+    /** Who is owed the news that sharing started: the prompt was approved and the service is on its way. */
+    private val starting = LinkedHashSet<String>()
+    private var promptSince: Long? = null
+    private var declinedAt: Long? = null
+
+    /** Who is waiting for the prompt that is up. */
+    val waitingFor: List<String> get() = waiting.toList()
+
+    /** A prompt is up and unanswered. */
+    val prompting: Boolean get() = promptSince != null
+
+    /** When the prompt that is up is taken away if nobody answers it; null when none is up. */
+    val giveUpAt: Long? get() = promptSince?.let { it + answerMs }
+
+    /** `request-smooth` from [from]. */
+    fun request(from: String, asker: Asker, phone: Phone, now: Long): List<Step> {
+        if (!asker.mayAsk) return emptyList()
+        fun no(reason: String) = listOf(Tell(listOf(from), UNAVAILABLE, reason))
+        return when {
+            phone.sharing -> listOf(Tell(listOf(from), STARTED))
+            !phone.inUse -> no(UNLOCK_FIRST)
+            !phone.sending -> no(WAITING_FOR_APPROVAL)
+            prompting -> {
+                waiting.add(from)
+                listOf(Tell(listOf(from), PROMPTING))
+            }
+            declinedAt?.let { now - it < repeatWaitMs } == true -> no(JUST_DECLINED)
+            !phone.canShowPrompt -> no(CANNOT_SHOW)
+            else -> {
+                waiting.clear()
+                waiting.add(from)
+                promptSince = now
+                // Told first: showing it may fail at once, and that is the later news.
+                listOf(Tell(listOf(from), PROMPTING), ShowPrompt)
+            }
+        }
+    }
+
+    /** `stop-smooth`. Whoever is viewing hears that it ended when the service has stopped. */
+    fun stop(asker: Asker, sharing: Boolean): List<Step> =
+        if (asker.mayAsk && sharing) listOf(StopSharing) else emptyList()
+
+    /** The prompt came to an end by itself, or by a person's answer. */
+    fun answered(outcome: Outcome, now: Long): List<Step> {
+        if (!prompting) return emptyList()
+        val asked = waiting.toList()
+        waiting.clear()
+        promptSince = null
+        return when (outcome) {
+            Outcome.GRANTED -> {
+                starting.addAll(asked)
+                emptyList()
+            }
+            Outcome.DECLINED -> {
+                declinedAt = now
+                listOf(Tell(asked, DECLINED))
+            }
+            Outcome.SCREEN_OFF -> listOf(ClosePrompt, Tell(asked, DECLINED, SCREEN_TURNED_OFF))
+            Outcome.NOT_SHOWN -> listOf(ClosePrompt, Tell(asked, UNAVAILABLE, CANNOT_SHOW))
+        }
+    }
+
+    /** Time has passed. Takes away a prompt that has had its time. */
+    fun tick(now: Long): List<Step> {
+        val due = giveUpAt ?: return emptyList()
+        if (now < due) return emptyList()
+        val asked = waiting.toList()
+        waiting.clear()
+        promptSince = null
+        return listOf(ClosePrompt, Tell(asked, DECLINED, NOBODY_ANSWERED))
+    }
+
+    /**
+     * Who is viewing has changed. A prompt nobody is waiting for any more is
+     * taken away: it would otherwise stand on a phone that nobody is looking
+     * at, for whoever picks it up next.
+     */
+    fun viewersNow(viewing: Collection<String>): List<Step> {
+        starting.retainAll(viewing.toSet())
+        if (!prompting) return emptyList()
+        waiting.retainAll(viewing.toSet())
+        if (waiting.isNotEmpty()) return emptyList()
+        promptSince = null
+        return listOf(ClosePrompt)
+    }
+
+    /** Smooth sharing is running. Those who asked for it are told. */
+    fun started(): List<Step> {
+        val asked = starting.toList()
+        starting.clear()
+        return if (asked.isEmpty()) emptyList() else listOf(Tell(asked, STARTED))
+    }
+
+    /**
+     * Smooth sharing is over, or never got going after the prompt was
+     * approved ([wasRunning] false). [viewers] are the devices viewing now
+     * that know this message.
+     */
+    fun ended(wasRunning: Boolean, stoppedBy: String?, locked: Boolean, viewers: Collection<String>): List<Step> {
+        val asked = starting.toList()
+        starting.clear()
+        if (!wasRunning) return if (asked.isEmpty()) emptyList() else listOf(Tell(asked, UNAVAILABLE, DID_NOT_START))
+        val to = (viewers + asked).distinct()
+        if (to.isEmpty()) return emptyList()
+        return listOf(Tell(to, ENDED, endedReason(stoppedBy, locked)))
+    }
+
+    companion object {
+        const val REPEAT_WAIT_MS = 10_000L
+        /** Long enough to find the prompt in a viewer's picture, scroll it and press it. */
+        const val ANSWER_MS = 60_000L
+
+        // `state` of `smooth-status`.
+        const val PROMPTING = "prompting"
+        const val STARTED = "started"
+        const val DECLINED = "declined"
+        const val ENDED = "ended"
+        const val UNAVAILABLE = "unavailable"
+
+        // `smooth` of `screen-info`.
+        const val ON = "on"
+        const val AVAILABLE = "available"
+
+        // Reasons. A viewer shows them as they are.
+        const val UNLOCK_FIRST = "Unlock the phone first."
+        const val WAITING_FOR_APPROVAL = "The phone is waiting for a new device to be approved."
+        const val JUST_DECLINED = "The prompt was just declined on the phone. Try again in a moment."
+        const val CANNOT_SHOW = "The phone can't show its prompt. Turn on smooth screen sharing in its Permissions screen."
+        const val DID_NOT_START = "The phone could not start sharing its screen."
+        const val SCREEN_TURNED_OFF = "The phone's screen turned off before the prompt was answered."
+        const val NOBODY_ANSWERED = "Nobody answered the prompt on the phone."
+        const val STOPPED_ON_PHONE = "Smooth video was stopped on the phone."
+        const val PHONE_LOCKED = "Smooth video ended because the phone was locked."
+        /** While the notification stands in for the prompt. */
+        const val TAP_NOTIFICATION = "Tap the notification on the phone to see the prompt."
+
+        /** `smooth` in `screen-info`: what a viewer's menu row can do. */
+        fun offer(sharing: Boolean, canShowPrompt: Boolean): String = when {
+            sharing -> ON
+            canShowPrompt -> AVAILABLE
+            else -> UNAVAILABLE
+        }
+
+        /**
+         * Why smooth sharing ended. Android does not say, so: a viewer's
+         * `stop-smooth` is known, and [stoppedBy] is that device's name;
+         * otherwise a phone that is locked at that moment was ended by the
+         * lock (Android 15 does that), and anything else was someone
+         * stopping it on the phone.
+         */
+        fun endedReason(stoppedBy: String?, locked: Boolean): String = when {
+            stoppedBy != null -> "Smooth video was stopped from $stoppedBy."
+            locked -> PHONE_LOCKED
+            else -> STOPPED_ON_PHONE
+        }
+    }
+}
