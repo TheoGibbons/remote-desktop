@@ -6,6 +6,7 @@ import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The capture thread's hold on the video ([PhoneVideo]), which lives on a
@@ -68,6 +69,38 @@ internal class VideoLane(
 
     fun resend() = tell { video.resend() }
 
+    /** A picture that has been handed over and that the video's thread has not come for yet. */
+    private val waiting = AtomicReference<Pair<ScreenPicture, Long>?>()
+
+    /**
+     * As [PhoneVideo.show]: [picture] is the video's from here on, to draw
+     * and to close. If the one before is still waiting for the video's
+     * thread, this one takes its place, so at most one ever waits, and a
+     * thread that never comes for it costs one picture and not a pile of them.
+     */
+    fun show(picture: ScreenPicture, capturedAtMs: Long) {
+        if (wedged) {
+            close(picture)
+            return
+        }
+        waiting.getAndSet(picture to capturedAtMs)?.let { close(it.first) }
+        post(Runnable { waiting.getAndSet(null)?.let { (next, at) -> video.show(next, at) } })
+        // Given up at that very moment: nobody will come for it.
+        if (wedged) dropWaiting()
+    }
+
+    private fun dropWaiting() {
+        waiting.getAndSet(null)?.let { close(it.first) }
+    }
+
+    private fun close(picture: ScreenPicture) {
+        try {
+            picture.close()
+        } catch (_: Exception) {
+            // It is gone either way.
+        }
+    }
+
     /**
      * Whether the video has been found wedged and nobody has been told yet.
      * True once. It looks first, so calling it now and then is what finds a
@@ -81,6 +114,7 @@ internal class VideoLane(
     private fun giveUp() {
         if (wedge.compareAndSet(false, true)) told.set(false)
         video.abandon()
+        dropWaiting()
     }
 
     private fun tell(task: () -> Unit) {

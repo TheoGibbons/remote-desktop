@@ -94,6 +94,20 @@ internal class VideoPacer(
     }
 
     /**
+     * Pictures go out again after a pause, where the texture is not kept up
+     * to date meanwhile: it holds the last screenshot from before the pause,
+     * which nobody should be sent as if it were the screen now. So nothing
+     * is drawn until the next picture comes, and that one is the keyframe
+     * the new stream starts with.
+     */
+    fun resumedStale() {
+        hasPicture = false
+        changed = false
+        sharpened = Int.MAX_VALUE
+        wantKeyframe()
+    }
+
+    /**
      * A keyframe is wanted, but not before [time]: one was asked for and an
      * ordinary picture came out, and asking again with every picture would
      * have a still screen encoded thirty times a second for nothing.

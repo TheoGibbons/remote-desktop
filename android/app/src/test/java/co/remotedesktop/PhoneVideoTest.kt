@@ -56,6 +56,28 @@ internal class FakeVideoPipe(val attempt: VideoSetup.Attempt, val events: VideoP
      */
     var whileDrawing: (() -> Unit)? = null
 
+    /** The pictures handed over to be put into the texture, in order. */
+    val shown: MutableList<ScreenPicture> = java.util.Collections.synchronizedList(ArrayList<ScreenPicture>())
+    var failShows: RuntimeException? = null
+
+    /**
+     * What happens once a picture has been handed over: on a phone, Android
+     * says a moment later that the texture holds it. A test sets this to
+     * [arrived], or calls that itself when the moment has come.
+     */
+    var afterShow: (() -> Unit)? = null
+
+    override fun show(picture: ScreenPicture) {
+        check(closed == 0) { "Shown a picture after it was closed" }
+        failShows?.let { throw it }
+        hold?.await()
+        shown += picture
+        afterShow?.invoke()
+    }
+
+    /** The picture that was handed over has reached the texture. Its stamp is the drawing's, and tells nothing. */
+    fun arrived() = events.picture(0)
+
     override fun draw(ptsUs: Long, keyframe: Boolean) {
         check(closed == 0) { "Drawn into after it was closed" }
         failDraws?.let { throw it }

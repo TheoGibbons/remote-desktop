@@ -1,10 +1,19 @@
 package co.remotedesktop
 
 /**
- * What turns the mirrored screen into H.264: on a phone, a texture the
- * screen is mirrored into, OpenGL to draw it, and a hardware encoder
- * ([PhoneVideoEncoder]). Behind an interface so that everything decided
- * about it ([PhoneVideo]) can be tested with a made-up one.
+ * One picture of the screen that is handed to the encoder, where the screen
+ * is not mirrored into it: a screenshot taken by the Accessibility service.
+ * It belongs to whoever was handed it last, who closes it.
+ */
+internal interface ScreenPicture {
+    fun close()
+}
+
+/**
+ * What turns the screen into H.264: on a phone, a texture the screen is
+ * mirrored into or its screenshots are drawn into, OpenGL to draw that, and
+ * a hardware encoder ([PhoneVideoEncoder]). Behind an interface so that
+ * everything decided about it ([PhoneVideo]) can be tested with a made-up one.
  */
 internal interface VideoPipe {
     val width: Int
@@ -16,6 +25,14 @@ internal interface VideoPipe {
      * a keyframe if [keyframe]. Throws when the encoder or OpenGL fails.
      */
     fun draw(ptsUs: Long, keyframe: Boolean)
+
+    /**
+     * Puts [picture] into the texture, in place of what it held, as a
+     * mirrored screen puts itself there. [Events.picture] says when it has
+     * got there. The picture has to stay open until the next one is shown,
+     * or this is closed. Throws when it cannot be drawn.
+     */
+    fun show(picture: ScreenPicture)
 
     /** Lets go of everything. Nothing is heard from it afterwards. */
     fun close()
@@ -111,10 +128,15 @@ internal class VideoLedger {
 }
 
 /**
- * The video side of smooth sharing, with everything that is decided about it
- * and nothing that touches Android: which encoder and size to try, when a
- * picture is encoded ([VideoPacer]), what an encoded picture is sent as
- * ([AnnexB]), and what counts as the encoder having failed.
+ * The video side of showing this phone's screen, with everything that is
+ * decided about it and nothing that touches Android: which encoder and size
+ * to try, when a picture is encoded ([VideoPacer]), what an encoded picture
+ * is sent as ([AnnexB]), and what counts as the encoder having failed.
+ *
+ * The screen reaches the encoder's texture in one of two ways. In smooth
+ * sharing Android mirrors it there, and says when ([VideoPipe.Events.picture]).
+ * In Accessibility viewing each screenshot is handed over ([show]) and drawn
+ * there ([fed]). Everything after the texture is the same for both.
  *
  * A failure of any kind ends video and is reported once, through [onFailed];
  * the caller then goes back to JPEG pictures.
@@ -122,7 +144,8 @@ internal class VideoLedger {
  * Counted as failure:
  * - drawing throws, or the encoder reports an error;
  * - the screen gives no picture within [FIRST_PICTURE_MS] of being attached,
- *   while the phone's screen is on;
+ *   while the phone's screen is on; or, where pictures are handed over, one
+ *   that was handed over has not reached the texture after that long;
  * - three pictures or more go in and none comes out for [STALL_MS];
  * - a keyframe comes out with no parameter sets known;
  * - a keyframe is asked for [KEY_TRIES] times or more over [KEY_PATIENCE_MS]
@@ -137,11 +160,15 @@ internal class VideoLedger {
  * likeliest reason. A size that failed stays failed for as long as this
  * object lives, which is one run of the capture service: a phone whose
  * encoder cannot do full size should not stumble over it again every few
- * minutes. When no size is left, or nothing will start at all, video is
- * given up ([gaveUp]) and pictures stay JPEGs. But not for good: [FORGET_MS]
- * after the failure that did it, everything is forgotten and full size is
- * tried again. A phone may have been short of encoders for a while (its
- * camera in use), and the PC forgets its own failures after the same time.
+ * minutes. (The Accessibility service's object lives for weeks, so there a
+ * failed size is tried again when video next starts [sizesForgottenAfterMs]
+ * after the last failure: one bad moment should not leave the picture small
+ * until the phone is restarted.) When no size is left, or nothing will start
+ * at all, video is given up ([gaveUp]) and pictures stay JPEGs. But not for
+ * good: [FORGET_MS] after the failure that did it, everything is forgotten
+ * and full size is tried again. A phone may have been short of encoders for
+ * a while (its camera in use), and the PC forgets its own failures after the
+ * same time.
  *
  * **Threads.** This lives on a thread of its own, the video thread, which
  * [timer] runs things on, and every method is for that thread unless it says
@@ -170,6 +197,13 @@ internal class PhoneVideo(
     private val screenOn: () -> Boolean = { true },
     /** Runs something that may never return, on a thread nothing waits for. */
     private val spare: (() -> Unit) -> Unit = { task -> Thread({ task() }, "video-abort").apply { isDaemon = true }.start() },
+    /**
+     * Whether the screen's pictures are handed over one at a time ([show]),
+     * and not mirrored into the texture by Android.
+     */
+    private val fed: Boolean = false,
+    /** How long after the last failure a size that failed is tried again; by default never. */
+    private val sizesForgottenAfterMs: Long = Long.MAX_VALUE,
 ) {
     interface Timer {
         fun post(task: Runnable)
@@ -198,10 +232,21 @@ internal class PhoneVideo(
         var keyMisses = 0
         var keyMissedSince = 0L
 
+        // Where pictures are handed over. The video thread.
+        /** The picture the texture was last given, kept open for as long as it may be drawn from. */
+        var shown: ScreenPicture? = null
+        /** When the screen in that picture was captured. */
+        var shownCapturedAt = 0L
+        /** Since when a picture that was handed over has been on its way to the texture; 0 while none is. */
+        var unseenSince = 0L
+
         override fun picture(capturedAtMs: Long) {
             if (current !== this) return
             sawPicture = true
-            pacer.changed(capturedAtMs)
+            unseenSince = 0
+            // A picture that was handed over is stamped by the drawing of it. When
+            // the screen looked like that is what came with it.
+            pacer.changed(if (fed) shownCapturedAt else capturedAtMs)
             tick()
         }
 
@@ -339,6 +384,8 @@ internal class PhoneVideo(
         stop()
         // Given up long enough ago: everything is forgotten, and full size is tried again.
         if (step >= VideoSetup.STEPS && clock() - failedAt >= FORGET_MS) step = 0
+        // A size failed long ago: it may have been that moment's trouble and not the size's.
+        else if (step > 0 && clock() - failedAt >= sizesForgottenAfterMs) step = 0
         if (!usable) return false
         var error: Throwable? = null
         val attempts = try {
@@ -381,7 +428,9 @@ internal class PhoneVideo(
         timer.remove(tickTask)
         // What follows a pause is a new stream, and a stream starts with a keyframe.
         if (on && !abandoned) {
-            pacer.resumed(clock())
+            // A mirrored screen went on reaching the texture through the pause. Screenshots
+            // did not: none was taken, and the next one is on its way.
+            if (fed) pacer.resumedStale() else pacer.resumed(clock())
             tick()
         }
     }
@@ -400,6 +449,38 @@ internal class PhoneVideo(
         tick()
     }
 
+    /**
+     * A picture of the screen, captured at [capturedAtMs] (uptime), for the
+     * texture: it is encoded as a mirrored screen's change would be, when
+     * its turn comes and there is room. The picture is this object's from
+     * here on, and is closed when the next one has taken its place, or with
+     * the encoder, or at once if no encoder is running.
+     */
+    fun show(picture: ScreenPicture, capturedAtMs: Long) {
+        val session = current
+        if (session == null || abandoned) {
+            closeQuietly(picture)
+            return
+        }
+        // Known before the texture can say it has the picture.
+        session.shownCapturedAt = capturedAtMs
+        if (session.unseenSince == 0L) session.unseenSince = clock()
+        try {
+            timed { session.pipe.show(picture) }
+        } catch (e: Exception) {
+            closeQuietly(picture)
+            fail(session, "The video encoder stopped working.", e.toString())
+            return
+        }
+        // The one before has been drawn over.
+        session.shown?.let(::closeQuietly)
+        session.shown = picture
+        if (!watching) {
+            watching = true
+            timer.postDelayed(watchTask, FIRST_PICTURE_MS)
+        }
+    }
+
     /** Ends video and lets go of the encoder. Nothing of it is sent after this returns. */
     fun stop() {
         val session = current ?: return
@@ -409,6 +490,16 @@ internal class PhoneVideo(
         watching = false
         synchronized(session.gate) { session.ended = true }
         closeQuietly(session)
+        session.shown?.let(::closeQuietly)
+        session.shown = null
+    }
+
+    private fun closeQuietly(picture: ScreenPicture) {
+        try {
+            picture.close()
+        } catch (_: Exception) {
+            // It is gone either way.
+        }
     }
 
     private fun closeQuietly(session: Session) {
@@ -490,19 +581,30 @@ internal class PhoneVideo(
     private fun watch() {
         watching = false
         val session = current ?: return
-        val again = if (!session.sawPicture) {
+        val now = clock()
+        var again: Long? = null
+        if (fed) {
+            // Nothing is expected until a picture has been handed over; then it is.
+            val since = session.unseenSince
+            if (since != 0L) {
+                if (now - since >= FIRST_PICTURE_MS)
+                    return fail(session, "A picture of the screen did not reach the video encoder.", null)
+                again = since + FIRST_PICTURE_MS - now
+            }
+        } else if (!session.sawPicture) {
             // A phone whose screen is off draws nothing, and that is as it should be.
             if (screenOn()) return fail(session, "The screen gave the video encoder no picture.", null)
-            FIRST_PICTURE_MS
-        } else {
-            if (session.ledger.stalled(clock(), STALL_MS))
+            again = FIRST_PICTURE_MS
+        }
+        if (session.sawPicture) {
+            if (session.ledger.stalled(now, STALL_MS))
                 return fail(session, "The video encoder stopped giving pictures.", null)
             // Looked at again for as long as a picture that went in has not come out.
-            if (!session.ledger.owed()) return
-            STALL_MS
+            if (session.ledger.owed()) again = minOf(again ?: STALL_MS, STALL_MS)
         }
+        val wait = again ?: return
         watching = true
-        timer.postDelayed(watchTask, again)
+        timer.postDelayed(watchTask, wait.coerceAtLeast(1))
     }
 
     private fun fail(session: Session, reason: String, detail: String?) {

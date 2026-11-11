@@ -1,5 +1,9 @@
 package co.remotedesktop
 
+import android.graphics.Bitmap
+import android.graphics.Paint
+import android.graphics.Rect
+import android.hardware.HardwareBuffer
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
@@ -12,12 +16,31 @@ import android.os.SystemClock
 import android.view.Surface
 
 /**
+ * A picture of the screen as a bitmap, for [PhoneVideoEncoder.show]: an
+ * Accessibility screenshot, which is a bitmap over the graphics memory
+ * Android handed out ([buffer]), or a picture the app drew itself.
+ */
+internal class BitmapPicture(val bitmap: Bitmap, private val buffer: HardwareBuffer? = null) : ScreenPicture {
+    override fun close() {
+        bitmap.recycle()
+        buffer?.close()
+    }
+}
+
+/**
  * One H.264 encoder for this phone's screen, with the OpenGL step in front
  * of it ([VideoGl]):
  *
  * ```
  * screen ─ virtual display ─► texture ─ draw() ─► encoder ─► Events.encoded
+ * screenshot ─── show() ────►
  * ```
+ *
+ * The texture is fed through a surface. In smooth sharing Android mirrors
+ * the screen into it. In Accessibility viewing each screenshot is drawn onto
+ * it ([show]), by Android's own drawing code on the graphics card, so the
+ * screenshot is never copied into the app's memory for this. Everything
+ * after the texture is the same for both.
  *
  * It decides nothing. [PhoneVideo] chooses the encoder, the size and the
  * moment of every picture; this sets the encoder up as PHONE-VIDEO-PLAN.md's
@@ -92,6 +115,10 @@ internal class PhoneVideoEncoder(
     /** What the screen is to be mirrored into. */
     val surface: Surface get() = checkNotNull(gl).surface
 
+    // Smooths a screenshot that is larger than the picture sent.
+    private val scaling = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val whole = Rect()
+
     init {
         try {
             val format = MediaFormat.createVideoFormat(MIME, width, height).apply {
@@ -136,6 +163,26 @@ internal class PhoneVideoEncoder(
             putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
         })
         checkNotNull(gl).draw(ptsUs * 1000)
+    }
+
+    /**
+     * Draws a screenshot onto the surface that feeds the texture, filling
+     * it. Android then says a picture is there, exactly as it does for a
+     * mirrored screen. The drawing is done a moment later on Android's own
+     * drawing thread, which is why the picture has to stay open meanwhile.
+     */
+    override fun show(picture: ScreenPicture) {
+        check(!closed) { "Closed" }
+        val bitmap = (picture as BitmapPicture).bitmap
+        val into = surface
+        // A screenshot lives in graphics memory, and only this kind of canvas can draw one.
+        val canvas = into.lockHardwareCanvas()
+        try {
+            whole.set(0, 0, canvas.width, canvas.height)
+            canvas.drawBitmap(bitmap, null, whole, scaling)
+        } finally {
+            into.unlockCanvasAndPost(canvas)
+        }
     }
 
     /**
