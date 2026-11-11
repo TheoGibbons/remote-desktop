@@ -567,6 +567,38 @@ class LockStateTest {
     }
 
     @Test
+    fun theWalkTakesNoWordsButTheMessageAndWhatKeysSay() {
+        fun said(id: String, text: String, clickable: Boolean = false, editable: Boolean = false, password: Boolean = false) =
+            view(ui, id, Rect(10, 10, 100, 40), text = text, clickable = clickable).also {
+                it.contentDescription = text
+                it.isEditable = editable
+                it.isPassword = password
+            }
+        val root = view(ui, "keyguard_host_view", Rect(0, 0, 320, 470), children = arrayOf(
+            said("clock_view", "12:30"),
+            said("notification_row", "Dinner at 7?", clickable = true),
+            said("badge", "3"),
+            said("passwordEntry", "hunter2", clickable = true, editable = true),
+            said("pinEntry", "4", clickable = true, password = true),
+            said("keyguard_message_area", "Enter PIN"),
+            said("key7", "7", clickable = true),
+            said("delete_button", "Delete", clickable = true),
+        ))
+        val walked = LockScreenReader.walk(root).associateBy { it.idName }
+        assertEquals(9, walked.size)
+        for (id in listOf("clock_view", "notification_row", "badge", "passwordEntry", "pinEntry")) {
+            assertNull("$id text", walked.getValue(id).text)
+            assertNull("$id description", walked.getValue(id).description)
+        }
+        assertEquals("Enter PIN", walked.getValue("keyguard_message_area").text)
+        assertNull("The message line is read as text only", walked.getValue("keyguard_message_area").description)
+        assertEquals("7", walked.getValue("key7").text)
+        assertEquals("Delete", walked.getValue("delete_button").description)
+        assertTrue(walked.getValue("passwordEntry").editable)
+        assertTrue(walked.getValue("pinEntry").password)
+    }
+
+    @Test
     fun onlyTheSystemsOwnWindowIsWalked() {
         screen(on = true, locked = true, Intent.ACTION_SCREEN_ON)
         receive("pc", "start-view")

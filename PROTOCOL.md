@@ -261,7 +261,9 @@ positions: they are read afresh each time.
 
 The phone reads its lock screen for this only while all three hold: it is
 locked, its screen is on, and a device is viewing. It reads the layout of the
-system's own lock screen window and nothing else, and sends no more of it than
+system's own lock screen window and nothing else: where each view is and what
+it is called, the words of the message line, and what something that can be
+pressed says if that is a digit or names a key. It sends no more of it than
 `entry` and `message`. An unlock screen it can't make out gives no `entry`.
 
 Apps before this message never send it. A viewer then has only the picture to

@@ -316,7 +316,13 @@ kept as narrow as the job:
   read is dropped. An unlocked phone is never read.
 - **What.** Only a window that belongs to the system's own interface
   (`com.android.systemui`), which is where the lock screen lives. No other
-  app's window is read, whatever is in front.
+  app's window is read, whatever is in front. Of each thing in that window
+  the app takes where it is, what the system calls it, and whether it can be
+  pressed or typed into. What a thing says is looked at in two cases only:
+  the lock screen's message line, and something that can be pressed and says
+  a single digit or names a key (Delete, Enter). The words of anything else
+  are never asked for: not a notification, not the clock, and never a field
+  that is typed into.
 - **What leaves the phone.** Where the pattern grid is, or where each key of
   the PIN pad is, or that there is a password field; and the lock screen's
   message line. Nothing else that the lock screen shows is sent: no

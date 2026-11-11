@@ -14,9 +14,15 @@ import android.view.accessibility.AccessibilityNodeInfo
  * It is the only thing in the app that reads what is on the screen, and it
  * is kept narrow. [LockState] asks only while the phone is locked, its
  * screen is on and an approved device is viewing; and only a window of the
- * system's own interface, where the lock screen lives, is ever walked. What
- * comes out is where the grid or the keys are and the lock screen's own
- * message line. Nothing is kept, and nothing that is entered is seen.
+ * system's own interface, where the lock screen lives, is ever walked.
+ *
+ * Of each view in that window it takes where the view is, what it is called
+ * and whether it can be pressed or typed into. What a view says is looked
+ * at in two cases only: the lock screen's message line, and something to
+ * press that says a digit or names a key ([messageText], [keyWord]). The
+ * words of anything else are never asked for: not a notification, not a
+ * clock, and never a field that is typed into. What comes out is where the
+ * grid or the keys are, and the message line. Nothing is kept.
  *
  * In two halves so the deciding half can be tested without a phone:
  * [walk] turns a window into a plain list, and [find] reads the list.
@@ -37,6 +43,8 @@ internal object LockScreenReader {
         val bottom: Int = 0,
         val clickable: Boolean = false,
         val editable: Boolean = false,
+        /** A field that hides what is typed into it. */
+        val password: Boolean = false,
     ) {
         /** The id without its package: `lockPatternView` of `com.android.systemui:id/lockPatternView`. */
         val idName: String get() = id?.substringAfterLast('/') ?: ""
@@ -77,9 +85,9 @@ internal object LockScreenReader {
      *
      * - Pattern: the view whose id is `lockPatternView`.
      * - PIN: all ten digits, as keys named `key0` to `key9`, or failing that
-     *   as views that say a single digit. `delete_button` and `key_enter`
-     *   are Android's own names for the other two.
-     * - Password: a text field.
+     *   as things to press that say a single digit. `delete_button` and
+     *   `key_enter` are Android's own names for the other two.
+     * - Password: a field that is typed into.
      * - The message: the text of the views whose id ends in `message_area`.
      *
      * Anything else gives no entry, and the viewer says what it said before
@@ -94,7 +102,7 @@ internal object LockScreenReader {
                 fraction(node.right - node.left, width), fraction(node.bottom - node.top, height))
         }
 
-        val message = nodes.filter { it.idName.endsWith("message_area", ignoreCase = true) }
+        val message = nodes.filter { isMessage(it.idName) }
             .mapNotNull { it.text?.trim()?.takeIf(String::isNotEmpty) }
             .distinct().joinToString(" ").take(MESSAGE_MAX).takeIf { it.isNotEmpty() }
 
@@ -104,7 +112,7 @@ internal object LockScreenReader {
 
         pinKeys(nodes, ::area)?.let { return Found(Entry.Pin(it), message) }
 
-        if (nodes.any { it.editable && area(it) != null }) return Found(Entry.Password, message)
+        if (nodes.any { (it.editable || it.password) && area(it) != null }) return Found(Entry.Password, message)
         return Found(null, message)
     }
 
@@ -112,7 +120,8 @@ internal object LockScreenReader {
     private fun pinKeys(nodes: List<Node>, area: (Node) -> Area?): List<Key>? {
         val keys = HashMap<String, Area>()
         // Best first: a key known by its id, then something to press that
-        // says what it is, then a bare digit drawn on a key.
+        // says what it is. A digit that is merely on show (a badge counting
+        // notifications, a clock) is not a key, and a field is never one.
         val passes: List<(Node) -> String?> = listOf(
             { node ->
                 digitKeyId.matchEntire(node.idName)?.groupValues?.get(1) ?: when (node.idName) {
@@ -121,8 +130,10 @@ internal object LockScreenReader {
                     else -> null
                 }
             },
-            { node -> if (node.clickable) digit(node.text) ?: digit(node.description) ?: named(node.description) else null },
-            { node -> digit(node.text) },
+            { node ->
+                if (!node.clickable || node.editable || node.password) null
+                else digit(node.text) ?: digit(node.description) ?: named(node.description) ?: named(node.text)
+            },
         )
         for (label in passes) for (node in nodes) {
             val name = label(node) ?: continue
@@ -139,6 +150,30 @@ internal object LockScreenReader {
         "delete", "backspace" -> DELETE
         "enter", "ok", "done" -> OK
         else -> null
+    }
+
+    private fun isMessage(idName: String) = idName.endsWith("message_area", ignoreCase = true)
+
+    /**
+     * The lock screen's message line, if the view called [idName] is it;
+     * otherwise null, and [read], which fetches what the view says, is not
+     * called. A field that is typed into is never read, whatever it is called.
+     */
+    fun messageText(idName: String, editable: Boolean, password: Boolean, read: () -> String?): String? {
+        if (editable || password || !isMessage(idName)) return null
+        return read()?.trim()?.take(MESSAGE_MAX)?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * What a view says, if it is something to press that says a digit or
+     * names a key ("Delete", "Enter"); otherwise null. [read] is called only
+     * for a view that can be pressed and is not typed into, and what it
+     * returns is dropped at once unless it is such a word.
+     */
+    fun keyWord(clickable: Boolean, editable: Boolean, password: Boolean, read: () -> String?): String? {
+        if (!clickable || editable || password) return null
+        val said = read()?.trim() ?: return null
+        return said.takeIf { digit(it) != null || named(it) != null }
     }
 
     /** To four places: a tenth of a pixel on any phone, and short on the wire. */
@@ -168,21 +203,31 @@ internal object LockScreenReader {
         return found
     }
 
-    /** Every view of a window that can be seen, as a plain list. */
+    /**
+     * Every view of a window that can be seen, as a plain list: where each
+     * is and what it is called, and what it says only where [messageText]
+     * and [keyWord] allow.
+     */
     fun walk(root: AccessibilityNodeInfo): List<Node> {
         val nodes = ArrayList<Node>()
         val bounds = Rect()
         fun visit(node: AccessibilityNodeInfo) {
             if (nodes.size >= MAX_NODES || !node.isVisibleToUser) return
             node.getBoundsInScreen(bounds)
+            val id = node.viewIdResourceName
+            val clickable = node.isClickable
+            val editable = node.isEditable
+            val password = node.isPassword
             nodes.add(Node(
-                id = node.viewIdResourceName,
+                id = id,
                 className = node.className?.toString(),
-                text = node.text?.toString(),
-                description = node.contentDescription?.toString(),
+                text = messageText(id?.substringAfterLast('/') ?: "", editable, password) { node.text?.toString() }
+                    ?: keyWord(clickable, editable, password) { node.text?.toString() },
+                description = keyWord(clickable, editable, password) { node.contentDescription?.toString() },
                 left = bounds.left, top = bounds.top, right = bounds.right, bottom = bounds.bottom,
-                clickable = node.isClickable,
-                editable = node.isEditable,
+                clickable = clickable,
+                editable = editable,
+                password = password,
             ))
             for (i in 0 until node.childCount) node.getChild(i)?.let(::visit)
         }
@@ -197,7 +242,7 @@ internal object LockScreenReader {
     /**
      * Debug builds only: what was walked, for checking a phone whose lock
      * screen names things differently. Ids and places, never what a view
-     * says (a lock screen shows notifications): only how long its text is.
+     * says: only how long the little that was taken of it is.
      */
     private fun describe(nodes: List<Node>, found: Found) {
         Log.d("LockScreenReader", "Walked ${nodes.size} views: entry=${found.entry} message=${found.message != null}")

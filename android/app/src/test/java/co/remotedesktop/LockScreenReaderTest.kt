@@ -18,6 +18,11 @@ class LockScreenReaderTest {
         return Node(id?.let { ui + it }, className, text, description, l.toInt(), t.toInt(), r.toInt(), b.toInt(), clickable, editable)
     }
 
+    private fun neverRead(): String? {
+        fail("This view's words must not be asked for")
+        return null
+    }
+
     /**
      * The S26's pattern screen (SM-S942W, Android 17, 1080 x 2340), as an
      * accessibility service saw it on 2026-11-10: the message line, one
@@ -119,11 +124,18 @@ class LockScreenReaderTest {
         val pin = LockScreenReader.find(unnamed, 1080, 2340).entry as Entry.Pin
         assertEquals(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "delete", "ok"), pin.keys.map { it.label })
 
-        // Digits that are only drawn, on keys that say nothing: still where to tap.
-        val drawn = (0..9).map { d -> Node(text = d.toString(), left = 100, top = 100 * d + 600, right = 180, bottom = 100 * d + 680) }
-        val bare = LockScreenReader.find(drawn, 1080, 2340).entry as Entry.Pin
+        // Ten keys and nothing else: a pad with no delete key has none.
+        val bare = LockScreenReader.find(unnamed.take(10), 1080, 2340).entry as Entry.Pin
         assertEquals(10, bare.keys.size)
-        assertNull("A pad with no delete key has none", bare.keys.firstOrNull { it.label == "delete" })
+        assertNull(bare.keys.firstOrNull { it.label == "delete" })
+
+        // Digits that are merely on show are not keys: ten badges are not a pad.
+        val shown = (0..9).map { d -> Node(text = d.toString(), left = 100, top = 100 * d + 600, right = 180, bottom = 100 * d + 680) }
+        assertNull(LockScreenReader.find(shown, 1080, 2340).entry)
+        // Nor is a field, even one that can be pressed and shows a digit for a moment.
+        val fields = (0..9).map { d -> Node(text = d.toString(), left = 100, top = 100 * d + 600, right = 180, bottom = 100 * d + 680,
+            clickable = true, password = true) }
+        assertSame(Entry.Password, LockScreenReader.find(fields, 1080, 2340).entry)
 
         // A pad auto-confirms when it has no Enter: that key is simply left out.
         val noEnter = aospPin.filter { it.idName != "key_enter" }
@@ -150,6 +162,33 @@ class LockScreenReaderTest {
         val found = LockScreenReader.find(password, 1080, 2340)
         assertSame(Entry.Password, found.entry)
         assertEquals("Enter password", found.message)
+    }
+
+    @Test
+    fun whatAViewSaysIsAskedForOnlyWhereItCanMatter() {
+        // The message line, by its name.
+        assertEquals("Incorrect pattern drawn", LockScreenReader.messageText("sec_bouncer_message_area", false, false) { " Incorrect pattern drawn " })
+        assertEquals("Enter PIN", LockScreenReader.messageText("keyguard_message_area", false, false) { "Enter PIN" })
+        assertNull(LockScreenReader.messageText("keyguard_message_area", false, false) { "  " })
+        // Anything else is not asked.
+        assertNull(LockScreenReader.messageText("notification_row", false, false, ::neverRead))
+        assertNull(LockScreenReader.messageText("clock_view", false, false, ::neverRead))
+        assertNull(LockScreenReader.messageText("", false, false, ::neverRead))
+        // A field is never read, even one named like the message.
+        assertNull(LockScreenReader.messageText("keyguard_message_area", true, false, ::neverRead))
+        assertNull(LockScreenReader.messageText("keyguard_message_area", false, true, ::neverRead))
+
+        // Something to press may be a key: it is asked, and only a key's word is kept.
+        assertEquals("7", LockScreenReader.keyWord(true, false, false) { "7" })
+        assertEquals("Delete", LockScreenReader.keyWord(true, false, false) { "Delete" })
+        assertEquals("OK", LockScreenReader.keyWord(true, false, false) { " OK " })
+        assertNull("A notification can be pressed; its words are dropped", LockScreenReader.keyWord(true, false, false) { "Dinner at 7?" })
+        assertNull(LockScreenReader.keyWord(true, false, false) { "12" })
+        assertNull(LockScreenReader.keyWord(true, false, false) { null })
+        // What can't be pressed, and any field, is not asked.
+        assertNull(LockScreenReader.keyWord(false, false, false, ::neverRead))
+        assertNull(LockScreenReader.keyWord(true, true, false, ::neverRead))
+        assertNull(LockScreenReader.keyWord(true, false, true, ::neverRead))
     }
 
     @Test

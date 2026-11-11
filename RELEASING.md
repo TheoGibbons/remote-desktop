@@ -110,7 +110,10 @@ is what the app does, no more:
 > Window content is read only in case (3): only while the phone is locked,
 > its screen is on and an approved device is viewing; and only from the
 > system interface's own lock screen window. No other app's content is ever
-> read. The only data that leaves the phone from it is the position of the
+> read. Of that window the service uses the position and system name of each
+> view, the text of the lock screen's message line, and the label of a key (a
+> digit, Delete, Enter); it does not read the text of notifications or of any
+> text field. The only data that leaves the phone from it is the position of the
 > pattern grid or of the PIN keys and the lock screen's message line, sent
 > end-to-end encrypted to the approved device that is viewing. No pattern,
 > PIN or password is read, stored or transmitted by the service: the owner
