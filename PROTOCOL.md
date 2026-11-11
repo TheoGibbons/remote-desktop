@@ -292,9 +292,10 @@ doesn't know; and a `wakeFailed` it doesn't know is still a wake that failed.
 
 #### Smooth sharing on request
 
-A phone shows its screen in one of two ways. Accessibility viewing is always
-there. Smooth sharing (Android's screen sharing, `capture: "screen-share"`)
-is faster, and Android wants a person's consent each time it starts. A viewer
+A phone shows its screen in one of two ways. Accessibility viewing is there
+whenever the phone has Android 11 or later and its Accessibility service is
+on. Smooth sharing (Android's screen sharing, `capture: "screen-share"`) is
+faster, and Android wants a person's consent each time it starts. A viewer
 can ask the phone to show that prompt, and to stop sharing again:
 
 | type             | fields | notes |
