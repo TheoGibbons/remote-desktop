@@ -60,6 +60,7 @@ internal static class Program
         CheckReadoutText();
         CheckFeedKeepsTheFigures();
         H264Tests.Run();
+        VideoFeedTests.Run();
     }
 
     // ---------------- the menu ----------------

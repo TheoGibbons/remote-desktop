@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private (PhoneViewWindow View, PhoneViewWindow.DecodedPicture Picture, PhoneFrameHeader? Header)? _phonePicture;
     private readonly object _phonePictureLock = new();
     private bool _phoneDrawPosted;
+    private bool _phoneVideoPosted;
     private readonly FrameMailbox _pcPatches;
 
     // A few hundred milliseconds of a desktop stream. A window further behind
@@ -184,7 +185,8 @@ public partial class MainWindow : Window
         // keep up with costs frames rather than a frozen window.
         Action<Action> drawLater = draw => Dispatcher.BeginInvoke(DispatcherPriority.Background, draw);
         _phoneFeed = new PhoneFeed(DecodePhonePicture, _ws.SendJson,
-            () => System.Diagnostics.Stopwatch.GetTimestamp() * 1000 / System.Diagnostics.Stopwatch.Frequency);
+            () => System.Diagnostics.Stopwatch.GetTimestamp() * 1000 / System.Diagnostics.Stopwatch.Frequency,
+            drawVideo: PhoneVideoDecoded);
         Closed += (_, _) => _phoneFeed.Dispose();
         _pcPatches = new FrameMailbox(MaxWaitingPatches, patch => _pcView?.OnPatch(patch), drawLater);
 
@@ -797,6 +799,43 @@ public partial class MainWindow : Window
         latest.View.ShowPicture(latest.Picture);
         // For the readout: this is the moment the picture's age is counted to.
         _phoneFeed.Drawn(latest.Header);
+    }
+
+    /// <summary>The phone feed's thread: a video picture has been decoded.
+    /// It is left for the window to show when it next can; one that the
+    /// window has not shown by the time the next is ready is passed over.</summary>
+    private void PhoneVideoDecoded(PhoneVideoPicture picture)
+    {
+        if (_phoneView is not { } view)
+        {
+            _phoneFeed.Video.Return(picture);
+            return;
+        }
+        view.Look(picture);
+        _phoneFeed.Video.Publish(picture);
+        lock (_phonePictureLock)
+        {
+            if (_phoneVideoPosted) return;
+            _phoneVideoPosted = true;
+        }
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, ShowPhoneVideo);
+    }
+
+    private void ShowPhoneVideo()
+    {
+        lock (_phonePictureLock) _phoneVideoPosted = false;
+        if (_phoneFeed.Video.Take() is not { } picture) return;
+        try
+        {
+            // Not into a window that has been closed, or opened on another phone, meanwhile.
+            if (_phoneView is not { } view || !ReferenceEquals(picture.Owner, view)) return;
+            view.ShowVideo(picture);
+            _phoneFeed.Drawn(picture.Header);
+        }
+        finally
+        {
+            _phoneFeed.Video.Return(picture);
+        }
     }
 
     private void OnJson(JsonNode msg)

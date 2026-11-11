@@ -139,7 +139,7 @@ Type `4` is not reused: its header describes a desktop region, and older Android
 The phone picks the best format every current viewer understands, as the PC host does. Encoding twice for mixed viewers is not worth the battery.
 
 **D6. The PC decodes with Windows' own H.264 decoder, in software, on its own thread.**
-It is a Media Foundation transform, reached through `Vortice.MediaFoundation`, which the app already ships for `H264Encoder.cs`. No new dependency. The decoder outputs NV12; the app converts to BGRA and draws into a `WriteableBitmap`. Software decoding of one phone-sized stream is cheap, and hardware decoding would add Direct3D plumbing for no visible gain. FFmpeg and OpenH264 were rejected as new native dependencies. HEVC needs a paid Windows extension.
+It is a Media Foundation transform, reached through `Vortice.MediaFoundation`, which the app already ships for `H264Encoder.cs`. No new dependency. The decoder outputs NV12; the app converts to BGRA and draws into a `WriteableBitmap`. Software decoding of one phone-sized stream takes 3 to 5 ms a picture on a desktop (check C1). Hardware decoding was no quicker by the clock there, because the picture has to be copied back to memory for WPF, though it took about a tenth of the processor time; it is some twenty lines on the same transform, and is left until a PC turns out too slow (2.3). FFmpeg and OpenH264 were rejected as new native dependencies. HEVC needs a paid Windows extension.
 
 **D7. A viewer only draws type `5` pictures that carry the stream id its phone gave it.**
 - The phone picks a random 64-bit id when a stream starts and tells each viewer in a `screen-info` addressed to that viewer. The relay delivers an addressed message to that one device, and the phone streams nothing while a device it hasn't approved is present.
@@ -467,6 +467,7 @@ screen ─ VirtualDisplay ─► SurfaceTexture (GL texture)
   - `NeedsKeyframe`: the decoder is at a fresh start (new, after `Reset`, after a failure) and this was not a keyframe with SPS and PPS in the same access unit, so it was not looked at;
   - `Failed`: the decoder reported an error, **or a keyframe went in and no picture came out**. The decoder has been reset and wants a keyframe;
   - `Disposed`.
+- **A picture that is a moment late.** Ordinary frames give their picture at once, on a busy processor too. The first picture after a size announcement does not always: for a millisecond or ten the decoder has nothing to give, most often when another decoder has just been let go, as when a window is closed and one opened. So after an announcement, and after any keyframe, `Decode` asks again for up to 150 ms before it believes there is no picture. A keyframe the decoder really cannot decode costs that long once.
 - **Why the last rule.** The decoder itself reports no error for a missing frame, a stream that starts without a keyframe, a keyframe without its parameter sets, or a size it cannot take. It gives nothing and says nothing. A keyframe that yields no picture is the one sure sign that this PC cannot decode the stream, and it is what makes D9 unnecessary. Gaps are still the viewer's to see, from the sequence numbers: `Reset`, then ask for a keyframe (2.4).
 - **Threads.** `Decode` and `Reset` may come from any thread, one call at a time; a second call while one is in progress throws. `Dispose` may come from any thread at any moment and never waits. If a frame is being decoded, the decoder is torn down when that call returns, after the handler has finished, on the decoding thread. A picture's memory is the decoder's and is good only inside the handler, so the handler converts it there.
 - **`Nv12Converter`:** NV12 to BGRA in unsafe code, with look-up tables, for BT.709 and BT.601 in limited and full range. It writes only the visible rectangle. It can be given a band of rows, so several threads can share a picture, and its inner loop carries nothing from one pair of pixels to the next, which is what vector code needs. Neither has been needed: about 3 to 6 ms a picture on one thread (C1). It may be called from any thread.
@@ -475,13 +476,18 @@ screen ─ VirtualDisplay ─► SurfaceTexture (GL texture)
 - **Not built either:** `CODECAPI_AVDecNumWorkerThreads`. Left to itself the decoder used twice the processor time of a two-thread decoder to save half a millisecond a picture.
 - **The checks** make their streams on the spot: a drawn pattern goes through the app's own `H264Encoder` and back. No recording of a phone is used. They cover 320×240, 322×242, 1080×2400, 1080×2340 and 2400×1080 (size, visible rectangle, patches of known colour in every corner, one picture for each access unit), filler, a fresh start, a reset, rubbish in the stream, a decoder limited below the stream's size, a size that changes mid-stream, the handler's rules, disposing while a frame is being decoded, and threads. Each check runs with the graphics card's encoder and with Windows' software one, whichever the PC has. Where there is no H.264 decoder, or no encoder at all, they print SKIP and pass. (The app itself still sends only from a graphics card's encoder: the software one was meant as its fall-back, never worked, and now does, but using it is a decision not taken. `H264Encoder.cs` says why.)
 
-**2.4 The viewer.**
-- `start-view` offers `codecs: ["h264", "jpeg"]` when a decoder could be created and the PC has approved the phone.
-- The feed's consumer thread (0.2) decodes every H.264 frame in order, converts it, and leaves the newest finished picture for the UI thread, which copies it into a `WriteableBitmap` at background priority, as frames are drawn today. Only finished pictures the UI thread has not drawn yet may be skipped.
-- Gap, decoder error, or a stream that begins without a keyframe: stop decoding, send `request-keyframe`, and ask again every second until one arrives. `PhoneVideoStream` decides this, so it is tested without a decoder.
-- If the feed overflows (the PC cannot keep up): empty it, reset the decoder, ask for a keyframe.
-- Two decoder failures in a session: re-send `start-view` with `codecs: ["jpeg"]` and stay there.
-- The picture's size comes from each frame, so a resize or a change of format needs no waiting for `screen-info`.
+**2.4 The viewer.** Built on the PC: `PhoneVideoStream.cs` (the rules), `PhoneVideoPictures.cs` (decoded pictures on their way to the window), and video in `PhoneFeed.cs`, `PhoneViewWindow` and `MainWindow`. Checked without a phone: `VideoFeedTests.cs` puts real video, made on the spot, through the real feed, and `PrivacyLifecycleTests` puts it through the real main window and phone window, never shown. Not seen with a phone: the phone's half (2.1, 2.2) is not built. What the two halves agreed is in `PROTOCOL.md`, "Phone video".
+- **The offer.** `start-view` carries `codecs: ["h264", "jpeg"]` when the PC has approved the phone, Windows has a decoder (`H264Decoder.IsAvailable`, found out on the feed's thread as the app starts, never on the window's) and the decoder has not been given up. Otherwise it is as before. If a window gets its `start-view` out before the answer is known, the phone is asked again when it is.
+- **Three threads.** The socket's thread checks each frame against the stream, acknowledges it and puts it in a queue. That is all it does, so it never waits for the decoder. The feed's own thread takes frames from the queue one at a time, decodes each with `H264Decoder` and converts its colours. The window's thread copies the newest finished picture into a `WriteableBitmap` at background priority, about a millisecond.
+- **Nothing is skipped but a finished picture.** Every H.264 frame is decoded, in order. A JPEG is still newest-only. A decoded picture the window has not drawn by the time the next is ready is replaced by it. Pictures go from the feed's thread to the window's in three arrays that are used again, so there is no 10 MB array per picture.
+- **When the chain breaks** `PhoneVideoStream` says so, and is tested without a decoder: a missing `seq`, a stream this viewer comes into part way, a decoder failure, a frame whose header says keyframe and whose bytes do not. Frames are then passed over, still acknowledged, until a keyframe comes. `request-keyframe` goes at once, from the thread that saw it, and again every second until one comes; never more than one a second. It names the stream, so a phone can drop one that crosses a change of stream. The last good picture stays on show meanwhile.
+- **Falling behind.** At most 30 frames or 4 MB wait to be decoded, a second's worth. One more and they are all let go and a keyframe is asked for: a phone shown a second late is worse than a short freeze. If a keyframe happens to arrive while five or more frames wait, they are let go without asking, since it needs none of them. The plan first said only "if the feed overflows"; the numbers and the skip are new.
+- **Giving up.** Two decoder failures while a phone is viewed and H.264 is given up: `start-view` goes again with `codecs: ["jpeg"]`, and no phone is offered video until the app is restarted. The plan said "in a session" and left open what one is. A failure is rare by design, since frames cannot arrive damaged; the likely cause is a Windows that cannot decode the stream at all, which does not get better by trying each time a window opens. The readout says when it has happened.
+- **A turned phone** needs nothing: the decoder takes the new size from the keyframe, whether or not the stream id changes. A new stream id starts afresh from that stream's keyframe. The picture's size comes from the decoded picture itself, never from `screen-info`.
+- **While a frame is in the decoder** the window may close, the phone may leave, pause or start another stream, and this PC may stop approving it. The decoder is let go or left alone as the case needs, without waiting for the frame in hand, and when that frame's picture comes out it is shown only if it still belongs to the current stream of the phone being viewed. The checks do each of these at that moment.
+- **Acknowledgements are unchanged:** every frame of the stream is acknowledged as it arrives, before it is decoded, drawn or not. So a PC that decodes slowly does not slow the phone; it falls behind and asks for a keyframe, as above.
+- **The readout** names the codec, shows how long a picture takes to decode and convert (for JPEG too), and says when a keyframe is being waited for and how often one has been asked for.
+- **A phone that sends only JPEG, a phone on v1.0.53, and a PC without a decoder see no difference:** the first two are sent the same `start-view` plus one word in a list they do not read past, and the third sends exactly what it sent before.
 
 **2.5 Docs.** `PROTOCOL.md` (H.264 in type `5`, `request-keyframe` for phones, a section like "Hardware video" for this direction), `README.md`, `android/README.md`, `windows/README.md`.
 
@@ -595,7 +601,7 @@ A scratch program created the decoder as step 2.3 then described it and fed each
 
 - **No size limit was met.** Pictures generated on the PC went through as well, up to 1080×3840, 3840×1080, 2304×4096 and 4096×2304, in software and in hardware. `CODECAPI_AVDecVideoMaxCodedWidth` and `…Height` were never needed. They do work: set to 1920×1088, the decoder refused the 1080×2400 clip.
 - **What the decoder reports**, after the first picture: 1080×2340 comes out padded to 1088×2352, visible part 1080×2340 at (0, 0) (`MF_MT_MINIMUM_DISPLAY_APERTURE`), stride 1088 (`MF_MT_DEFAULT_STRIDE`). 1080×2400 is 1088×2400, stride 1088. 2340×1080 is 2352×1088, stride 2352. 2400×1080 is 2400×1088, stride 2400. Colours: `MF_MT_YUV_MATRIX` 1 (BT.709) and `MF_MT_VIDEO_NOMINAL_RANGE` 2 (16 to 235), which is what the stream itself says. Before the first picture the output type only repeats what the input type said, with no visible part, stride or colours.
-- **A picture comes out for every access unit fed**, at once, carrying the sample time that went in. That is with `CODECAPI_AVLowLatencyMode` on. With it off the software decoder held back 31 pictures and the hardware one 15, although the stream says there is no reordering.
+- **A picture comes out for every access unit fed**, at once, carrying the sample time that went in. (One exception was found later, while 2.4 was built, and only with the processor busy: the first picture after the decoder announces a size, which is every stream's first, can come a few milliseconds after its access unit went in. See 2.3.) That is with `CODECAPI_AVLowLatencyMode` on. With it off the software decoder held back 31 pictures and the hardware one 15, although the stream says there is no reordering.
 - **One thing does make it hold a picture back: filler data.** If an access unit ends with a filler NAL unit (type 12), the decoder keeps that picture until the next access unit arrives. Software and hardware both. Take the filler out and the picture comes at once. The S26's recorder clips have no filler. The PC's own encoder puts it in at a constant bitrate when the picture is simple, and a phone encoder in CBR mode may do the same.
 - **Software and hardware give the same picture.** The last picture of each clip matched between the two (a checksum over a sample of its bytes).
 - **Time per picture, by the clock** (median; 95 in 100 were within a millisecond or two of it):
@@ -695,15 +701,15 @@ The PC updates itself when idle, and phones only when their owner installs the u
 | Risk | Likelihood | What we do |
 |---|---|---|
 | Pictures wait in buffers the phone can't see | Certain on a slow upload | Step 0.7 holds back by acknowledgements. If that proves too coarse, cap the socket's send buffer in the same `SocketFactory` as 0.5, at the price of slower file downloads from the phone. |
-| Windows refuses pictures taller than 2304 px | Low, but unverified; C1 settles it | Raise the decoder's size attributes; failing that, sideways encoding (D9) |
-| The Windows decoder holds frames back despite low-latency mode | Low | C1 measures it. If so, look at the stream's frame-order signalling, and try the Baseline profile on the phone. |
+| Windows refuses pictures taller than 2304 px | Not on Windows 11 build 26200, up to 4096 either way (C1). Windows 10 and older Windows 11 untried | The size attributes are set to 4096 in any case. A PC that still cannot decode a phone's size gives no picture for the keyframe, which counts as a decoder failure, and falls back to JPEG after two (2.4). D9 is not needed. |
+| The Windows decoder holds frames back despite low-latency mode | It does in one case (C1): when an access unit ends in filler data | The PC takes filler out before decoding, and the phone should not send it. C3 looks for it in the app's own stream. Apart from that, only the first picture after a size announcement can be a few milliseconds late, and the decoder waits for it (2.3). |
 | A phone's hardware encoder misbehaves (odd sizes, ignored settings, holds a frame back) | Medium across all Android phones. The S20's Exynos encoder is not tried before release (section 8). | Size fallback, then JPEG. Two failures keep the session on JPEG. The repeats flush a held frame. |
 | The consent prompt can't be started or clicked remotely on some Android version | Medium. Not so on the S26 with Android 17 (C2). | Notification fallback, built. At worst one tap on the phone, which is still less than today. |
 | Smooth sharing ends at every lock on Android 15+ | Certain | Falls back to Accessibility viewing by itself; the viewer says why and the menu row can start it again. Step 1.5 stops the phone locking from its own timeout while it is in use. |
 | Android 15+ blanks sensitive content (password fields, one-time codes) during screen sharing | Certain on those versions | Switching back from the menu row (1.4), and a note in the README. |
 | A phone kept awake and unlocked longer than its owner expects | Follows from 1.5 | Only in smooth sharing, only while viewed, and released after 10 minutes without input. Agreed by Theo (section 12). |
 | 30 pictures a second heats the phone or drains it | Low: hardware encoding, and a still screen costs nothing | Mirroring stops when nobody views (0.6). Measured in the hour-long check. Lower the cap if needed. |
-| The PC can't keep up (decode, convert and upload about 10 MB per picture) | Low on a desktop | Measured in C1. Vectorise the conversion, or do 3.2. |
+| The PC can't keep up (decode, convert and upload about 10 MB per picture) | Low on a desktop: 11 to 19 ms of processor time a picture, on several threads, of the 33 ms each has (C1). A slow PC is untried | It then falls a second behind, lets the waiting frames go and asks for a keyframe (2.4), which shows as a freeze now and then. Hardware decoding (2.3), converting in bands of rows, or 3.2. |
 | The CI machine lacks the Windows codecs | Likely | Codec tests print SKIP there; the plain-logic tests still run. |
 | The readout's delay is off | By half the difference between the two directions' travel time; a few ms on a home network | Shown as "±" beside the figure. |
 
@@ -788,16 +794,19 @@ Phone encoder (`MediaCodec`, `video/avc`):
 | While running | `PARAMETER_KEY_REQUEST_SYNC_FRAME`, `PARAMETER_KEY_VIDEO_BITRATE` |
 | Not used | `KEY_PREPEND_HEADER_TO_SYNC_FRAMES` (can fail to configure), `KEY_REPEAT_PREVIOUS_FRAME_AFTER` and `KEY_MAX_FPS_TO_ENCODER` (the GL step does both) |
 
-PC decoder (Media Foundation):
+PC decoder (Media Foundation), as built in `H264Decoder.cs`:
 
 | Setting | Value |
 |---|---|
-| Transform | `CLSID_CMSH264DecoderMFT`: Microsoft's H.264 decoder, synchronous, software |
-| `CODECAPI_AVLowLatencyMode` | 1, set as a 32-bit integer on the transform's attributes before the types |
-| Input type | H.264, the size from the frame header, progressive |
+| Transform | `CLSID_CMSH264DecoderMFT`: Microsoft's H.264 decoder, in software (no Direct3D device is given to it) |
+| `CODECAPI_AVLowLatencyMode` | 1, set as a 32-bit integer on the transform's attributes before the types. Required: 31 pictures late without it |
+| `CODECAPI_AVDecVideoMaxCodedWidth`, `…Height` | 4096, set the same way. Not needed on Windows 11; for an older decoder with a lower limit, untried |
+| Input type | H.264, progressive, no size: the decoder reads it from the stream |
+| Input samples | A new buffer for every access unit, with filler data (NAL type 12) taken out |
 | Sample time | The frame's `seq` |
-| Output type | NV12, chosen again after `MF_E_TRANSFORM_STREAM_CHANGE` |
-| Output samples | Check `GetOutputStreamInfo`: supply and reuse our own unless the decoder provides them |
+| Output type | NV12, chosen again after `MF_E_TRANSFORM_STREAM_CHANGE`; the visible rectangle, stride and colours are read then |
+| Output samples | One of our own, reused; made again when the size changes. (With a Direct3D device the decoder would bring its own.) |
+| A picture that must come and has not | Asked for again for up to 150 ms, after a size announcement and after a keyframe |
 
 ## Appendix B. Files
 
@@ -806,7 +815,7 @@ PC decoder (Media Foundation):
 | Phone, changed | `Crypto.kt`, `ConnectionManager.kt`, `PhoneScreenCapture.kt`, `ScreenCaptureService.kt`, `AccessibilityScreenCapture.kt`, `InputAccessibilityService.kt`, `PhoneViewerActivity.kt`, `PermissionsActivity.kt`, `AndroidManifest.xml`, `strings.xml`, `app/build.gradle.kts` |
 | Phone, new | `PhoneFrame.kt`, `PhoneVideoStream.kt` (the viewer's side, for a phone viewing a phone), `NoDelaySocketFactory.kt`, `InFlight.kt`, `PhoneVideoEncoder.kt` and its GL class, `BitrateSteps.kt`, `ScreenShareRequestActivity.kt` |
 | PC, changed | `Crypto.cs`, `MainWindow.xaml.cs`, `PhoneViewWindow.xaml`, `PhoneViewWindow.xaml.cs`, `H264Encoder.cs` (shared Media Foundation start-up) |
-| PC, new | `PhoneFrame.cs`, `PhoneVideoStream.cs`, `PhoneFeed.cs`, `PhoneStats.cs`, `H264Decoder.cs`, `Nv12Converter.cs`, cases added to the menu plan's test project `RemoteDesktopWin.PhoneViewTests` |
+| PC, new | `PhoneFrame.cs`, `PhoneVideoStream.cs`, `PhoneFeed.cs`, `PhoneStats.cs`, `H264Decoder.cs`, `Nv12Converter.cs`, `MediaFoundationStartup.cs`, `PhoneVideoPictures.cs`, cases added to the menu plan's test project `RemoteDesktopWin.PhoneViewTests` |
 | Relay | `server/test.mjs`, and the channel `5` vector in `server/test-e2ee.mjs` |
 | Build and docs | `.github/workflows/release.yml`, `PROTOCOL.md`, `README.md`, `android/README.md`, `windows/README.md` |
 

@@ -236,14 +236,21 @@ internal static class PrivacyLifecycleTests
                 }
                 return list;
             }
-            var view = new PhoneViewWindow(ws, phone, "Test phone", Field<PhoneFeed>(host, "_phoneFeed"), () => auth.IsTrusted(phone));
+            // Whether this Windows decodes H.264 is found out on the feed's
+            // thread as the app starts, and decides what a phone is offered.
+            var feed = Field<PhoneFeed>(host, "_phoneFeed");
+            for (int i = 0; i < 500 && typeof(PhoneFeed).GetField("_canDecode", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(feed) == null; i++)
+                Pump(20);
+            bool video = H264Decoder.IsAvailable;
+            string codecs = video ? "[\"h264\",\"jpeg\"]" : "[\"jpeg\"]";
+            var view = new PhoneViewWindow(ws, phone, "Test phone", feed, () => auth.IsTrusted(phone));
             typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, view);
             try
             {
                 var screen = (System.Windows.Controls.Image)view.FindName("ScreenImage");
                 var asked = Outgoing();
-                if (asked.Count == 0 || asked[0].ToJsonString() != "{\"type\":\"start-view\",\"to\":\"phone-7\",\"codecs\":[\"jpeg\"]}")
-                    throw new Exception("The phone window did not offer codecs to an approved phone");
+                if (asked.Count == 0 || asked[0].ToJsonString() != "{\"type\":\"start-view\",\"to\":\"phone-7\",\"codecs\":" + codecs + "}")
+                    throw new Exception("The phone window did not offer codecs to an approved phone: " + (asked.Count > 0 ? asked[0].ToJsonString() : "nothing"));
                 byte[] jpeg;
                 using (var bitmap = new System.Drawing.Bitmap(8, 16))
                 using (var bytes = new MemoryStream())
@@ -304,7 +311,7 @@ internal static class PrivacyLifecycleTests
                 // later ones too: the phone takes the latest as the whole of it.
                 List<string> StartViews() => Outgoing().Where(m => m["type"]?.GetValue<string>() == "start-view")
                     .Select(m => m.ToJsonString()).ToList();
-                const string offer = "{\"type\":\"start-view\",\"to\":\"phone-7\",\"codecs\":[\"jpeg\"]}";
+                string offer = "{\"type\":\"start-view\",\"to\":\"phone-7\",\"codecs\":" + codecs + "}";
                 const string plain = "{\"type\":\"start-view\",\"to\":\"phone-7\"}";
                 Outgoing();
                 view.ResendStartView();
@@ -326,6 +333,105 @@ internal static class PrivacyLifecycleTests
                 if (!StartViews().SequenceEqual(new[] { offer }))
                     throw new Exception("A phone that is approved again was not offered type 5 frames");
                 Console.WriteLine("PASS: each start-view from the phone window says what it can draw, and a change of approval asks again");
+
+                // Video, all the way: an H.264 stream made here by the app's own
+                // encoder from a drawn picture, off the socket, through the
+                // feed and the decoder on the feed's thread, into the window.
+                // The pictures are greys, which every colour standard reads alike.
+                var encoded = video ? VideoOf(96, 160, System.Drawing.Color.FromArgb(40, 40, 40)) : null;
+                var encodedAgain = video ? VideoOf(96, 160, System.Drawing.Color.FromArgb(220, 220, 220)) : null;
+                var encodedTurned = video ? VideoOf(160, 96, System.Drawing.Color.FromArgb(128, 128, 128)) : null;
+                if (encoded == null || encodedAgain == null || encodedTurned == null)
+                    Console.WriteLine("SKIP: no H.264 decoder or encoder here, so video was not put through the phone window");
+                else
+                {
+                    byte[] Video(ulong stream, uint seq, List<byte[]> units, int unit, int w = 96, int h = 160) => Frame(Crypto.ChPhone, PhoneFrame.Build(
+                        new PhoneFrameHeader(stream, seq, unit == 0, PhoneFrame.H264, false, false, w, h, 0), units[unit]));
+                    (int r, int g, int b) Middle()
+                    {
+                        var source = (System.Windows.Media.Imaging.BitmapSource)screen.Source;
+                        var pixel = new byte[4];
+                        source.CopyPixels(new Int32Rect(source.PixelWidth / 2, source.PixelHeight / 2, 1, 1), pixel, 4, 0);
+                        return (pixel[2], pixel[1], pixel[0]);
+                    }
+                    bool Near((int r, int g, int b) colour, int r, int g, int b) =>
+                        Math.Abs(colour.r - r) <= 12 && Math.Abs(colour.g - g) <= 12 && Math.Abs(colour.b - b) <= 12;
+                    List<JsonObject> Of(List<JsonObject> messages, string type) => messages.Where(m => m["type"]?.GetValue<string>() == type).ToList();
+                    string VideoInfo(string stream) => "{\"type\":\"screen-info\",\"width\":96,\"height\":160,\"typing\":true," +
+                        "\"stream\":\"" + stream + "\",\"codec\":\"h264\",\"capture\":\"screen-share\"}";
+
+                    // The window offers video again now that it is approved; the stream is named, and its keyframe is right behind.
+                    Outgoing();
+                    OffSocket(Sealed(VideoInfo("00000000000000bb"), phone), binary: false);
+                    OffSocket(Video(0xbb, 0, encoded, 0), binary: true);
+                    Until(() => screen.Source is System.Windows.Media.Imaging.WriteableBitmap, "A video keyframe that followed its announcement was not shown");
+                    if (screen.Source is not System.Windows.Media.Imaging.WriteableBitmap { PixelWidth: 96, PixelHeight: 160 })
+                        throw new Exception("The video picture shown is not the size that was sent");
+                    Until(() => Near(Middle(), 40, 40, 40), "The video picture shown is not the dark one that was sent: " + Middle());
+                    var videoBitmap = screen.Source;
+                    OffSocket(Video(0xbb, 1, encoded, 1), binary: true);
+                    OffSocket(Video(0xbb, 2, encoded, 2), binary: true);
+                    Pump(200);
+                    if (!ReferenceEquals(videoBitmap, screen.Source)) throw new Exception("Later video frames are not drawn into the bitmap that is already on show");
+                    var videoSent = Outgoing();
+                    var acked = Of(videoSent, "frame-ack");
+                    if (acked.Count == 0 || acked[^1]["seq"]!.GetValue<long>() != 2 || acked[^1]["stream"]!.GetValue<string>() != "00000000000000bb")
+                        throw new Exception("The video frames were not acknowledged up to the last");
+                    if (Of(videoSent, "request-keyframe").Count != 0) throw new Exception("A keyframe was asked of a healthy stream");
+                    view.ToggleStats();
+                    Until(() => readout.Text.StartsWith("Smooth sharing · H264 · 96 × 160") && readout.Text.Contains("Decode "),
+                        "The readout does not name the codec and the decoding time: " + readout.Text);
+                    view.ToggleStats();
+
+                    // A frame is lost: the next is not drawn, a keyframe is asked for, and the one that comes is drawn.
+                    Outgoing();
+                    OffSocket(Video(0xbb, 4, encoded, 4), binary: true);
+                    Pump(100);
+                    var request = Of(Outgoing(), "request-keyframe");
+                    if (request.Count != 1 || request[0].ToJsonString() != "{\"type\":\"request-keyframe\",\"to\":\"phone-7\",\"stream\":\"00000000000000bb\"}")
+                        throw new Exception("A lost video frame was not answered with a request for a keyframe");
+                    if (!Near(Middle(), 40, 40, 40)) throw new Exception("Something was drawn from a frame that leaned on a lost one");
+                    OffSocket(Video(0xbb, 5, encodedAgain, 0), binary: true);
+                    Until(() => Near(Middle(), 220, 220, 220), "The keyframe that was asked for was not shown: " + Middle());
+
+                    // The phone is turned: the same stream at another size.
+                    OffSocket(Video(0xbb, 6, encodedTurned, 0, 160, 96), binary: true);
+                    Until(() => screen.Source is System.Windows.Media.Imaging.WriteableBitmap { PixelWidth: 160, PixelHeight: 96 } && Near(Middle(), 128, 128, 128),
+                        "A turned phone's video was not shown at its new size");
+
+                    // A pause: what arrives is nobody's. Then a JPEG stream, as after the decoder was given up.
+                    OffSocket(Sealed("{\"type\":\"screen-info\",\"width\":96,\"height\":160,\"typing\":true,\"paused\":true}", phone), binary: false);
+                    var turnedBitmap = screen.Source;
+                    OffSocket(Video(0xbb, 7, encoded, 0), binary: true);
+                    Pump(200);
+                    if (!ReferenceEquals(turnedBitmap, screen.Source) || !Near(Middle(), 128, 128, 128)) throw new Exception("A video frame was drawn while the phone had paused");
+                    OffSocket(Sealed("{\"type\":\"screen-info\",\"width\":8,\"height\":16,\"typing\":true," +
+                        "\"stream\":\"00000000000000cc\",\"codec\":\"jpeg\",\"capture\":\"accessibility\"}", phone), binary: false);
+                    OffSocket(Frame(Crypto.ChPhone, PhoneFrame.Build(new PhoneFrameHeader(0xcc, 0, true, PhoneFrame.Jpeg, false, false, 8, 16, 0), jpeg)), binary: true);
+                    Until(() => screen.Source is System.Windows.Media.Imaging.BitmapSource { PixelWidth: 8, PixelHeight: 16 }, "A JPEG stream after video was not shown");
+
+                    // And video again, with the window closing while frames are still being decoded.
+                    var closing = new PhoneViewWindow(ws, phone, "Test phone", feed, () => auth.IsTrusted(phone));
+                    typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, closing);
+                    OffSocket(Sealed(VideoInfo("00000000000000dd"), phone), binary: false);
+                    for (int i = 0; i < encoded.Count; i++)
+                    {
+                        byte[] frame = Video(0xdd, (uint)i, encoded, i);
+                        Task.Run(() => ws.Dispatch(frame, true)).Wait();
+                    }
+                    closing.Close();
+                    typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, view);
+                    Pump(300);
+                    if (feed.Video.Take() != null) throw new Exception("A picture was left waiting for a window that had closed");
+                    // The first window is still there and asks again; the phone answers with a new stream.
+                    view.ResendStartView();
+                    OffSocket(Sealed(VideoInfo("00000000000000ee"), phone), binary: false);
+                    OffSocket(Video(0xee, 0, encodedAgain, 0), binary: true);
+                    Until(() => screen.Source is System.Windows.Media.Imaging.WriteableBitmap { PixelWidth: 96 } && Near(Middle(), 220, 220, 220),
+                        "After a window closed in the middle of a stream, the next stream was not shown");
+                    Outgoing();
+                    Console.WriteLine("PASS: a phone's video goes from the socket through the decoder to its window, through a lost frame, a turn, a pause and a closing window");
+                }
 
                 // Smooth video: the row is there only for a phone that says it
                 // can be asked, and only an approved phone is believed. What
@@ -424,6 +530,24 @@ internal static class PrivacyLifecycleTests
         }.ToJsonString());
 
         byte[] Frame(byte type, byte[] payload) => [type, .. Crypto.Encrypt(Field<byte[]>(ws, "_encKey"), payload, type)];
+
+        // Six frames of H.264 from the app's own encoder: one flat colour, with a small bar that moves.
+        List<byte[]>? VideoOf(int w, int h, System.Drawing.Color colour)
+        {
+            using var encoder = H264Encoder.TryCreate(w, h, 1_000_000, 30, hardware: false) ?? H264Encoder.TryCreate(w, h, 1_000_000, 30, hardware: true);
+            if (encoder == null) return null;
+            var units = new List<byte[]>();
+            using var bitmap = new System.Drawing.Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+            using var g = System.Drawing.Graphics.FromImage(bitmap);
+            using var brush = new System.Drawing.SolidBrush(colour);
+            for (int i = 0; i < 40 && units.Count < 6; i++)
+            {
+                g.FillRectangle(brush, 0, 0, w, h);
+                g.FillRectangle(System.Drawing.Brushes.Gray, (i * 5) % (w - 8), 4, 8, 8);
+                if (encoder.Encode(bitmap, i == 0) is { } unit) units.Add(unit);
+            }
+            return units.Count == 6 ? units : null;
+        }
 
         // Whether the socket client throws on this message where it handles
         // it, with the guard it has round that left out.

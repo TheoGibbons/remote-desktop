@@ -115,7 +115,7 @@ another phone (a peer whose `device` is `android`) unless its *Allow other
 phones* switch is on, which it is by default; an `fs-list` or `fs-get` it refuses
 that way says so in its `error`. The switch goes by the type each device
 declares to the relay: it is a consent step, not a defence against a modified
-app on an approved phone. A phone takes `frame-ack`, `request-smooth` and
+app on an approved phone. A phone takes `frame-ack`, `request-keyframe`, `request-smooth` and
 `stop-smooth`, and answers `diagnostic-ping`, only from a device that is
 viewing it at that moment: one whose `start-view` it accepted and that has not
 stopped since. From anyone else they are dropped without an answer. Because every key holder can decrypt binary frames,
@@ -146,14 +146,14 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 
 | type          | fields | notes |
 |---------------|--------|-------|
-| `start-view`  | `to`, `autoUnprivacy`? (boolean), `codecs`? (array) | Ask peer to start streaming its screen to me. Windows records `autoUnprivacy: true` for an approved viewer and restores the physical desktop when that viewing session ends (stop-view, peer/relay disconnect, or loss of approval). Defaults to false; each start-view replaces that viewer's policy. Older hosts ignore it. `codecs` is for a phone: the formats the viewer can draw inside type `5` frames, so far only `"jpeg"`. Sending it also promises `frame-ack`. See [Phone frames](#phone-frames). PC hosts ignore it. |
+| `start-view`  | `to`, `autoUnprivacy`? (boolean), `codecs`? (array) | Ask peer to start streaming its screen to me. Windows records `autoUnprivacy: true` for an approved viewer and restores the physical desktop when that viewing session ends (stop-view, peer/relay disconnect, or loss of approval). Defaults to false; each start-view replaces that viewer's policy. Older hosts ignore it. `codecs` is for a phone: the formats the viewer can draw inside type `5` frames, `"jpeg"` and `"h264"`, in no order. Every viewer that sends it lists `"jpeg"`; a PC adds `"h264"` when its Windows has an H.264 decoder and that decoder has not failed (see [Phone video](#phone-video)). Sending it also promises `frame-ack`. See [Phone frames](#phone-frames). PC hosts ignore it. |
 | `stop-view`   | `to`   | Stop streaming. |
 | `privacy-mode` | `to`, `enabled` (boolean) | Windows only: hide physical monitors and block local keyboard/mouse while preserving app-injected remote input. Enabling requires remote-control consent, an approved active viewer, and all peers trusted. Disabling requires remote-control consent and an approved peer. Privacy stays active after viewing stops or peers/relay disconnect unless a departing viewer opted into autoUnprivacy; reconnecting approved viewers receive the current state. |
 | `get-privacy-state` | `to` | Approved peer asks Windows for privacy availability and current state. |
 | `privacy-state` | `to`, `enabled`, `supported`, `allowed`, `error?` | Windows acknowledges a toggle and announces local unlock or automatic cleanup. Viewers must use this state rather than optimistically toggling. Older hosts may omit it. |
 | `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`?, `typing`?, `stream`?, `codec`?, `capture`?, `paused`?, `smooth`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. A phone sets `typing: true` when it can type `text` and `key` into its text fields; older apps omit it. Sent when streaming starts and whenever the geometry changes. A phone sends it to each viewer by itself (older phone apps broadcast it), and tells a viewer that sent `codecs` how its pictures are coming in `stream`, `codec`, `capture` and `paused`: see [Phone frames](#phone-frames). To the same viewers it says in `smooth` whether smooth sharing is `on`, or on and not to be stopped by a viewer (`only`), or can be asked for (`available`), or cannot (`unavailable`): see [Smooth sharing on request](#smooth-sharing-on-request). |
 | `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH`, `h264`? | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. `h264: true` additionally advertises that the viewer can decode binary frame type `4`. See [Viewport streaming](#viewport-streaming). |
-| `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
+| `request-keyframe` | `to`, `stream`? | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). To a phone that is sending video it asks for an H.264 keyframe and names the stream (16 hex digits): see [Phone video](#phone-video). |
 | `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. A phone answers only a device that is viewing it; phone apps up to v1.0.53 never answer. The PC's phone window sends one every two seconds while its Stats readout is open, and works out from the answers how old each picture is when it is drawn: the phone's `hostTimeMs` less the time the ping was sent is the difference between the two clocks plus the ping's trip, and the smallest such figure of the last minute, less half the shortest round trip, is taken as the difference. |
 | `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | From a PC: RTT response plus the desktop sender's queued binary backlog. The three stream fields report what the host has **adapted to**, not what the user configured, so they move during a session. |
 | `diagnostic-pong` | `to`, `nonce`, `hostTimeMs`, `hostQueueBytes`, `codec`, `capture`, `fps` | From a phone. `hostTimeMs` is the phone's uptime clock in milliseconds, read as the ping is handled; `captureMs` in a type `5` frame is the low 32 bits of the same clock, so a viewer can work out how old a picture is. `hostQueueBytes` is what waits in the phone's own send queue, which is not all that waits (the system buffers more below it). `codec` (`jpeg`) and `capture` (`accessibility` or `screen-share`) are as in `screen-info`. `fps` is how many pictures the phone sent in the last second. |
@@ -538,7 +538,7 @@ is the same picture behind a header:
 | `stream` | The id of the stream the frame belongs to: 64 random bits, picked by the phone when the stream starts. |
 | `seq` | 0 for a stream's first frame, one more for each frame after it. A gap means a frame was lost on the way. A picture the phone decided not to send takes no number. |
 | `flags` bit 0 | Keyframe: a picture that needs no earlier one. Always set for a JPEG. |
-| `flags` bits 1–2 | Format: `0` JPEG. `1` is kept for H.264; `2` and `3` are not used. A viewer does not draw a format it did not offer. |
+| `flags` bits 1–2 | Format: `0` JPEG, `1` H.264 (see [Phone video](#phone-video)); `2` and `3` are not used. A viewer does not draw a format it did not offer. |
 | `flags` bit 3 | Kept for a picture sent turned on its side. Not used. |
 | `flags` bit 4 | Repeat: the picture of the frame before, sent again because no viewer said that one had arrived (see below). It has its own `seq` and the first one's `captureMs`. A viewer draws it like any frame and leaves it out of its delay figures. |
 | `flags` bits 5–7 | Not used; a viewer ignores them. |
@@ -621,6 +621,62 @@ on a clock. A viewer is also sent one, whatever it shows, when it sends
 `start-view`, when the picture's size changes and when pictures start again
 after a pause. While viewers are being sent type `1`, which cannot be
 acknowledged, an unchanged screen is still sent every three seconds.
+
+### Phone video
+
+A phone in smooth sharing can send its screen as H.264 in the same type `5`
+frames, to viewers that all offered `"h264"`. The Windows app decodes it; the
+Android app does not send it yet. The header is as above, with these meanings:
+
+| field | for H.264 |
+|-------|-----------|
+| `flags` bits 1–2 | `1`. |
+| picture bytes | One whole access unit and nothing else: every NAL unit of one coded picture, in Annex B byte-stream form (each behind a start code, `00 00 01` or `00 00 00 01`). |
+| `flags` bit 0 | Keyframe: set exactly when the access unit holds an SPS, a PPS and an IDR picture. A viewer checks the bytes and does not rely on the bit; an IDR picture without its parameter sets is no start for it. |
+| `flags` bit 4 | Repeat: the same screen encoded again, to sharpen a still picture or as a keyframe. An ordinary frame of the stream with its own `seq`; left out of delay figures. |
+| `seq` | One more for every frame sent. A frame the encoder has produced is always sent: the one after it leans on it. |
+| `width`, `height` | The visible picture, as the stream's own SPS gives it after cropping. Both even. |
+| `captureMs` | When the picture that went into the encoder was captured. |
+
+**The stream.** No B-frames and nothing out of order: frames are sent in the
+order they are decoded and each is shown as it is decoded. 8-bit 4:2:0,
+progressive. Every keyframe carries its SPS and PPS, also one the encoder
+makes without being asked. No filler data (NAL units of type 12): Windows'
+decoder holds a picture back when one follows it, and the PC takes them out
+if they come. Colours are BT.709, limited range (16 to 235), and the stream
+says so; a viewer converts by what the stream says, and for a stream that
+says nothing assumes BT.601 up to 720 × 576 and BT.709 above. The shorter
+side is at most 1080, as for JPEG; the PC takes up to 4096 × 4096.
+
+**Streams.** `screen-info` says `codec: "h264"`. A stream has one format from
+start to end: changing between JPEG and H.264 is a new stream with a new id.
+A stream's first frame is a keyframe, and so is the first frame at a new size
+when the phone is turned, whether or not the phone gives the stream a new id
+for that. A viewer that comes into a running stream is sent a keyframe.
+
+**Asking for a keyframe.** `request-keyframe` with `to` and `stream`. A phone
+honours it only from a device that is viewing it, at most once a second in
+all, and drops one that names a stream it is no longer sending. Honouring it
+means the next frame it encodes is a keyframe, encoded even if the screen has
+not changed. The PC sends one, at most once a second and again each second
+until a keyframe comes, when:
+
+- a `seq` is missing (a frame was lost);
+- its decoder fails on a frame;
+- the first frame it has of a stream is not a keyframe;
+- it has fallen a second behind in decoding (30 frames or 4 MB waiting) and
+  has thrown the waiting frames away.
+
+While it waits it shows the last good picture, decodes nothing, and still
+acknowledges every frame as it arrives, so the phone is not held back.
+
+**Falling back to JPEG.** If the PC's decoder fails twice while a phone is
+being viewed (an error, or a keyframe that gives no picture, which is how
+Windows shows that it cannot decode a stream), the PC gives H.264 up: it sends
+`start-view` again with `codecs: ["jpeg"]`, and offers only that, to every
+phone, until the app is restarted. The phone then changes format as it would
+for any viewer that does not list `"h264"`: a new stream, `codec: "jpeg"`.
+Video frames that still arrive are acknowledged and not drawn.
 
 ## Viewport streaming
 

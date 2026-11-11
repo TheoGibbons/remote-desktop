@@ -341,8 +341,10 @@ public partial class PhoneViewWindow : Window
     {
         _offered = _feed != null && _approved?.Invoke() == true;
         // The feed is told first: the phone's answer is read on another thread.
-        _feed?.View(_phoneId, _offered);
-        _ws.SendJson(PhoneFeed.StartView(_phoneId, _offered));
+        // It says whether video goes into the offer: only where Windows can
+        // decode it, and not once the decoder has failed.
+        bool h264 = _feed?.View(_phoneId, _offered) == true;
+        _ws.SendJson(PhoneFeed.StartView(_phoneId, _offered, h264));
     }
 
     /// <summary>This PC has approved a device, or no longer does. If that
@@ -907,13 +909,57 @@ public partial class PhoneViewWindow : Window
     internal void ShowPicture(DecodedPicture picture)
     {
         ScreenImage.Source = picture.Image;
+        Shown(picture.Black, picture.AsOf);
+    }
+
+    /// <summary>What was seen in the picture that has just been put on show.</summary>
+    private void Shown(bool? pictureBlack, int asOf)
+    {
         // One that was passed over for coming too soon after the last look is
         // looked at once that may be done, if no other has come by then.
         _lookAgainTimer.Stop();
-        if (picture.Black == null && LockCaption.BlackMatters(_lock)) _lookAgainTimer.Start();
-        if (picture.Black is not { } black || picture.AsOf != _lockChanges || black == _pictureBlack) return;
+        if (pictureBlack == null && LockCaption.BlackMatters(_lock)) _lookAgainTimer.Start();
+        if (pictureBlack is not { } black || asOf != _lockChanges || black == _pictureBlack) return;
         _pictureBlack = black;
         ShowCaption();
+    }
+
+    /// <summary>
+    /// Looks whether a decoded video picture is black, as <see cref="Decode"/>
+    /// does for a JPEG, and marks it as this window's. The phone feed's
+    /// thread.
+    /// </summary>
+    internal void Look(PhoneVideoPicture picture)
+    {
+        picture.Owner = this;
+        picture.AsOf = Volatile.Read(ref _lockChanges);
+        lock (_blackWatch)
+        {
+            var now = DateTime.UtcNow;
+            if (!_blackWatch.Due(_lock, now)) return;
+            bool black = LockOverlay.IsNearlyBlack(picture.Bgra.AsSpan(0, picture.Stride * picture.Height),
+                picture.Width, picture.Height, picture.Stride, 4);
+            _blackWatch.Looked(black, now);
+            picture.Black = black;
+        }
+    }
+
+    // Video is drawn into one bitmap that is written over for every picture,
+    // and made again only when the picture's size changes.
+    private WriteableBitmap? _video;
+
+    /// <summary>
+    /// Puts a decoded video picture on show: its pixels are copied into the
+    /// bitmap the picture control is showing. The window's thread. About a
+    /// millisecond for a phone's screen.
+    /// </summary>
+    internal void ShowVideo(PhoneVideoPicture picture)
+    {
+        if (_video == null || _video.PixelWidth != picture.Width || _video.PixelHeight != picture.Height)
+            _video = new WriteableBitmap(picture.Width, picture.Height, 96, 96, PixelFormats.Bgr32, null);
+        _video.WritePixels(new Int32Rect(0, 0, picture.Width, picture.Height), picture.Bgra, picture.Stride, 0);
+        if (!ReferenceEquals(ScreenImage.Source, _video)) ScreenImage.Source = _video;
+        Shown(picture.Black, picture.AsOf);
     }
 
     /// <summary>The black test on the picture that is on show: the last one

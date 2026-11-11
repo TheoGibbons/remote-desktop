@@ -10,9 +10,15 @@ namespace RemoteDesktopWin;
 /// <summary>What to do with a type 5 frame that has arrived.</summary>
 internal enum FrameVerdict
 {
-    /// <summary>Of the current stream, and a picture this viewer can draw.</summary>
+    /// <summary>Of the current stream, and a whole picture this viewer can draw: a JPEG.</summary>
     Draw,
-    /// <summary>Of the current stream, in a format this viewer did not offer. It arrived, and is not drawn.</summary>
+    /// <summary>Of the current stream, and the next frame of its video: to be decoded after the one before it.</summary>
+    Decode,
+    /// <summary>The same, and the keyframe that ends a wait: the decoder is to forget what it knew before it.</summary>
+    Restart,
+    /// <summary>Of the current stream, and not to be drawn: in a format this
+    /// viewer did not offer, or video while a keyframe is waited for. It
+    /// arrived, and is acknowledged like any other.</summary>
     Skip,
     /// <summary>Not of the current stream, or one that has been seen already.</summary>
     Refuse,
@@ -26,13 +32,44 @@ internal enum FrameVerdict
 /// at all. A phone on an older app announces nothing, and its type 1 frames
 /// are drawn as they always were.
 ///
+/// <para><b>Video.</b> A JPEG is a whole picture. An H.264 frame is the
+/// difference from the one before, so its frames are decoded in order and
+/// none may be missed. A keyframe is the exception: it needs nothing before
+/// it. So whenever the chain is broken this class says to pass frames over
+/// until a keyframe comes, and to ask the phone for one: at once, and again
+/// every second while none has come (<see cref="KeyframeRequestDue"/>). The
+/// chain is broken by a missing number, by a stream that this viewer comes
+/// into part way, by a decoder that failed, and by frames thrown away because
+/// the PC could not keep up. A decoder that has failed twice while a phone is
+/// viewed is given up (<see cref="GivenUp"/>): the viewer then offers JPEG
+/// only. All of it is decided here so that it can be tested without a
+/// decoder.</para>
+///
 /// Fed in the order things arrive. Not safe to share between threads by
 /// itself; <see cref="PhoneFeed"/> is what guards it.
 /// </summary>
 internal sealed class PhoneVideoStream
 {
+    /// <summary>A keyframe is asked for at most this often.</summary>
+    public const long KeyframeAskEveryMs = 1000;
+
+    /// <summary>This many decoder failures while a phone is viewed, and H.264 is given up.</summary>
+    public const int FailuresToGiveUp = 2;
+
+    private enum Wait
+    {
+        /// <summary>Video frames are decoded as they come.</summary>
+        None,
+        /// <summary>A stream has just been announced: its first video frame should be a keyframe, and nothing is asked yet.</summary>
+        ForTheFirst,
+        /// <summary>The chain is broken: frames are passed over and a keyframe is asked for.</summary>
+        Asking,
+    }
+
     private bool _paused;
     private uint? _lastSeq;
+    private Wait _wait = Wait.ForTheFirst;
+    private long? _askedAt;
     private readonly Queue<(long At, int Bytes)> _lastSecond = new();
     private long _lastSecondBytes;
 
@@ -45,6 +82,21 @@ internal sealed class PhoneVideoStream
 
     /// <summary>Frames of the current stream that never arrived, by the numbers of those that did.</summary>
     public long Gaps { get; private set; }
+
+    /// <summary>Whether this viewer offered the phone <c>h264</c>. A format that was not offered is not drawn.</summary>
+    public bool OffersH264 { get; set; }
+
+    /// <summary>Video frames are being passed over until a keyframe comes.</summary>
+    public bool WaitingForKeyframe => _wait == Wait.Asking;
+
+    /// <summary>How often the decoder has failed while this phone has been viewed.</summary>
+    public int Failures { get; private set; }
+
+    /// <summary>The decoder has failed too often: H.264 is no longer to be offered.</summary>
+    public bool GivenUp => Failures >= FailuresToGiveUp;
+
+    /// <summary>How many times a keyframe has been asked for while this phone has been viewed.</summary>
+    public int KeyframesAsked { get; private set; }
 
     /// <summary>What a <c>screen-info</c> says about the stream: its
     /// <c>stream</c>, if it has one that reads as an id, and whether it says
@@ -64,7 +116,12 @@ internal sealed class PhoneVideoStream
     /// </summary>
     public void Announce(ulong? stream, bool paused)
     {
-        if (stream != Current) _lastSeq = null;
+        if (stream != Current)
+        {
+            _lastSeq = null;
+            // Another stream's video starts with its own keyframe.
+            _wait = Wait.ForTheFirst;
+        }
         Current = stream;
         _paused = stream == null && paused;
     }
@@ -73,16 +130,75 @@ internal sealed class PhoneVideoStream
     public FrameVerdict Take(PhoneFrameHeader header, int bytes, long nowMs)
     {
         if (Current is not { } current || header.Stream != current) return FrameVerdict.Refuse;
+        bool gap = false;
         if (_lastSeq is { } last)
         {
             // A number seen before is a frame played back, whoever by.
             if (header.Seq <= last) return FrameVerdict.Refuse;
+            gap = header.Seq - last > 1;
             Gaps += header.Seq - last - 1;
         }
         _lastSeq = header.Seq;
         Count(bytes, nowMs);
-        return header.Format == PhoneFrame.Jpeg ? FrameVerdict.Draw : FrameVerdict.Skip;
+        if (header.Format == PhoneFrame.Jpeg) return FrameVerdict.Draw;
+        if (header.Format != PhoneFrame.H264 || !OffersH264) return FrameVerdict.Skip;
+
+        // A frame is missing: whatever follows it leans on a picture this viewer never had.
+        if (gap) _wait = Wait.Asking;
+        if (_wait == Wait.None) return FrameVerdict.Decode;
+        if (!header.Keyframe)
+        {
+            // Also a stream come into part way: its first frame here is no keyframe.
+            _wait = Wait.Asking;
+            return FrameVerdict.Skip;
+        }
+        _wait = Wait.None;
+        return FrameVerdict.Restart;
     }
+
+    /// <summary>
+    /// The decoder could not use a frame it was given as the next one: it
+    /// failed (an error, or a keyframe that gave no picture), which is
+    /// counted, or it was not the keyframe its header said. Either way the
+    /// frames after it are passed over until a keyframe comes.
+    /// </summary>
+    public void DecoderLost(bool failed)
+    {
+        if (failed) Failures++;
+        _wait = Wait.Asking;
+    }
+
+    /// <summary>The PC fell behind and threw away frames that were waiting to
+    /// be decoded: the ones after them cannot be decoded either.</summary>
+    public void Overflowed() => _wait = Wait.Asking;
+
+    /// <summary>
+    /// Whether to send <c>request-keyframe</c> now. True at most once a
+    /// second, and only while a keyframe is waited for; saying true counts
+    /// as having asked.
+    /// </summary>
+    public bool KeyframeRequestDue(long nowMs)
+    {
+        if (KeyframeRequestDueIn(nowMs) != 0) return false;
+        _askedAt = nowMs;
+        KeyframesAsked++;
+        return true;
+    }
+
+    /// <summary>How long until the next request is due: 0 when one is, null when none is waited for.</summary>
+    public long? KeyframeRequestDueIn(long nowMs)
+    {
+        if (_wait != Wait.Asking || Current == null || !OffersH264) return null;
+        return _askedAt is { } asked ? Math.Max(0, asked + KeyframeAskEveryMs - nowMs) : 0;
+    }
+
+    /// <summary><c>request-keyframe</c> for the current stream of the phone with that peer id.</summary>
+    public JsonObject KeyframeRequest(string to) => new()
+    {
+        ["type"] = "request-keyframe",
+        ["to"] = to,
+        ["stream"] = PhoneFrame.StreamHex(Current ?? 0),
+    };
 
     /// <summary>A type 1 frame arrived and is to be drawn: counted with the rest.</summary>
     public void Count(int bytes, long nowMs)
@@ -112,6 +228,10 @@ internal sealed class PhoneVideoStream
         Current = null;
         _paused = false;
         _lastSeq = null;
+        _wait = Wait.ForTheFirst;
+        _askedAt = null;
+        Failures = 0;
+        KeyframesAsked = 0;
         Gaps = 0;
         _lastSecond.Clear();
         _lastSecondBytes = 0;

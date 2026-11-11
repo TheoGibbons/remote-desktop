@@ -29,6 +29,7 @@
     <Using Remove="System.Drawing" />
     <Compile Include="../RemoteDesktopWin/Nv12Converter.cs" Link="Nv12Converter.cs" />
     <Compile Include="../RemoteDesktopWin/H264Decoder.cs" Link="H264Decoder.cs" />
+    <Compile Include="../RemoteDesktopWin/PhoneVideoPictures.cs" Link="PhoneVideoPictures.cs" />
     <Compile Include="../RemoteDesktopWin/H264Encoder.cs" Link="H264Encoder.cs" />
     <Compile Include="../RemoteDesktopWin/MediaFoundationStartup.cs" Link="MediaFoundationStartup.cs" />
     <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />

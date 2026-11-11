@@ -39,6 +39,7 @@ internal sealed class PhoneStats
     private readonly Queue<(long At, int Bytes)> _arrived = new();
     private readonly Queue<(long At, uint CaptureMs)> _drawn = new();
     private readonly Queue<(long At, long Offset, long RoundTrip, long QueueBytes)> _pongs = new();
+    private readonly Queue<(long At, double Ms)> _decoded = new();
     private readonly Dictionary<long, long> _pings = new();   // nonce -> when it was sent
     private long _nonce;
     private long? _pingedAt;
@@ -82,6 +83,19 @@ internal sealed class PhoneStats
         Trim(nowMs);
     }
 
+    /// <summary>A picture was turned from what the phone sent into pixels,
+    /// and it took this long: a JPEG read, or a video frame decoded and its
+    /// colours converted. The drawing itself is not in it.</summary>
+    public void Decoded(double ms, long nowMs)
+    {
+        _decoded.Enqueue((nowMs, ms));
+        Trim(nowMs);
+    }
+
+    /// <summary>A line about the video itself, when there is something to
+    /// say: that a keyframe is waited for, or that H.264 was given up.</summary>
+    public string? Video { get; set; }
+
     /// <summary>How long until the next ping is due; 0 when one is.</summary>
     public long PingDueIn(long nowMs) => _pingedAt is { } at ? Math.Max(0, at + PingEveryMs - nowMs) : 0;
 
@@ -108,7 +122,17 @@ internal sealed class PhoneStats
         while (_arrived.Count > 0 && nowMs - _arrived.Peek().At >= KeptMs) _arrived.Dequeue();
         while (_drawn.Count > 0 && nowMs - _drawn.Peek().At >= KeptMs) _drawn.Dequeue();
         while (_pongs.Count > 0 && nowMs - _pongs.Peek().At >= KeptMs) _pongs.Dequeue();
+        while (_decoded.Count > 0 && nowMs - _decoded.Peek().At >= KeptMs) _decoded.Dequeue();
     }
+
+    /// <summary>The average and the worst decoding time between two moments, or null when nothing was decoded then.</summary>
+    public (double Average, double Worst)? DecodeTime(long fromMs, long toMs)
+    {
+        var times = _decoded.Where(d => d.At >= fromMs && d.At < toMs).Select(d => d.Ms).ToList();
+        return times.Count > 0 ? (times.Average(), times.Max()) : null;
+    }
+
+    private static string Ms(double ms) => ms.ToString(ms < 10 ? "0.0" : "0", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// The phone's clock minus the PC's, and how far off that may be either
@@ -192,6 +216,12 @@ internal sealed class PhoneStats
             text.AppendLine($"Delay {second.DelayLatest} ms · average {second.DelayAverage} · worst {second.DelayWorst} (± {clock.Value.PlusMinus} ms)");
         text.Append("Round trip ").Append(pong is { } p ? $"{p.RoundTrip} ms" : "not known")
             .Append(" · phone's queue ").AppendLine(pong is { } q ? $"{Kb(q.QueueBytes)} KB" : "not known");
+        // Of the last second, or of the last pictures there were if that second had none.
+        var decode = DecodeTime(nowMs - 1000, nowMs + 1)
+            ?? (_decoded.Count > 0 ? DecodeTime(_decoded.Last().At - 1000, nowMs + 1) : null);
+        if (decode is { } d)
+            text.Append("Decode ").Append(Ms(d.Average)).Append(" ms a picture · worst ").AppendLine(Ms(d.Worst));
+        if (Video is { } video) text.AppendLine(video);
         text.Append("Frames lost: ").Append(Lost);
         return text.ToString();
     }
@@ -214,7 +244,11 @@ internal sealed class PhoneStats
         if (clock is { } c) text.Append($" (± {c.PlusMinus})");
         text.Append(" · round trip (ms) ").Append(_pongs.Count > 0 ? _pongs.Min(p => p.RoundTrip).ToString(CultureInfo.InvariantCulture) : "not known");
         text.Append(" · phone's queue, worst (KB) ").Append(all.QueueBytes is { } queue ? Kb(queue) : "not known");
-        text.Append(" · frames lost ").Append(Lost).AppendLine();
+        text.Append(" · frames lost ").Append(Lost);
+        if (DecodeTime(nowMs - KeptMs, nowMs + 1) is { } decode)
+            text.Append(" · decode average / worst (ms) ").Append(Ms(decode.Average)).Append(" / ").Append(Ms(decode.Worst));
+        text.AppendLine();
+        if (Video is { } video) text.AppendLine(video);
         text.AppendLine();
         text.AppendLine("s ago\tpictures\tkbit/s\tdelay avg (ms)\tdelay worst (ms)\tround trip (ms)\tqueue (KB)");
         for (int ago = (int)Math.Ceiling(seconds); ago >= 1; ago--)
@@ -236,6 +270,8 @@ internal sealed class PhoneStats
         _drawn.Clear();
         _pongs.Clear();
         _pings.Clear();
+        _decoded.Clear();
+        Video = null;
         _pingedAt = null;
         _capture = _codec = null;
         _size = default;
