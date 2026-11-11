@@ -1,6 +1,6 @@
 # Waking and unlocking a phone from a viewer: plan
 
-Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Phase 1 was built on 2026-11-11 and its section below describes what was built; Phases 2 and 3 are not built. None of it is released.
+Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). All three phases were built on 2026-11-11 and their sections below describe what was built. None of it is released, and nothing that needs a sleeping or locked phone has been tried yet.
 
 **This is the plan for unlocking.** `PHONE-VIDEO-PLAN.md` used to contain a *Phase U. Unlocking the phone from the PC*; that phase is now a pointer here, and its checks C4 and C5 stay there as a record. [Differences from Phase U](#differences-from-phase-u) lists what changed on the way. `PHONE-PLANS-ORDER.md` gives the build order: this plan is its steps 5 to 7, after the menu plan and before the video plan.
 
@@ -125,32 +125,42 @@ Tests: `LockStateTest` on the `AllowOtherPhonesTest` pattern (`RecordingSocket`,
 
 ### Phase 2: find the unlock area, draw it (Windows viewer)
 
+Built 2026-11-11. Not tried on a locked phone: the S26 can't be reopened by an agent once it is locked, so everything below that needs a real unlock screen waits for the one session at the end of the build and for Theo's own hand (checks 2 to 4).
+
 Phone:
 
-- `accessibility_service_config.xml` (both copies): `canRetrieveWindowContent="true"`, plus `flagReportViewIds` so the grid is recognised by its id and not by guesswork. Add `flagRetrieveInteractiveWindows` only if the keyguard window can't be reached through `rootInActiveWindow`.
-- `LockScreenReader.kt` (new). Split in two so the logic is testable:
-  - a pure function from a plain list of nodes (id, class, text, bounds, clickable) to an `entry`;
-  - a thin walker that turns `AccessibilityNodeInfo` into that list.
-  - Pattern: the node with id ending `lockPatternView`. PIN: nodes whose text is a single digit, plus delete and confirm by id (`delete_button`, `key_enter` on AOSP; Samsung's ids to be read off the S26). Password: an editable node on the keyguard. Anything else: no `entry`, and the viewer falls back to Phase 1's caption.
-- It runs only when all three hold: the phone is locked, someone is viewing, and a window change arrives (`onAccessibilityEvent`, which is empty today; the service already receives `TYPE_WINDOW_STATE_CHANGED`). It reads only the package `com.android.systemui`. Nothing else on the phone is ever walked. Android's screen-sharing consent prompt is also drawn by `com.android.systemui`; the locked condition is what keeps the reader away from it, and the video plan refuses `request-smooth` while the phone is locked. The app never presses that prompt (video plan, D11).
-- `LockState` includes `entry` and `message` and re-sends when they change.
+- `accessibility_service_config.xml` (both copies): `canRetrieveWindowContent="true"`, plus `flagReportViewIds` so the grid is recognised by its id and not by guesswork. `flagRetrieveInteractiveWindows` is not asked for: the reader takes the window in front (`rootInActiveWindow`). If the session at the end finds the unlock window is not the one in front on the S26, that flag is the fix.
+- `LockScreenReader.kt`, in two halves:
+  - `find`, a plain function from a list of nodes (id, class, text, description, bounds, clickable, editable) to an `entry` and a `message`;
+  - `walk`, which turns `AccessibilityNodeInfo` into that list, and `read`, which refuses any window that is not `com.android.systemui`'s.
+  - Pattern: the node whose id ends in `lockPatternView`. PIN: all ten digits, as nodes named `key0` to `key9` (Android's own names), or failing that as nodes that say a single digit; `delete_button` and `key_enter`, or something to press described as Delete or Enter, are the other two keys. Fewer than ten digits is not a pad. Password: an editable node. The message: the text of nodes whose id ends in `message_area` (`keyguard_message_area`, Samsung's `sec_bouncer_message_area`). Anything else: no `entry`, and the viewer falls back to Phase 1's caption. Samsung's PIN ids have not been read off a phone: a debug build logs the ids, classes and bounds it walked (never the text) under the tag `LockScreenReader`, which is how to read them when the S26 is switched to a PIN.
+- It runs only while all three hold: the phone is locked, its screen is on, and someone is viewing. `LockState` decides that from the same reading it sends, asks afresh at every read, and drops what was read the moment one of the three ends. The plan had it run only when a window change arrived; it also reads once when the three first hold, since a viewer may start with the unlock screen already up.
+- While it runs, the service asks Android for the changes inside `com.android.systemui`'s windows only (`TYPE_WINDOW_CONTENT_CHANGED`, by `setServiceInfo`), so a new message line is noticed; a change triggers one read 150 ms later, however many changes arrive meanwhile. The rest of the time the service is told what it was told before (`TYPE_WINDOW_STATE_CHANGED`), and drops it unread. Asking for content changes from every app all the time would have cost battery for nothing.
+- Android's screen-sharing consent prompt is also drawn by `com.android.systemui`; the locked condition is what keeps the reader away from it, and the video plan refuses `request-smooth` while the phone is locked. The app never presses that prompt (video plan, D11).
+- `LockState` includes `entry` and `message` and re-sends when they change. `message` is not written to the phone's log.
+- The description Android shows when the service is switched on (`accessibility_description`) says what is read and when.
 
 Windows:
 
-- `LockOverlay.cs` (new, no WPF types): dot centres for an even 3×3 grid in `area`; which dot a point is on; digit, Backspace and Enter to key rectangle; the nearly-all-black test from Phase 1.
-- `PhoneViewWindow`: an overlay layer above the picture, shown while `entry` is present.
-  - Pattern: nine dots, the phone's `message` above them, and the trail of the current drag. The mouse still sends the ordinary `touch` down / move / up, which is how Theo's blind unlock already worked. The overlay only draws.
-  - PIN: the keys with their labels. Clicking one is an ordinary click through to the phone. Digit keys on the PC keyboard send a `tap` at that key's centre; Backspace and Enter go to `delete` and `ok`. While a PIN `entry` is current, typed digits are not sent as `text`. In the window's key handling this check comes after F8 (Stats) and after Esc-closes-the-menu, and before ordinary typing.
-  - Password: no drawing. The caption says "Type the phone's password and press Enter", and typing goes through the existing `text` path. If that doesn't reach the field (unverified), say "Password locks can't be typed from here yet" and leave it for later.
+- `LockOverlay.cs` (no WPF types): reading `entry` and `message`, refusing anything that makes no sense; dot centres for an even 3×3 split of `area`; which dot a point is on (within 0.3 of the distance between dots, Android's own figure); digits to key rectangles; the nearly-all-black test from Phase 1.
+- `PhoneViewWindow`: a `Canvas` in the picture host, above the picture and below the caption, shown while a pattern or PIN `entry` is current. It takes no clicks.
+  - Pattern: nine dots, the phone's `message` above them (or "Draw the phone's pattern." when it sends none), and the trail of the current drag, with the dots it has passed drawn larger. The mouse still sends the ordinary `touch` down / move / up, which is how Theo's blind unlock already worked. The overlay only draws, and the trail is cleared when the button comes up.
+  - PIN: the keys with their labels. Clicking one is an ordinary click through to the phone. Digits typed on the PC keyboard send a `tap` at that key's centre; Backspace and Enter go to `delete` and `ok`, and do nothing on a pad without them. While a PIN `entry` is current, typed digits are not sent as `text`, and Ctrl+V does nothing. Digits are claimed where they arrive as characters (`PreviewTextInput`), so the keyboard's layout doesn't matter; Backspace and Enter in the window's key handling, after Esc-closes-the-menu and before ordinary typing (ruling 14).
+  - Password: no drawing. The caption says "Type the phone's password and press Enter.", under the phone's `message` when there is one, and typing goes through the existing `text` path. Whether that reaches a password lock's field is unverified (check 3).
+  - The Phase 1 caption about a hidden unlock screen shows only while the phone sends no `entry`.
+- The window asks for `phone-state` again only when `screenOn` or `locked` changes, not at every new `message`: a lock screen counting down sends one a second.
 - No retry, no automation: each attempt is one the person made. The phone's own lockout message shows through `message`.
 
-Tests: `LockScreenReaderTest` (plain JVM, no Robolectric) with the S26's real node list from the run above, an AOSP PIN pad, and a screen with nothing recognisable. Windows: cases for `LockOverlay` in the console test project the menu plan adds (`RemoteDesktopWin.PhoneViewTests`).
+Tests: `LockScreenReaderTest` (plain JVM, no Robolectric) with the S26's pattern screen as recorded above (the grid's id and bounds and the message's id and words are the recorded ones; the other views' ids and bounds were not written down and are filled in), Android's own PIN pad, a pad known only by what its keys say, a password field, and screens with nothing to enter. `LockStateTest` for when it reads and when it stops, with a window built from `AccessibilityNodeInfo`. Windows: `CheckLockEntry`, `CheckUnlockCaptions`, `CheckPatternDots` and `CheckPinTaps` in `RemoteDesktopWin.PhoneViewTests`. The `entry` texts are shared between the three suites.
 
 ### Phase 3: the phone viewer, and docs
 
-- `PhoneViewerActivity` / `RemoteScreenView`: the same overlay, drawn in the view's own `onDraw`. A finger drag over the grid already streams as `touch`. PIN keys are tapped directly; there is no hardware keyboard to map.
-- PROTOCOL.md: `lock-state`. `android/README.md`: what the Accessibility service now reads and when, replacing "reads no text". The Google Play accessibility declaration needs the same rewording before the release that carries Phase 2.
-- Both apps ship. Usual steps in RELEASING.md. Phases 2 and 3 go out in a release with nothing else new in it, at a time when the phones are within reach: if Android switches the Accessibility service off when the update adds the window-content capability (check 5 below), a phone can't be viewed until someone turns it back on by hand.
+Built 2026-11-11, not released.
+
+- `PhoneViewerActivity` / `PhoneScreenView` (the plan said `RemoteScreenView`, which is the PC viewer's view): the same overlay, drawn in the view's own `onDraw`, decided in `LockCaption.kt`. A finger drag over the grid already streams as `touch`; its trail is drawn while one finger is down. PIN keys are tapped directly; there is no hardware keyboard to map. A password is typed with the viewer's keyboard button.
+- PROTOCOL.md: `entry` and `message` of `lock-state`. `android/README.md`: what the Accessibility service now reads and when, replacing "reads no text". README.md and windows/README.md say the unlock screen is drawn.
+- RELEASING.md has the note that the Google Play accessibility declaration must be reworded before the first build with Phase 2 is uploaded to Play, with suggested wording.
+- Both apps ship. Usual steps in RELEASING.md. Phases 2 and 3 go out in a release with nothing else new in it, at a time when the phones are within reach. On the S26 an update that adds the window-content capability left the Accessibility service on and working (check 5 below), but that was one phone and a debug build.
 
 ## Compatibility
 
@@ -160,6 +170,7 @@ Tests: `LockScreenReaderTest` (plain JVM, no Robolectric) with the S26's real no
 | old | new | The phone wakes. Unlocking is blind, as today. |
 | new | new, Phase 1 only | Wake, captions, blind unlock. |
 | new | new, Phase 2 | The grid or keys are drawn. |
+| Phase 1 viewer | new, Phase 2 | The viewer ignores `entry` and says the unlock screen is hidden, as with a Phase 1 phone. |
 
 ## How this sits with the other two plans
 
@@ -192,9 +203,9 @@ Phase U has been removed from the video plan; this table is the record of what i
 Step 0 of `PHONE-PLANS-ORDER.md` gives the debug build a permanent `.debug` app id, so it installs beside the release app. Paired as an extra device, it covers these checks end to end with a viewer. Where a check is easier driven over adb, as the 2026-11-10 run was, add the probe receiver to that build without committing it. All of this is on the S26 only; nothing is installed on the S20.
 
 1. Phase 1: phone asleep, open the viewer: it wakes. Notifications off: it doesn't, and the viewer says why. Not run yet: the S26 can't be reopened by an agent once it is locked, so this and the asleep, locked and unlock-screen captions wait for the one session at the end of the build.
-2. Phase 2 on the S26: draw the real pattern on the drawn grid. This settles whether the dots are on an even grid; adjust the inset if not.
-3. Switch the S26 to a PIN, then a password: read the node list, confirm the keys are found, unlock by clicking and by typing.
-4. Wrong pattern five times: the lockout message and countdown appear in the viewer.
+2. Phase 2 on the S26: draw the real pattern on the drawn grid. This settles whether the dots are on an even grid; adjust the inset if not. **For Theo's hand**: only he knows the pattern. The session at the end can check, without it, that the reader finds the grid and that the drawn square is where the phone reports it.
+3. Switch the S26 to a PIN, then a password: read the node list (a debug build logs it under `LockScreenReader`), confirm the keys are found, unlock by clicking and by typing. **For Theo's hand.** Not run. Samsung's key ids are a guess until then, and whether typed text reaches a password lock's field is unknown.
+4. Wrong pattern five times: the lockout message and countdown appear in the viewer. One wrong try, and its message, is in the session at the end; five in a row locks the phone out for a while and is for Theo to choose.
 5. Updating an installed app to the Phase 2 build: does Android switch the Accessibility service off? **Run on the S26 on 2026-11-11: no.** The debug app (`co.remotedesktop.debug`) was installed from the build before Phase 2, with its service switched on and bound, and was updated in place with `adb install -r` to a build whose only difference was the new capability and `flagReportViewIds`.
 
    | | Before | 3 s, 15 s and 75 s after the update |

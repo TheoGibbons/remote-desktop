@@ -238,13 +238,16 @@ publish alongside the relay.
   it from the PC; text and links shared to Remote Desktop go there too
 - ✅ A sleeping phone turns its screen on when you start viewing it. The
   window says when the phone is asleep, and when it didn't wake and why
-- ⚠️ A locked phone can be unlocked from the PC, but blind for now. Swipe the
-  lock screen away, then draw the pattern or tap in the PIN or password with
-  the mouse (only a pattern has been tried so far). Android leaves that
-  unlock screen out of the picture, so the window shows it black and says
-  that clicks and drags still reach it. After a restart the phone must be
-  unlocked by hand once before the app runs at all, and fingerprint and face
-  can't be used from the PC
+- ✅ A locked phone can be unlocked from the PC. Swipe the lock screen away,
+  then draw the pattern with the mouse, or click or type the PIN. Android
+  leaves that unlock screen out of the picture, so the window draws it: the
+  pattern's dots or the PIN's keys, where the phone says they are, with the
+  phone's own message ("Incorrect pattern drawn") above them. A password is
+  typed, then Enter. Only a pattern has been tried on a real phone so far.
+  A phone whose app is older shows the unlock screen black, and says that
+  clicks and drags still reach it. After a restart the phone must be unlocked
+  by hand once before the app runs at all, and fingerprint and face can't be
+  used from the PC
 
 **PC ↔ PC (computer-to-computer)**
 - ✅ View and control another Windows PC: the same dirty-rect screen stream, full

@@ -94,7 +94,10 @@ Android 11+. Android 8–10 still require screen sharing for viewing and use
 Accessibility for input only.
 
 After updating an existing installation, Android may require turning the
-Accessibility service off and on once to load the new screenshot capability.
+Accessibility service off and on once to load a capability the update adds
+(screenshots, and later reading the lock screen's layout). A Galaxy S26 on
+Android 17 did not need it: updated in place, the service stayed on and had
+the new capability at once. Other phones may differ.
 
 The two switches under **Allow Paired Devices** (*View and control this phone* and *Browse and transfer
 files*) are the ongoing consent switches — turn one off and paired devices
@@ -236,7 +239,14 @@ repeat quickly while held, after a short initial delay. The
 - The Accessibility service also acts as an input method (`flagInputMethodEditor`,
   Android 13+), so the PC's keyboard can type into the focused text field
   alongside the user's own keyboard. It types only what an approved device
-  sends while remote control is allowed, and reads no text.
+  sends while remote control is allowed, and reads none of what is typed.
+- The Accessibility service can read what is on the screen
+  (`canRetrieveWindowContent`, with view ids). It uses that for one thing,
+  described under [Unlocking the phone from a viewer](#unlocking-the-phone-from-a-viewer):
+  finding where the pattern, PIN or password is entered on the lock screen,
+  while the phone is locked and an approved device is viewing it. The
+  service's description on the phone, and the accessibility declaration in
+  Play Console, have to say so (see RELEASING.md).
 
 ## What a viewer's menu can do
 
@@ -284,12 +294,42 @@ A viewer's taps and drags land on the lock screen as they do anywhere else.
 So an approved device can swipe the lock screen away, and then draw the
 pattern, or tap in the PIN or password, on the unlock screen behind it.
 
-For now that is done blind. Android leaves the unlock screen out of every
-picture an app can take, so the viewer gets it black, apart from a Back
-arrow, and says over it that clicks and drags still reach it. The ordinary
-lock screen, with its clock and notifications, is in the picture as usual.
-Drawing a pattern this way has been tried on a Samsung phone; a PIN and a
-password have not been tried yet.
+Android leaves the unlock screen out of every picture an app can take, so
+the viewer gets it black, apart from a Back arrow. The ordinary lock screen,
+with its clock and notifications, is in the picture as usual. So the phone
+tells the viewer where the pattern grid or the PIN's keys are, and the viewer
+draws them over the black, with the lock screen's own message line above
+them ("Incorrect pattern drawn", "Try again in 30 seconds"). The pattern is
+drawn, or the keys pressed, on that drawing; a password is typed. Drawing a
+pattern from a viewer has been tried on a Samsung phone; a PIN and a password
+have not been tried yet.
+
+### What the app reads to do this, and when
+
+This is the one place where the app reads what is on the screen, rather than
+taking a picture of it. It is done by the Accessibility service, and it is
+kept as narrow as the job:
+
+- **When.** Only while all three hold: the phone is locked, its screen is on,
+  and an approved device is viewing it. The moment the phone is unlocked, the
+  screen goes off or the last viewer stops, the reading stops and what was
+  read is dropped. An unlocked phone is never read.
+- **What.** Only a window that belongs to the system's own interface
+  (`com.android.systemui`), which is where the lock screen lives. No other
+  app's window is read, whatever is in front.
+- **What leaves the phone.** Where the pattern grid is, or where each key of
+  the PIN pad is, or that there is a password field; and the lock screen's
+  message line. Nothing else that the lock screen shows is sent: no
+  notification, no clock, no name.
+- **What is kept.** Nothing. The positions are read afresh each time, and
+  neither the phone nor the viewer stores a pattern, a PIN or a password. The
+  viewer sends a PIN as taps on the keys, as a finger would, never as text.
+
+While it reads, the service asks Android for changes inside the lock screen's
+window only, so the message line stays current; the rest of the time it hears
+no more than it did before. A lock screen the app can't make sense of (a
+maker's own layout) is simply not drawn: the viewer then shows it black and
+says that clicks and drags still reach it.
 
 What to know:
 

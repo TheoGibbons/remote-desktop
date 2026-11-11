@@ -81,6 +81,59 @@ If the active profile is replaced, update `certificate-profile-name` in
 
 The configuration is here `.github/workflows/release.yml`
 
+## Before uploading a build that reads the lock screen to Google Play
+
+> **To do by hand, once, before the first AAB that contains it is uploaded.**
+> From the build that draws the phone's unlock screen in a viewer
+> (`lock-state` with `entry`, PHONE-UNLOCK-PLAN.md Phase 2), the Accessibility
+> service declares `canRetrieveWindowContent="true"`. Earlier builds declared
+> it false, and the accessibility declaration in Play Console (**App content →
+> Accessibility API**, or **Policy → App content** in older layouts) was
+> written for those. Reword it before uploading, or the build may be rejected
+> for using the API beyond what was declared. The GitHub release (APK and
+> exe) does not depend on this; only the Play upload does.
+
+Suggested wording for the declaration. Adjust it to the form's questions; it
+is what the app does, no more:
+
+> Remote Desktop lets the owner of a phone view and control it from their own
+> computer or other phone, after approving that device on the phone. Its
+> accessibility service (1) performs the taps, swipes, navigation actions and
+> typing the approved device sends, (2) takes screenshots of the screen to
+> show it to that device (Android 11 and later), and (3) while the phone is
+> locked and an approved device is viewing it, reads the layout of the system
+> lock screen to find where the pattern, PIN or password is entered and the
+> lock screen's own message line (for example "Incorrect pattern drawn").
+> Android leaves the unlock screen out of screenshots, so without (3) the
+> owner would have to unlock their phone on a black picture.
+>
+> Window content is read only in case (3): only while the phone is locked,
+> its screen is on and an approved device is viewing; and only from the
+> system interface's own lock screen window. No other app's content is ever
+> read. The only data that leaves the phone from it is the position of the
+> pattern grid or of the PIN keys and the lock screen's message line, sent
+> end-to-end encrypted to the approved device that is viewing. No pattern,
+> PIN or password is read, stored or transmitted by the service: the owner
+> enters it from the viewing device as ordinary touches. Nothing read is
+> stored, logged or shared with anyone else, including the developer.
+>
+> The service does nothing until the owner has switched on "View and control
+> this phone" in the app and approved the viewing device, and both can be
+> switched off at any time.
+
+The video the form asks for should show: the service being switched on, a
+viewer opening the phone, the phone locking, and the viewer drawing the
+pattern on the drawn grid.
+
+The description Android shows when the service is switched on
+(`accessibility_description` in `android/app/src/main/res/values/strings.xml`)
+already says the same in short. Keep the two in step.
+
+Updating an installed app to this build did not switch the service off on a
+Galaxy S26 (Android 17) in a test with the debug build; see check 5 in
+PHONE-UNLOCK-PLAN.md. That was one phone. Release it when the phones are
+within reach, in a release with nothing else new in it.
+
 ## Publish a release
 
 Run from the repository root on `main`. Commit release changes first. Paste the
