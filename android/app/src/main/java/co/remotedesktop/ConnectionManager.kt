@@ -586,7 +586,7 @@ object ConnectionManager {
             "start-view" ->
                 if (mayControl(from)) PhoneScreenCapture.onViewRequested(appContext, from, codecs(msg))
             "stop-view" ->
-                if (PeerAuth.isTrusted(from)) PhoneScreenCapture.onViewStopped(from)
+                if (PeerAuth.isTrusted(from)) PhoneScreenCapture.onViewStopped(from, byViewer = true)
 
             // Starting to capture the screen because a message asked: SmoothSharing
             // decides who may, from each of these facts about the sender.

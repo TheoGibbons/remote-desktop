@@ -34,6 +34,11 @@ object PhoneScreenCapture {
 
     /** Who is viewing, and the `codecs` each offered: none, from an app that knows only type 1. */
     private val viewers = ConcurrentHashMap<String, Set<String>>()
+
+    /** Each viewer's identity, which it keeps when it reconnects under a new id (see [KeepAwake]). */
+    private val viewerDevice = ConcurrentHashMap<String, String>()
+
+    private fun identityOf(peerId: String): String = PeerAuth.fingerprintOfPeer(peerId) ?: peerId
     private var appContext: Context? = null
     val stateListeners = CopyOnWriteArrayList<() -> Unit>()
 
@@ -57,6 +62,10 @@ object PhoneScreenCapture {
         // Only a device that was not already viewing wakes the phone and is
         // announced. A viewer may ask again, and that changes nothing here.
         val started = viewers.put(peerId, codecs) == null
+        if (started) identityOf(peerId).let {
+            viewerDevice[peerId] = it
+            ScreenCaptureService.viewerStarted(it)
+        }
         // Whatever it was told about the stream, it is told again: it may have started over.
         synchronized(streamLock) { told.remove(peerId) }
         if (started) ScreenWaker.wake(context)
@@ -93,13 +102,26 @@ object PhoneScreenCapture {
     /** The viewers that know `smooth-status`: those on an app that offers `codecs`. */
     fun statusRecipients(): List<String> = recipients().filter { !viewers[it].isNullOrEmpty() }
 
-    /** Clear requests on disconnect/revocation so a later session never resumes an old view. */
-    fun onViewStopped(peerId: String? = null) {
-        if (peerId == null) viewers.clear() else viewers.remove(peerId)
+    /**
+     * Clear requests on disconnect/revocation so a later session never resumes an old view.
+     * [byViewer] when [peerId] itself said it has stopped, with `stop-view`.
+     */
+    fun onViewStopped(peerId: String? = null, byViewer: Boolean = false) {
+        for (id in if (peerId == null) viewers.keys.toList() else listOf(peerId)) {
+            // A stop-view also counts from a device whose view was already lost with its connection.
+            val wasViewing = viewers.remove(id) != null
+            if (wasViewing || byViewer) ScreenCaptureService.viewerStopped(viewerDevice.remove(id) ?: identityOf(id), byViewer)
+        }
         forgetGone()
         // If it starts again it is told how things stand again, though nothing has changed.
         LockState.forget(peerId)
         refresh()
+    }
+
+    /** [peerId] may no longer view. Not its own doing, so it is not a view that it closed. */
+    private fun onViewEnded(peerId: String) {
+        if (viewers.remove(peerId) != null)
+            ScreenCaptureService.viewerStopped(viewerDevice.remove(peerId) ?: identityOf(peerId), byItself = false)
     }
 
     /** Rechecked before capture and before sending, including after asynchronous screenshots. */
@@ -110,14 +132,13 @@ object PhoneScreenCapture {
     fun refresh() {
         main.post {
             val context = appContext ?: return@post
-            viewers.keys.removeAll { !mayView(context, it) }
+            // Approval taken back, or control switched off.
+            for (id in viewers.keys.filter { !mayView(context, it) }) onViewEnded(id)
             forgetGone()
             // A screen turned for a viewer goes back to the phone's own way with the last of them.
             if (viewers.isEmpty()) InputAccessibilityService.instance?.releaseRotation()
-            // A prompt for smooth sharing goes when whoever asked for it has, and the
-            // screen is held on for smooth sharing only while someone is viewing.
+            // A prompt for smooth sharing goes when whoever asked for it has.
             SmoothPrompt.viewersNow(viewers.keys.toList())
-            ScreenCaptureService.setViewed(viewers.isNotEmpty())
             val active = maySendFrames(context)
             // No pictures for now, e.g. while a device waits to be approved. The stream is over.
             if (!active) pauseStream()

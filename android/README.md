@@ -112,7 +112,9 @@ password fields and one-time codes while it is on. So while a device is
 viewing in smooth sharing the phone keeps its screen on (it may dim). It lets
 go when the last viewer leaves, when a viewer chooses Lock screen, and after
 ten minutes without a tap, a drag, typing or a navigation button from a
-viewer. Ordinary viewing never keeps the phone awake.
+viewer. A viewer whose connection drops and comes back by itself does not
+start the ten minutes again; opening a viewer does. Ordinary viewing never
+keeps the phone awake.
 
 Either way, a viewer on a current app says when each picture has arrived, and
 the phone sends the next one only when the viewers have caught up. On a slow

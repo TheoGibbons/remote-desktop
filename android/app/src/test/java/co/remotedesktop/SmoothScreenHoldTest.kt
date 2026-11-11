@@ -1,6 +1,7 @@
 package co.remotedesktop
 
 import android.os.Looper
+import android.os.SystemClock
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
@@ -31,15 +32,18 @@ class SmoothScreenHoldTest {
         ShadowPowerManager.clearWakeLocks()
         controller = Robolectric.buildService(ScreenCaptureService::class.java).create()
         instanceField.set(null, controller.get())
+        ScreenCaptureService.awake = KeepAwake().also { it.sharing(true, SystemClock.uptimeMillis()) }
     }
 
     @After
     fun cleanup() {
         instanceField.set(null, null)
+        ScreenCaptureService.awake = KeepAwake()
         idle()
     }
 
     private fun idle() = shadowOf(Looper.getMainLooper()).idle()
+    private fun later(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(ms))
 
     private val held: Boolean get() = ShadowPowerManager.getLatestWakeLock()?.isHeld == true
 
@@ -52,15 +56,40 @@ class SmoothScreenHoldTest {
     @Test
     fun theScreenIsHeldWhileSomeoneViewsAndLetGoWhenTheyStop() {
         assertFalse(held)
-        ScreenCaptureService.setViewed(true)
+        ScreenCaptureService.viewerStarted("pc")
+        idle()
         assertTrue(held)
-        ScreenCaptureService.setViewed(false)
+        ScreenCaptureService.viewerStopped("pc", byItself = true)
+        idle()
         assertFalse(held)
+    }
+
+    /** The PC's connection drops and it asks again by itself, with nobody at it. */
+    @Test
+    fun aViewerThatOnlyComesBackTakesNoNewHold() {
+        ScreenCaptureService.viewerStarted("pc")
+        later(KeepAwake.IDLE_MS - 60_000)
+        ScreenCaptureService.viewerStopped("pc", byItself = false)
+        idle()
+        assertFalse(held)
+        ScreenCaptureService.viewerStarted("pc")
+        idle()
+        // Held for what was left of the ten minutes, not for ten more.
+        assertTrue(held)
+        assertEquals(60_000L, ScreenCaptureService.awake.holdFor(SystemClock.uptimeMillis()))
+
+        later(60_000)
+        ScreenCaptureService.viewerStopped("pc", byItself = false)
+        ScreenCaptureService.viewerStarted("pc")
+        idle()
+        assertFalse("coming back by itself held the screen on past the ten idle minutes", held)
     }
 
     @Test
     fun aViewersLockLetsGoBeforeTheScreenIsTurnedOffAndItsNextInputTakesHold() {
-        ScreenCaptureService.setViewed(true)
+        ScreenCaptureService.viewerStarted("pc")
+        idle()
+        assertTrue(held)
         acted("lock")
         // At once, on the thread the message came in on: the lock is carried out right after.
         assertFalse(held)
@@ -72,6 +101,11 @@ class SmoothScreenHoldTest {
         acted("get-phone-state")
         idle()
         assertFalse(held)
+        // Nor is its PC reconnecting by itself.
+        ScreenCaptureService.viewerStopped("pc", byItself = false)
+        ScreenCaptureService.viewerStarted("pc")
+        idle()
+        assertFalse(held)
 
         acted("tap")
         idle()
@@ -80,7 +114,9 @@ class SmoothScreenHoldTest {
 
     @Test
     fun nothingIsTakenOnceSharingHasEnded() {
-        ScreenCaptureService.setViewed(true)
+        ScreenCaptureService.viewerStarted("pc")
+        idle()
+        assertTrue(held)
         // A viewer's tap is on its way to the main thread as sharing stops.
         acted("tap")
         controller.destroy()

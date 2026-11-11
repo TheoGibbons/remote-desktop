@@ -343,9 +343,15 @@ While a device is viewing a phone in smooth sharing, the phone keeps its
 screen on (it may dim): on Android 15 and later a phone that sleeps and locks
 ends the sharing, and it cannot start again without the prompt. The phone lets
 go when the last viewer stops or leaves, when a viewer sends `lock`, and after
-ten minutes without input from a viewer. Input here is what wakes a sleeping
-phone, listed above; the next such message takes hold again. Accessibility
-viewing does not keep the phone awake.
+ten minutes in which nobody did anything. Input does something: what wakes a
+sleeping phone, listed above, and the next such message takes hold again. So
+does smooth sharing starting, and a device beginning to view. A device that is
+only back after its connection dropped does not: a viewer asks for the screen
+again by itself then, with nobody at it. The phone takes a `start-view` for
+such a return unless that device, by its identity and not its peer id, ended
+its last view with `stop-view`. So a viewer sends `stop-view` when the person
+at it stops viewing, and not when its connection drops. Accessibility viewing
+does not keep the phone awake.
 
 **File system** (`path` uses the native separators of the target device)
 

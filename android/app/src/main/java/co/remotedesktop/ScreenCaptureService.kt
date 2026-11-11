@@ -78,24 +78,42 @@ class ScreenCaptureService : Service() {
 
         fun setStreaming(on: Boolean) { instance?.updateStreaming(on) }
 
-        /** Whether an approved device is viewing this phone. Main thread. */
-        fun setViewed(on: Boolean) {
-            val service = instance ?: return
-            service.awake.viewed(on, SystemClock.uptimeMillis())
-            service.holdScreen()
+        private val main = Handler(Looper.getMainLooper())
+
+        /**
+         * When the screen is held on for smooth sharing. It outlives the
+         * service: which devices are viewing, and which of them are only
+         * back after a lost connection, is known before sharing starts.
+         */
+        internal var awake = KeepAwake()
+
+        /** A device has begun to view this phone. [device] is its identity, the same after it reconnects. Any thread. */
+        fun viewerStarted(device: String) {
+            awake.started(device, SystemClock.uptimeMillis())
+            holdChanged()
+        }
+
+        /** A device is no longer viewing; [byItself] when it said so with `stop-view`. Any thread. */
+        fun viewerStopped(device: String, byItself: Boolean) {
+            awake.stopped(device, byItself)
+            holdChanged()
         }
 
         /** A message from a device that is viewing, as it is passed on to be acted on. Any thread. */
         fun viewerActed(msg: JSONObject) {
-            val service = instance ?: return
             val lock = msg.optString("type") == "lock"
             if (!lock && !InputAccessibilityService.wakesPhone(msg)) return
-            // Let go before the screen is turned off, not a moment after.
-            if (lock) service.releaseScreen()
-            service.main.post {
-                if (lock) service.awake.locked() else service.awake.input(SystemClock.uptimeMillis())
-                service.holdScreen()
-            }
+            if (lock) {
+                awake.locked()
+                // Let go before the screen is turned off, not a moment after.
+                instance?.releaseScreen()
+            } else awake.input(SystemClock.uptimeMillis())
+            holdChanged()
+        }
+
+        /** The wake lock is taken and let go on the main thread, by the service that is running then. */
+        private fun holdChanged() {
+            main.post { instance?.holdScreen() }
         }
 
         fun resendScreenInfo() {
@@ -111,10 +129,8 @@ class ScreenCaptureService : Service() {
     @Volatile private var streamGeneration = 0L
     private var reusableBitmap: Bitmap? = null
 
-    // Main thread. The screen is held on while the phone is viewed in smooth
-    // sharing, because a phone that sleeps and locks ends it (see KeepAwake).
-    private val main = Handler(Looper.getMainLooper())
-    private val awake = KeepAwake()
+    // The screen is held on while the phone is viewed in smooth sharing,
+    // because a phone that sleeps and locks ends it (see KeepAwake).
     private var screenLock: PowerManager.WakeLock? = null
 
     private val maxFps = 10
@@ -177,6 +193,8 @@ class ScreenCaptureService : Service() {
         // Every version says when the display changes; a turn is one of the changes.
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).registerDisplayListener(displayListener, handler)
         instance = this
+        awake.sharing(true, SystemClock.uptimeMillis())
+        holdScreen()
         notifyStateChanged(this)
         SmoothPrompt.sharingStarted()
         return START_NOT_STICKY
@@ -185,6 +203,7 @@ class ScreenCaptureService : Service() {
     override fun onDestroy() {
         val wasRunning = instance === this
         instance = null
+        if (wasRunning) awake.sharing(false, SystemClock.uptimeMillis())
         releaseScreen()
         notifyStateChanged(this)
         // Viewers are told it is over, and why, as far as that can be known.
@@ -202,7 +221,7 @@ class ScreenCaptureService : Service() {
      * Takes, keeps or lets go of the screen as [awake] says. The lock times
      * out by itself when a viewer has been idle long enough, so nothing has
      * to come back here for that. Dimmed is enough: a viewer's touch
-     * brightens it as a finger would.
+     * brightens it as a finger would. Main thread.
      */
     private fun holdScreen() {
         // A viewer's input can be on its way here as sharing stops. Taken then, the

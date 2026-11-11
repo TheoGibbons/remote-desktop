@@ -84,6 +84,7 @@ class SmoothRequestTest {
         instanceField.set(null, service)
         // Whatever an earlier test left behind.
         SmoothPrompt.rules = SmoothSharing()
+        ScreenCaptureService.awake = KeepAwake()
         promptField("activity").set(SmoothPrompt, null)
         promptField("stoppedBy").set(SmoothPrompt, null)
         promptField("listeningForScreenOff").set(SmoothPrompt, false)
@@ -430,6 +431,56 @@ class SmoothRequestTest {
         fun info(to: String) = socket.messages.single { it.getString("type") == "screen-info" && it.getString("to") == to }
         assertEquals("available", info("pc").getString("smooth"))
         assertFalse(info("other-pc").has("smooth"))
+    }
+
+    /**
+     * The ten idle minutes after which the screen is let go in smooth
+     * sharing. A PC whose connection dropped comes back under a new id and
+     * asks for the screen again by itself. It is the same PC, by its
+     * identity, and nobody did anything.
+     */
+    @Test
+    fun aPcThatReconnectsIsTheSameViewerAndStartsNoNewTenMinutes() {
+        @Suppress("UNCHECKED_CAST")
+        val identities = authField("peerFingerprint").get(PeerAuth) as MutableMap<String, String>
+        identities["pc"] = "identity of the PC"
+        val awake = ScreenCaptureService.awake
+        fun held() = awake.holdFor(android.os.SystemClock.uptimeMillis())
+        try {
+            awake.sharing(true, android.os.SystemClock.uptimeMillis())
+            view("pc")
+            assertEquals(KeepAwake.IDLE_MS, held())
+            // Asking again while viewing is nothing new either.
+            later(60_000)
+            view("pc")
+            assertEquals(KeepAwake.IDLE_MS - 60_000, held())
+
+            later(8 * 60_000L)
+            handleJson.invoke(ConnectionManager, JSONObject().put("type", "peer-left").put("id", "pc"))
+            idle()
+            assertNull(held())
+            ConnectionManager.peers.add(ConnectionManager.Peer("pc-again", "windows", "Test PC"))
+            trustedPeers.add("pc-again")
+            identities["pc-again"] = "identity of the PC"
+            later(2_000)
+            view("pc-again")
+            assertEquals(KeepAwake.IDLE_MS - 9 * 60_000L - 2_000, held())
+
+            // Closed by the person at it, and opened again: that is someone doing something.
+            receive("pc-again", "stop-view")
+            assertNull(held())
+            view("pc-again")
+            assertEquals(KeepAwake.IDLE_MS, held())
+
+            // A device that was not viewing before is new, too.
+            later(9 * 60_000L)
+            view("other-pc")
+            assertEquals(KeepAwake.IDLE_MS, held())
+        } finally {
+            identities.remove("pc")
+            identities.remove("pc-again")
+            trustedPeers.remove("pc-again")
+        }
     }
 
     @Test
