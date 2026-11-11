@@ -624,10 +624,13 @@ acknowledged, an unchanged screen is still sent every three seconds.
 
 ### Phone video
 
-A phone in smooth sharing can send its screen as H.264 in the same type `5`
-frames, to viewers that all offered `"h264"`. The Android app sends it and
-the Windows app decodes it; a phone viewing another phone does not offer it.
-The header is as above, with these meanings:
+A phone can send its screen as H.264 in the same type `5` frames, to viewers
+that all offered `"h264"`. It does so however it captures its screen: in
+smooth sharing, where Android mirrors the screen into the encoder, and in
+Accessibility viewing, where each screenshot is handed to the encoder
+(`capture` in `screen-info` says which, as for JPEG). The Android app sends it
+and the Windows app decodes it; a phone viewing another phone does not offer
+it. The header is as above, with these meanings:
 
 | field | for H.264 |
 |-------|-----------|
@@ -689,6 +692,28 @@ for that. A viewer that comes into a running stream is sent a keyframe.
   again before the phone has paused it).
 - `diagnostic-pong` says `codec: "h264"` and adds `bitrate`, the encoder's
   target in bits a second, only while video is being sent.
+
+**Accessibility viewing as video.** Android gives the phone a screenshot at
+most every 400 ms, and that sets the rate, as it does for JPEGs:
+
+- A screenshot that shows something new is one frame, with `captureMs` the
+  time the screenshot was taken. The two repeats that sharpen a still picture
+  follow it. A screenshot that shows what the last one did is not encoded, so
+  a still screen sends nothing.
+- A keyframe that is asked for on a still screen is the last screenshot
+  encoded again, with the repeat flag. No new screenshot is taken for it.
+- A viewer that joins is told the stream with the next screenshot, up to
+  400 ms later, and the keyframe for it is made then.
+- After a pause the new stream's first frame is the next screenshot, as a
+  keyframe. The picture from before the pause is not sent again.
+- Smooth sharing starting or stopping while a viewer watches changes
+  `capture`, and so ends one stream and starts another, each with an encoder
+  of its own: the viewer is told the new id and gets a keyframe without
+  asking. Frames of the stream that ended are not sent after that.
+- If the encoder fails, the phone goes on in JPEG by the rules above, and the
+  next screenshot is sent as a JPEG whether or not the screen has changed. The
+  Accessibility service runs for weeks, so there a size that failed is tried
+  again when video starts a day or more after the last failure.
 
 **Asking for a keyframe.** `request-keyframe` with `to` and `stream`. A phone
 honours it only from a device that is viewing it, at most once a second in

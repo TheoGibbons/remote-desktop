@@ -87,6 +87,8 @@ screen-sharing approval after each reboot. The phone must first be unlocked and
 connected; manufacturer battery restrictions can affect reconnection. Protected
 content cannot be captured. Capture failures replace the previous picture with
 "Screen unavailable" and retry. Rotation updates the desktop's screen dimensions.
+To a PC on a current app each screenshot goes out as video, not as a JPEG: see
+below.
 
 Enable **Smooth screen sharing** for the faster stream.
 It takes over from Accessibility until stopped, then default viewing resumes
@@ -94,20 +96,27 @@ automatically. It follows the screen when the phone turns. While nobody is
 viewing, the screen is not mirrored at all. The phone asks Android for the
 whole screen, so the prompt comes up on "Share entire screen".
 
-To a PC on a current app, smooth sharing is sent as video (H.264, from the
-phone's own hardware encoder): up to 30 pictures a second, each about a tenth
-the size of a JPEG. Everyone else gets JPEGs, up to 10 a second, as before: a
-PC on an older app, a PC whose Windows has no H.264 decoder, another phone,
-and every viewer while one of those is viewing too. Either way a still screen
-sends nothing. If the phone's encoder cannot be started, stops working or
-stops answering, the phone goes back to JPEGs by itself and the viewer keeps
-its picture. The next time a viewer opens, video is tried at three quarters
-size, and after another failure at half size; a size that failed is not tried
-again while smooth sharing stays on. When no size is left the phone stays with
-JPEGs for ten minutes and then starts over. (An encoder that stopped answering
-altogether is not tried again until the app has been restarted.) **Connection
-history** (below) has a line for each failure, "Smooth video went back to
-pictures", with the reason. No encoder is held while nobody is viewing.
+To a PC on a current app, the screen is sent as video (H.264, from the
+phone's own hardware encoder), in both ways of viewing. In smooth sharing
+that is up to 30 pictures a second, each about a tenth the size of a JPEG. In
+Accessibility viewing the rate stays at Android's 2.5 a second, but each
+screenshot is drawn into the encoder in place of being compressed as a JPEG,
+which is less work for the phone and a fraction of the data. Everyone else
+gets JPEGs as before (up to 10 a second in smooth sharing): a PC on an older
+app, a PC whose Windows has no H.264 decoder, another phone, and every viewer
+while one of those is viewing too. Either way a still screen sends nothing.
+If the phone's encoder cannot be started, stops working or stops answering,
+the phone goes back to JPEGs by itself and the viewer keeps its picture. The
+next time a viewer opens, video is tried at three quarters size, and after
+another failure at half size. A size that failed is not tried again while
+smooth sharing stays on, and in Accessibility viewing not for a day. When no
+size is left the phone stays with JPEGs for ten minutes and then starts over.
+(An encoder that stopped answering altogether is not tried again until the app
+has been restarted.) **Connection history** (below) has a line for each
+failure, "Video went back to pictures", with the reason. No encoder is held
+while nobody is viewing, and the two ways of viewing never share one: when
+smooth sharing starts or stops, the viewer gets a new stream that begins with
+a full picture.
 
 A PC that is viewing the phone can ask for it too: **Smooth video** in the
 menu of its phone window. Android's prompt then appears on the phone, and
