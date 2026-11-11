@@ -30,7 +30,7 @@ Viewing a phone from the PC is about a second behind and choppy next to Phone Li
 | | Accessibility viewing | Smooth sharing |
 |---|---|---|
 | Capture | One screenshot every 400 ms or more. Android refuses requests closer than 333 ms. | Android mirrors the screen into the app whenever it changes. |
-| Sent as | A whole JPEG per picture (frame type `1`), quality 55, at most 1080 px wide. Every screenshot is sent, changed or not. | The same format, only when the screen changes |
+| Sent as | A whole JPEG per picture (frame type `1`), quality 55, its shorter side at most 1080 px (so a phone on its side is sent 2340 × 1080, as sharp as upright). Every screenshot is sent, changed or not. | The same format, only when the screen changes |
 | Rate | Up to 2.5 a second | Up to 10 a second |
 | Turning it on | Once. It survives restarts. | On the phone, every time. Android 14+ asks for consent each session. Android 15 QPR1+ also ends it whenever the phone locks. |
 
@@ -406,7 +406,7 @@ screen ─ VirtualDisplay ─► SurfaceTexture (GL texture)
 - The pacer is `FramePacer<Unit>` at 33 ms, asking `InFlight` for room. Every encode waits for room: new pictures, keyframes and repeats alike.
 - The capture time travels through the encoder as the presentation timestamp and comes back in the output buffer's info, which is where `captureMs` is read. Timestamps must always increase; a repeat uses the current time and sets the repeat flag.
 - Encoder choice and settings are in appendix A. In short: hardware H.264, constant bitrate where offered, no B-frames, 30 pictures a second.
-- Size: the capture size, at most 1080 px wide, even numbers. Ask `VideoCapabilities.areSizeAndRateSupported` first. If the encoder refuses or fails to start, try 0.75× and 0.5×, then give up and use JPEG.
+- Size: the capture size (`StreamSize`: shorter side at most 1080 px, so up to 2400 × 1080 on its side), even numbers. Ask `VideoCapabilities.areSizeAndRateSupported` first. If the encoder refuses or fails to start, try 0.75× and 0.5×, then give up and use JPEG.
 - Keyframes, as D8 lists them: `PARAMETER_KEY_REQUEST_SYNC_FRAME`, then draw the current texture again even if the screen has not changed. `request-keyframe` is honoured at most once a second in total.
 - A still screen: draw the current picture again 150 ms and 600 ms after the last change, each marked repeat, then nothing. This sharpens a picture that was encoded mid-motion, and pushes the last real frame out of an encoder that holds one back.
 - The encoder is told SPS and PPS once, in a config buffer. Keep them and put them in front of every keyframe, unless the keyframe already starts with an SPS. `KEY_PREPEND_HEADER_TO_SYNC_FRAMES` is not used: an encoder without it fails to configure.
@@ -535,7 +535,7 @@ adb exec-out screenrecord --output-format=h264 --time-limit 2 - > clip.h264
 Run that from Git Bash or cmd. Windows PowerShell's `>` rewrites binary output as text and would ruin the clip, which would look like "Windows can't decode it". The clips show whatever is on the phone's screen, so they stay in a scratch folder and are never committed.
 
 A scratch program creates the decoder as step 2.3 describes, feeds the clip one access unit at a time, and reports:
-- whether 1080×2340 is accepted at all, and 1080×2400 (the S20's size) from a generated clip. If not, try raising `CODECAPI_AVDecVideoMaxCodedHeight` and `…Width` on the decoder before concluding that D9 is needed;
+- whether 1080×2340 is accepted at all, and 1080×2400 (the S20's size) from a generated clip; and the same sizes turned (2340×1080, 2400×1080), which a phone on its side sends since the size limit moved to the shorter side. If not, try raising `CODECAPI_AVDecVideoMaxCodedHeight` and `…Width` on the decoder before concluding that D9 is needed;
 - the padded size, visible rectangle, stride and colour information;
 - milliseconds per frame for decoding, for the colour conversion, and for drawing in a real WPF window, which adds a 10 MB copy to the graphics card per picture.
 

@@ -249,10 +249,16 @@ class PhoneScreenCaptureTest {
         decoded.recycle()
         frame(1440, 2560)
         assertEquals(1, ShadowPhoneCaptureConnection.info.size)
+        // Turned on its side it is sent as sharp as upright: the same pixels, turned.
         frame(2560, 1440)
         assertEquals(2, ShadowPhoneCaptureConnection.info.size)
-        assertEquals(1080, ShadowPhoneCaptureConnection.info.last().getInt("width"))
-        assertEquals(607, ShadowPhoneCaptureConnection.info.last().getInt("height"))
+        assertEquals(1920, ShadowPhoneCaptureConnection.info.last().getInt("width"))
+        assertEquals(1080, ShadowPhoneCaptureConnection.info.last().getInt("height"))
+        ShadowPhoneCaptureConnection.frames.last().let { turned ->
+            val picture = BitmapFactory.decodeByteArray(turned, 0, turned.size)
+            assertEquals(1920 to 1080, picture.width to picture.height)
+            picture.recycle()
+        }
         val oldToken = token()
         stream.setStreaming(false)
         stream.setStreaming(true)

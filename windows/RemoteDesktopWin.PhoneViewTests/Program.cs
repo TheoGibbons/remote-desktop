@@ -315,10 +315,13 @@ internal static class Program
         // A window's size lands on whole pixels: two thirds of a unit apart at 150 % scaling.
         static double Snap(double units) => Math.Floor(units * 1.5) / 1.5;
 
-        // The S26 as it streams: upright, and on its side at the same width limit.
+        // The S26 as phones up to v1.0.53 send it: upright, and on its side at the same
+        // limit on the width, which is not quite the same shape turned round.
         (int W, int H) upright = (1080, 2340), sideways = (1080, 498);
 
-        double Turns(bool keep)
+        double Turns(bool keep) => TurnsOf(sideways, keep);
+
+        double TurnsOf((int W, int H) sideways, bool keep)
         {
             var window = PhoneFit.Fit(upright.W, upright.H, 0, FrameW, FrameH, new FitRect(200, 100, 400, 760), BigScreen);
             double fitted = PhoneFit.ShownLongSide(upright.W, upright.H, window.Width - FrameW, window.Height - FrameH);
@@ -339,6 +342,8 @@ internal static class Program
         double start = 820 - FrameH;
         Check(Turns(keep: false) < start - 10, "setup: measured from whole pixels, the long side shrinks turn by turn");
         Near(Turns(keep: true), start, "A phone turned forty times is the size it started at");
+        // Newer phones send the same pixels turned.
+        Near(TurnsOf((2340, 1080), keep: true), start, "The same for a phone that sends its side view at full size");
 
         Check(PhoneFit.KeptLongSide(781.2, 783.33) == 783.33, "A measurement a pixel or two short is the last fit's own long side");
         Check(PhoneFit.KeptLongSide(650, 783.33) == 650, "A window the user made smaller keeps the size they chose");

@@ -44,12 +44,6 @@ import java.io.ByteArrayOutputStream
 class ScreenCaptureService : Service() {
 
     companion object {
-        /** The size a screen is streamed at: its own shape, no wider than [maxWidth]. */
-        internal fun streamSize(screenWidth: Int, screenHeight: Int, maxWidth: Int): Pair<Int, Int> {
-            val scale = if (screenWidth > maxWidth) maxWidth.toDouble() / screenWidth else 1.0
-            return Pair((screenWidth * scale).toInt().coerceAtLeast(1), (screenHeight * scale).toInt().coerceAtLeast(1))
-        }
-
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_RESULT_DATA = "resultData"
         private const val CHANNEL_ID = "capture"
@@ -103,7 +97,6 @@ class ScreenCaptureService : Service() {
         scheduleCatchUp()
     }
     private val jpegQuality = 55
-    private val maxWidth = 1080
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -171,7 +164,7 @@ class ScreenCaptureService : Service() {
 
     private fun outSize(): Pair<Int, Int> {
         val (w, h, _) = screenSize()
-        return streamSize(w, h, maxWidth)
+        return StreamSize.of(w, h)
     }
 
     private fun sendScreenInfo() {

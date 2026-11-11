@@ -137,9 +137,7 @@ internal class AccessibilityScreenCapture(private val service: AccessibilityServ
     private var sentGeneration = -1L
 
     private fun send(bitmap: Bitmap, token: Long) {
-        val scale = minOf(1.0, 1080.0 / bitmap.width)
-        val width = (bitmap.width * scale).toInt().coerceAtLeast(1)
-        val height = (bitmap.height * scale).toInt().coerceAtLeast(1)
+        val (width, height) = StreamSize.of(bitmap.width, bitmap.height)
         val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
         try {
             val out = ByteArrayOutputStream(200_000)
