@@ -2,6 +2,7 @@ using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -25,6 +26,10 @@ namespace RemoteDesktopWin;
 /// that says it can (<c>phone-state</c>) also gets its media volume, which
 /// way its screen is held, Quick settings, Screenshot and Lock screen there
 /// (see <see cref="MenuRows"/>).
+///
+/// A phone that is asleep, or on the unlock screen Android leaves out of the
+/// picture, gets a line of words over the picture saying so (see
+/// <see cref="LockCaption"/>). Clicks pass through it.
 ///
 /// While it is focused, the keyboard types into the phone's focused text
 /// field: characters as <c>text</c>, composed here with this PC's layout, and
@@ -69,6 +74,12 @@ public partial class PhoneViewWindow : Window
     private bool _showingPhoneRotation; // the rotation choices are being lit as the phone said
     private readonly RotationCheck _rotation = new();
     private readonly DispatcherTimer _rotationTimer;
+
+    // What the phone last said in lock-state; null until it does, and for
+    // good with a phone app too old to say.
+    private LockInfo? _lock;
+    private readonly BlackWatch _blackWatch = new();
+    private byte[] _pixels = [];        // the picture last looked at, kept to save allocating it again
 
     // The size of the phone's picture, and the one the window was last sized
     // round. They differ while the window is maximised or minimised.
@@ -406,6 +417,68 @@ public partial class PhoneViewWindow : Window
         }
     }
 
+    // ---------------- asleep, locked, unlock screen ----------------
+
+    public void OnLockState(JsonObject msg)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (LockInfo.Parse(msg) is not { } state || state == _lock) return;
+            _lock = state;
+            // The picture on show was taken before this.
+            _blackWatch.Forget();
+            ShowCaption();
+            // What the phone can do goes with it: it turns its screen for
+            // nobody while asleep or locked, and lets go of a turn it held.
+            // It doesn't say so by itself, so it is asked.
+            AskPhoneState(always: true);
+        });
+    }
+
+    /// <summary>Puts the words over the picture, or takes them away.</summary>
+    private void ShowCaption()
+    {
+        var text = LockCaption.For(_lock, _blackWatch.IsBlack);
+        if (text == null)
+        {
+            CaptionBox.Visibility = Visibility.Collapsed;
+            return;
+        }
+        bool changed = CaptionBox.Visibility != Visibility.Visible || CaptionText.Text != text;
+        CaptionText.Text = text;
+        CaptionBox.Visibility = Visibility.Visible;
+        // Read out by a screen reader, which can't see that the picture went dark.
+        if (changed)
+            UIElementAutomationPeer.CreatePeerForElement(CaptionText)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
+    /// <summary>
+    /// The black test, run where the picture is decoded: twice a second at
+    /// most, and only while a black picture would mean something.
+    /// </summary>
+    private void LookAtPicture(BitmapSource picture)
+    {
+        var now = DateTime.UtcNow;
+        if (!_blackWatch.Due(_lock, now)) return;
+        var format = picture.Format;
+        bool colour = format == PixelFormats.Bgr32 || format == PixelFormats.Bgra32 || format == PixelFormats.Pbgra32 ||
+            format == PixelFormats.Bgr24 || format == PixelFormats.Gray8;
+        bool black = false;
+        if (colour)
+        {
+            int bytesPerPixel = format.BitsPerPixel / 8;
+            int stride = picture.PixelWidth * bytesPerPixel;
+            int size = stride * picture.PixelHeight;
+            if (_pixels.Length < size) _pixels = new byte[size];
+            picture.CopyPixels(_pixels, stride, 0);
+            black = LockOverlay.IsNearlyBlack(_pixels.AsSpan(0, size), picture.PixelWidth, picture.PixelHeight,
+                stride, bytesPerPixel);
+        }
+        bool was = _blackWatch.IsBlack;
+        _blackWatch.Looked(black, now);
+        if (black != was) ShowCaption();
+    }
+
     // ---------------- window size ----------------
 
     public void OnScreenInfo(int width, int height, bool typing)
@@ -467,6 +540,7 @@ public partial class PhoneViewWindow : Window
             img.EndInit();
             img.Freeze();
             ScreenImage.Source = img;
+            LookAtPicture(img);
         }
         catch { }
     }

@@ -51,6 +51,18 @@
                    MouseLeftButtonDown="Screen_MouseDown" MouseLeftButtonUp="Screen_MouseUp"
                    MouseMove="Screen_MouseMove" MouseWheel="Screen_MouseWheel"
                    MouseUp="Screen_OtherButtonUp"/>
+            <!-- Says that the phone is asleep, or on the unlock screen that
+                 Android leaves out of the picture (see LockCaption). At the
+                 top, clear of where a pattern is drawn. Its outline sets it
+                 apart from a black picture. Clicks go through it to the
+                 picture. -->
+            <Border x:Name="CaptionBox" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="12"
+                    Padding="14,9" CornerRadius="8" Background="#D9000000" BorderBrush="#40FFFFFF"
+                    BorderThickness="1" IsHitTestVisible="False" Visibility="Collapsed">
+                <TextBlock x:Name="CaptionText" MaxWidth="300" TextWrapping="Wrap" TextAlignment="Center"
+                           FontFamily="Segoe UI" FontSize="13" Foreground="White"
+                           AutomationProperties.LiveSetting="Polite"/>
+            </Border>
         </Grid>
 
         <!-- The "⋯" menu. A Popup rather than a ContextMenu, which would take

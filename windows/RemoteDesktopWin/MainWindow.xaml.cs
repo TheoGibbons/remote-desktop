@@ -981,6 +981,12 @@ public partial class MainWindow : Window
                     _phoneView.OnPhoneState(phoneState);
                 break;
 
+            case "lock-state":
+                // The phone being viewed says whether its screen is on and whether it is locked.
+                if (_phoneView != null && _phoneView.PeerId == from && msg is JsonObject lockState)
+                    _phoneView.OnLockState(lockState);
+                break;
+
             case "fs-list":
             case "fs-get":
             case "fs-begin":

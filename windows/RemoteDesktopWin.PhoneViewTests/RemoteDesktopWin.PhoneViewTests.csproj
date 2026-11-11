@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../RemoteDesktopWin/PhoneMenu.cs" Link="PhoneMenu.cs" />
+    <Compile Include="../RemoteDesktopWin/LockOverlay.cs" Link="LockOverlay.cs" />
   </ItemGroup>
 </Project>

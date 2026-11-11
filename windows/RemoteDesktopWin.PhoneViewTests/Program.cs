@@ -3,8 +3,9 @@ using RemoteDesktopWin;
 
 // The decisions behind the phone viewer: when its "⋯" menu is open, how the
 // window is sized round the phone's picture, how a dragged slider is paced and
-// what a phone says about itself. All of it lives in PhoneMenu.cs, which has
-// no WPF in it, so none of this needs a window.
+// what a phone says about itself (PhoneMenu.cs), and what is said over the
+// picture of a phone that is asleep or locked (LockOverlay.cs). Neither file
+// has any WPF in it, so none of this needs a window.
 internal static class Program
 {
     private static readonly DateTime T0 = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -33,6 +34,10 @@ internal static class Program
         CheckPhoneState();
         CheckMenuRows();
         CheckRotation();
+        CheckLockState();
+        CheckCaptions();
+        CheckBlackPicture();
+        CheckBlackWatch();
     }
 
     // ---------------- the menu ----------------
@@ -724,6 +729,170 @@ internal static class Program
         check.Chose(PhoneState.Landscape, 0, 0, At(60000));
         Check(check.NextDue == null, "Before any picture nothing is waited for");
         Console.WriteLine("PASS: a phone that was asked to turn and didn't is reported once, after a few seconds");
+    }
+
+    // ---------------- asleep, locked, unlock screen ----------------
+
+    private static void CheckLockState()
+    {
+        // The same texts are built by the phone in LockStateTest
+        // (lockStateIsBuiltAsTheViewersReadIt), so the two apps can't come to
+        // disagree about a field's name or type. Change both together.
+        var awake = LockInfo.Parse(Json("""{"type":"lock-state","to":"pc","screenOn":true,"locked":false}"""));
+        Check(awake == new LockInfo(true, false), "What an awake, unlocked phone builds is read");
+        var refused = LockInfo.Parse(Json(
+            """{"type":"lock-state","to":"pc","screenOn":false,"locked":true,"wakeFailed":"notifications"}"""));
+        Check(refused == new LockInfo(false, true, LockInfo.Notifications), "And what a phone that didn't wake builds");
+
+        var later = LockInfo.Parse(Json("""
+            {"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"pattern","area":[0.1,0.5,0.7,0.3]},"message":"Draw your pattern"}
+            """));
+        Check(later == new LockInfo(true, true), "Fields a later phone adds are ignored");
+        Check(LockInfo.Parse(Json("""{"screenOn":true,"locked":false,"wakeFailed":"notifications"}""")) == new LockInfo(true, false),
+            "A wake can't have failed on a phone whose screen is on");
+        Check(LockInfo.Parse(Json("""{"screenOn":false,"locked":false,"wakeFailed":7}""")) == new LockInfo(false, false),
+            "A reason that isn't a name is dropped");
+
+        Check(LockInfo.Parse(Json("""{"type":"lock-state"}""")) == null, "A message with neither field is refused");
+        Check(LockInfo.Parse(Json("""{"screenOn":true}""")) == null, "So is one without locked");
+        Check(LockInfo.Parse(Json("""{"screenOn":"yes","locked":false}""")) == null, "And one whose screenOn isn't true or false");
+        Check(LockInfo.Parse(Json("""{"screenOn":1,"locked":0}""")) == null, "Numbers are not true or false");
+        Check(LockInfo.Parse(Json("""{"screenOn":null,"locked":[true]}""")) == null, "Nor is anything else");
+        Console.WriteLine("PASS: lock-state is read as the phone builds it, and anything odd in it is refused");
+    }
+
+    private static void CheckCaptions()
+    {
+        var awake = new LockInfo(true, false);
+        Check(LockCaption.For(awake, false) == null, "An awake, unlocked phone has no caption");
+        Check(LockCaption.For(awake, true) == null, "However dark the app on its screen is");
+
+        foreach (bool locked in new[] { false, true })
+            foreach (bool black in new[] { false, true })
+            {
+                Check(LockCaption.For(new LockInfo(false, locked), black) == LockCaption.Asleep,
+                    "A sleeping phone says so, whatever the picture");
+                Check(LockCaption.For(new LockInfo(false, locked, "notifications"), black) == LockCaption.WakeFailedNotifications,
+                    "A phone that didn't wake with notifications off says to allow them");
+                Check(LockCaption.For(new LockInfo(false, locked, "unknown"), black) == LockCaption.WakeFailed,
+                    "A phone that didn't wake for no known reason says to try again");
+                Check(LockCaption.For(new LockInfo(false, locked, "something-new"), black) == LockCaption.WakeFailed,
+                    "A reason a later phone might give is still a wake that failed");
+            }
+
+        var lockScreen = new LockInfo(true, true);
+        Check(LockCaption.For(lockScreen, false) == null, "The lock screen is in the picture and needs no words");
+        Check(LockCaption.For(lockScreen, true) == LockCaption.UnlockHidden, "A black picture from a locked phone is its unlock screen");
+
+        Check(LockCaption.For(null, false) == null, "A phone that never says how it stands has no caption over a picture");
+        Check(LockCaption.For(null, true) == LockCaption.Black, "Its black picture gets words that cover asleep and unlock screen");
+
+        Check(LockCaption.BlackMatters(null) && LockCaption.BlackMatters(lockScreen), "Black matters on a locked phone or one that never says");
+        Check(!LockCaption.BlackMatters(awake) && !LockCaption.BlackMatters(new LockInfo(false, true)),
+            "Not on an unlocked phone, nor on one known to be asleep");
+
+        Check(LockCaption.Asleep == "The phone is asleep. Click to wake it.", "The asleep wording");
+        Check(LockCaption.WakeFailedNotifications == "The phone didn't wake. Allow notifications for Remote Desktop on the phone.",
+            "The notifications wording");
+        Check(LockCaption.UnlockHidden == "Android hides the unlock screen from the picture. Clicks and drags still reach it.",
+            "The unlock screen wording");
+        Check(LockCaption.Black == "The phone's screen is off, or it is on its unlock screen. Clicks and drags still reach an unlock screen.",
+            "The wording for a phone that sends no lock-state");
+        Console.WriteLine("PASS: each state of the phone has its caption, and an awake, unlocked phone has none");
+    }
+
+    /// <summary>A picture of one colour, as BGRA rows with <paramref name="padding"/> spare bytes after each.</summary>
+    private static (byte[] Pixels, int Stride) Picture(int width, int height, byte grey, int bytesPerPixel = 4, int padding = 0)
+    {
+        int stride = width * bytesPerPixel + padding;
+        var pixels = new byte[stride * height];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+                for (int c = 0; c < bytesPerPixel; c++)
+                    // The fourth byte is alpha, or unused: full either way.
+                    pixels[y * stride + x * bytesPerPixel + c] = c == 3 ? (byte)255 : grey;
+            // Whatever lies between rows must not be read as picture.
+            for (int c = 0; c < padding; c++) pixels[y * stride + width * bytesPerPixel + c] = 255;
+        }
+        return (pixels, stride);
+    }
+
+    private static void Fill(byte[] pixels, int stride, int left, int top, int right, int bottom, byte b, byte g, byte r)
+    {
+        for (int y = top; y < bottom; y++)
+            for (int x = left; x < right; x++)
+            {
+                pixels[y * stride + x * 4] = b;
+                pixels[y * stride + x * 4 + 1] = g;
+                pixels[y * stride + x * 4 + 2] = r;
+            }
+    }
+
+    private static void CheckBlackPicture()
+    {
+        static bool Black((byte[] Pixels, int Stride) p, int w, int h, int bpp = 4) =>
+            LockOverlay.IsNearlyBlack(p.Pixels, w, h, p.Stride, bpp);
+
+        // The fourth byte of each pixel is alpha, at full: it is not colour.
+        Check(Black(Picture(1080, 2340, 0), 1080, 2340), "A black picture is black");
+        Check(Black(Picture(1080, 2340, 4), 1080, 2340), "So is what a JPEG leaves of black");
+        Check(Black(Picture(2340, 1080, 0), 2340, 1080), "Sideways too");
+        Check(Black(Picture(40, 90, 0), 40, 90), "And small");
+
+        // The unlock screen keeps its Back arrow; a phone whose screen is off sends "Screen unavailable".
+        var arrow = Picture(1080, 2340, 0);
+        Fill(arrow.Pixels, arrow.Stride, 900, 2200, 960, 2260, 255, 255, 255);
+        Check(Black(arrow, 1080, 2340), "A Back arrow on black is still nearly all black");
+        var words = Picture(1080, 2340, 0);
+        Fill(words.Pixels, words.Stride, 300, 1150, 780, 1190, 255, 255, 255);
+        Check(Black(words, 1080, 2340), "So is a line of words on black");
+
+        // A lock screen on a black wallpaper: a clock and a few lines.
+        var clock = Picture(1080, 2340, 0);
+        Fill(clock.Pixels, clock.Stride, 300, 400, 780, 600, 255, 255, 255);
+        Check(!Black(clock, 1080, 2340), "A clock on a black wallpaper is a picture");
+        Check(!Black(Picture(1080, 2340, 0x17), 1080, 2340), "A dark theme is dark grey, not black");
+        var blue = Picture(1080, 2340, 0);
+        Fill(blue.Pixels, blue.Stride, 0, 0, 1080, 2340, 90, 0, 0);
+        Check(!Black(blue, 1080, 2340), "One colour is enough to be lit");
+        Check(!Black(Picture(1080, 2340, 255), 1080, 2340), "A white picture is not black");
+
+        // Other layouts of the same pixels.
+        Check(Black(Picture(360, 800, 0, padding: 3), 360, 800), "Spare bytes after each row are not picture");
+        Check(Black(Picture(360, 800, 0, bytesPerPixel: 3), 360, 800, 3), "Three bytes to a pixel");
+        Check(Black(Picture(360, 800, 0, bytesPerPixel: 1), 360, 800, 1), "A grey picture, one byte to a pixel");
+        Check(!Black(Picture(360, 800, 200, bytesPerPixel: 1), 360, 800, 1), "A light grey one is not black");
+
+        // Nothing to go on: say it is a picture, so no caption is put up over it.
+        Check(!LockOverlay.IsNearlyBlack([], 0, 0, 0, 4), "No picture is not a black picture");
+        Check(!LockOverlay.IsNearlyBlack(new byte[100], 1080, 2340, 4320, 4), "Nor is a buffer too short for its size");
+        Check(!LockOverlay.IsNearlyBlack(new byte[400], 10, 10, 20, 4), "Nor rows shorter than the picture is wide");
+        Console.WriteLine("PASS: a picture is black when nearly all of it is, whatever the layout of its pixels");
+    }
+
+    private static void CheckBlackWatch()
+    {
+        var unlocked = new LockInfo(true, false);
+        var locked = new LockInfo(true, true);
+        var watch = new BlackWatch();
+        Check(!watch.Due(unlocked, At(0)), "An unlocked phone's pictures are never looked at");
+        Check(!watch.Due(new LockInfo(false, true), At(0)), "Nor a sleeping phone's: it is known to be asleep");
+        Check(watch.Due(locked, At(0)), "A locked phone's first picture is looked at");
+        Check(watch.Due(null, At(0)), "So is that of a phone that never says how it stands");
+
+        watch.Looked(true, At(0));
+        Check(watch.IsBlack, "The answer is remembered");
+        Check(!watch.Due(locked, At(499)), "The next pictures are not looked at");
+        Check(watch.Due(locked, At(500)), "Until half a second has gone");
+        watch.Looked(false, At(500));
+        Check(!watch.IsBlack, "The new answer replaces the old");
+
+        watch.Looked(true, At(1000));
+        watch.Forget();
+        Check(!watch.IsBlack, "A change in the phone's state forgets the answer");
+        Check(watch.Due(locked, At(1001)), "And the next picture is looked at straight away");
+        Console.WriteLine("PASS: pictures are looked at twice a second at most, and only while black would mean something");
     }
 
     private static JsonObject Json(string text) => JsonNode.Parse(text)!.AsObject();
