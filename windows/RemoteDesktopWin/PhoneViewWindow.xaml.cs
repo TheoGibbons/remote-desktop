@@ -62,6 +62,7 @@ public partial class PhoneViewWindow : Window
     private DateTime? _viewingSince;    // when the phone first sent a picture's size
     private readonly DispatcherTimer _updateLineTimer;
     private readonly VolumeSender _volume = new();
+    private readonly AskPace _asks = new();
     private readonly DispatcherTimer _volumeTimer;
     private bool _showingPhoneVolume;   // the slider is being moved to what the phone said
     private int _lastAudible;           // the last level above 0 the phone had or was sent; 0 if none yet
@@ -126,7 +127,7 @@ public partial class PhoneViewWindow : Window
         Closed += (_, _) => { _updateLineTimer.Stop(); _volumeTimer.Stop(); _rotationTimer.Stop(); };
 
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
-        AskPhoneState();
+        AskPhoneState(always: true);
         Closed += (_, _) => _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _phoneId });
 
         // Holding the button without moving becomes a long-press on the phone.
@@ -246,30 +247,42 @@ public partial class PhoneViewWindow : Window
     public void ResendStartView()
     {
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
-        AskPhoneState();
+        AskPhoneState(always: true);
     }
 
     // ---------------- what the phone can do, and its volume ----------------
 
-    /// <summary>Asked when the window opens and each time the menu does. A
-    /// phone app from before the menu never answers.</summary>
-    private void AskPhoneState() => SendAction("get-phone-state");
+    /// <summary>Asked when the window opens and when the menu does, though
+    /// not more than once a second however often it opens. A phone app from
+    /// before the menu never answers.</summary>
+    private void AskPhoneState(bool always = false)
+    {
+        var now = DateTime.UtcNow;
+        if (!_asks.Ask(now, always)) return;
+        // Its answer is counted with the slider's, so they can be told apart.
+        _volume.Sent(now);
+        SendAction("get-phone-state");
+    }
 
     public void OnPhoneState(JsonObject msg)
     {
         Dispatcher.BeginInvoke(() =>
         {
             if (PhoneState.Parse(msg) is not { } state) return;
-            // Answers the slider has since moved on from are skipped.
-            if (!_volume.Heard(DateTime.UtcNow) && _phoneState != null) return;
-            _phoneState = state;
-            if (state.Volume > 0) _lastAudible = state.Volume;
+            // What the phone can do and how its screen is held always apply.
+            // Its volume doesn't when it is an answer the slider has since
+            // moved on from.
+            bool volumeToo = _volume.Heard(DateTime.UtcNow) || _phoneState == null;
+            _phoneState = volumeToo ? state : state.WithVolumeOf(_phoneState!);
             ShowMenuRows();
+            if (!volumeToo) return;
+            if (state.Volume > 0) _lastAudible = state.Volume;
+            ShowVolume();
         });
     }
 
-    /// <summary>Shows the rows the phone can act on, with its volume, or the
-    /// line saying to update a phone that has said nothing.</summary>
+    /// <summary>Shows the rows the phone can act on and how its screen is
+    /// held, or the line saying to update a phone that has said nothing.</summary>
     private void ShowMenuRows()
     {
         _updateLineTimer.Stop();
@@ -289,8 +302,14 @@ public partial class PhoneViewWindow : Window
         ScreenshotButton.Visibility = Shown(rows.Screenshot);
         LockButton.Visibility = Shown(rows.Lock);
         UpdateLine.Visibility = Shown(rows.UpdateLine);
+    }
 
-        if (_phoneState is not { } state || !rows.Volume) return;
+    /// <summary>Puts the slider and the speaker icon where the phone said.
+    /// Only for a state whose volume is taken (see <see cref="OnPhoneState"/>):
+    /// at any other time the slider is where the user put it.</summary>
+    private void ShowVolume()
+    {
+        if (_phoneState is not { } state) return;
         _showingPhoneVolume = true;
         VolumeSlider.Maximum = state.VolumeMax;
         VolumeSlider.Value = state.Volume;

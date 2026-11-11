@@ -28,6 +28,8 @@ internal static class Program
         CheckSecondDrag();
         CheckRestingMidDrag();
         CheckVolumeAnswers();
+        CheckAnswersToAsking();
+        CheckAskPace();
         CheckPhoneState();
         CheckMenuRows();
         CheckRotation();
@@ -516,6 +518,65 @@ internal static class Program
         Check(volume.Moved(13, At(40020)) == null, "setup: held");
         Check(volume.DragEnded(At(40030)) == 13, "A drag cut short still sends where it had got to");
         Console.WriteLine("PASS: the slider shows the phone's answer to its last message, not to earlier ones");
+    }
+
+    private static void CheckAnswersToAsking()
+    {
+        // The menu opens, which asks the phone how things stand, and the user is
+        // on the slider before the answer is back.
+        var volume = new VolumeSender();
+        volume.Sent(At(0));                                   // get-phone-state
+        volume.DragStarted();
+        Check(volume.Moved(6, At(100)) == 6, "setup: the drag's first level");
+        Check(!volume.Heard(At(150)), "The answer to the asking is not shown mid-drag");
+        Check(volume.Moved(7, At(250)) == 7, "setup: the drag's last level");
+        Check(volume.DragEnded(At(300)) == null, "setup: nothing was held");
+        Check(!volume.Heard(At(320)), "The answer to the first level is not the last word");
+        Check(volume.Heard(At(380)), "The answer to the last level is");
+
+        // The same without a drag: a click on the track straight after the menu opened.
+        volume.Sent(At(5000));                                // get-phone-state
+        Check(volume.Moved(3, At(5050)) == 3, "setup: clicked");
+        Check(!volume.Heard(At(5100)), "The state from before the click doesn't pull the thumb back");
+        Check(volume.Heard(At(5150)), "The answer to the click is shown");
+
+        // The phone hadn't let this PC in when the window opened, so the first asking
+        // was dropped. It is asked again once it has, ten seconds on.
+        var late = new VolumeSender();
+        late.Sent(At(0));
+        late.Sent(At(10000));
+        Check(late.Heard(At(10100)), "An asking that was never answered doesn't hold back the next answer");
+
+        // A phone that drops what it is sent for a while (its switch was off).
+        late.Sent(At(20000));
+        late.Sent(At(20500));
+        late.Sent(At(21000));
+        late.Sent(At(30000));
+        Check(late.Heard(At(30100)), "However many went unanswered");
+
+        // Only the volume is ever held back.
+        var shown = PhoneState.Parse(Json("""{"volume":9,"volumeMax":15,"muted":false,"rotation":"auto","can":["volume","rotate"]}"""))!;
+        var heard = PhoneState.Parse(Json("""{"volume":4,"volumeMax":15,"muted":true,"rotation":"landscape","can":["volume","rotate","lock"]}"""))!;
+        var merged = heard.WithVolumeOf(shown);
+        Check(merged is { Volume: 9, Muted: false }, "A state whose volume is held back keeps the volume on show");
+        Check(merged.Rotation == PhoneState.Landscape && merged.Can.SetEquals(["volume", "rotate", "lock"]),
+            "What the phone can do and how its screen is held are taken from it all the same");
+        var smaller = PhoneState.Parse(Json("""{"volume":2,"volumeMax":7,"can":["volume"]}"""))!;
+        Check(smaller.WithVolumeOf(shown).Volume == 7, "The volume on show never passes the top of the range");
+        Console.WriteLine("PASS: asking the phone how things stand is counted like any message it answers");
+    }
+
+    private static void CheckAskPace()
+    {
+        var asks = new AskPace();
+        Check(asks.Ask(At(0)), "The first asking goes");
+        Check(!asks.Ask(At(300)) && !asks.Ask(At(600)) && !asks.Ask(At(999)), "A menu opened again and again within a second asks once");
+        Check(asks.Ask(At(1000)), "A second later it asks again");
+        Check(!asks.Ask(At(1500)), "And the second starts over");
+        Check(asks.Ask(At(1600), always: true), "The phone has just let this PC in: that asking always goes");
+        Check(!asks.Ask(At(2000)), "And counts towards the pace");
+        Check(asks.Ask(At(2600)), "Until its second is up");
+        Console.WriteLine("PASS: the phone is asked how things stand at most once a second");
     }
 
     // ---------------- what the phone says ----------------

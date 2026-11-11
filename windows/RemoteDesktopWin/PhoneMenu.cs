@@ -264,10 +264,13 @@ internal sealed class SendThrottle(TimeSpan interval)
 
 /// <summary>
 /// The volume slider's dealings with the phone: what to send as it moves, and
-/// which of the phone's answers to show. The phone answers every
-/// <c>volume</c> with its state, so the answers to a drag's earlier messages
-/// arrive after the drag has ended, each with a level the slider has since
-/// left. Only the answer to the last message sent says where the phone is.
+/// which of the phone's answers to take its level from. The phone answers
+/// every <c>volume</c> with its state, so the answers to a drag's earlier
+/// messages arrive after the drag has ended, each with a level the slider has
+/// since left. Only the answer to the last message sent says where the phone
+/// is. Everything the phone answers with its state is counted here, asking
+/// for the state included, so that the answers can be told apart by counting.
+/// Only the volume in a state is ever held back: the rest of it always applies.
 /// </summary>
 internal sealed class VolumeSender
 {
@@ -309,17 +312,21 @@ internal sealed class VolumeSender
     public int? Tick(DateTime now) => Counted(_throttle.Tick(now), now);
 
     /// <summary>A message went out that the slider didn't send, and that the
-    /// phone also answers with its state (mute, rotate). Its answer is owed
-    /// like any other.</summary>
+    /// phone also answers with its state: a mute, a rotation, or asking for
+    /// the state. Its answer is owed like any other. Answers that never came
+    /// (the phone hadn't let this PC in yet, or runs an older app) are
+    /// forgotten here, so they don't hold back the answer to this one.</summary>
     public void Sent(DateTime now)
     {
+        if (now - _lastSent >= AnswerWait) _owed = 0;
         _owed++;
         _lastSent = now;
     }
 
-    /// <summary>The phone reported its state. Returns whether to show it:
-    /// not during a drag, which would pull the thumb from under the pointer,
-    /// and not while a later message of ours is still to be answered.</summary>
+    /// <summary>The phone reported its state. Returns whether to show the
+    /// volume in it: not during a drag, which would pull the thumb from under
+    /// the pointer, and not while a later message of ours is still to be
+    /// answered.</summary>
     public bool Heard(DateTime now)
     {
         if (_owed > 0 && now - _lastSent < AnswerWait) _owed--;
@@ -333,6 +340,28 @@ internal sealed class VolumeSender
     {
         if (level != null) Sent(now);
         return level;
+    }
+}
+
+/// <summary>
+/// How often the phone is asked for its state. The menu asks each time it
+/// opens, and a pointer wandering on and off its button opens it again and
+/// again; once a second is as fresh as a menu needs.
+/// </summary>
+internal sealed class AskPace
+{
+    public static readonly TimeSpan Interval = TimeSpan.FromSeconds(1);
+
+    private DateTime? _last;
+
+    /// <summary>Whether to ask now. <paramref name="always"/> is for the asks
+    /// that must go whatever came before: the window has just opened, or the
+    /// phone has just let this PC in and dropped whatever was asked earlier.</summary>
+    public bool Ask(DateTime now, bool always = false)
+    {
+        if (!always && _last is { } last && now - last < Interval) return false;
+        _last = now;
+        return true;
     }
 }
 
@@ -426,6 +455,12 @@ internal sealed record PhoneState(int Volume, int VolumeMax, bool Muted, string 
     /// <summary>No sound either way: muted, or turned right down. Android
     /// reports a volume of 0 while muted.</summary>
     public bool IsSilent => Muted || Volume == 0;
+
+    /// <summary>This state with the volume and mute of the one on show, for
+    /// when its own are an answer the slider has since moved on from. What
+    /// the phone can do, and how its screen is held, are taken as they come.</summary>
+    public PhoneState WithVolumeOf(PhoneState shown) =>
+        this with { Volume = Math.Clamp(shown.Volume, 0, VolumeMax), Muted = shown.Muted };
 
     /// <summary>
     /// What a click on the speaker icon asks of the phone: to mute, to
