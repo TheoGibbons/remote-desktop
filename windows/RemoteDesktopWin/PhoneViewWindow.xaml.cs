@@ -432,7 +432,8 @@ public partial class PhoneViewWindow : Window
         Dispatcher.BeginInvoke(() =>
         {
             var said = _smooth.Status(msg);
-            _smoothTimer.Stop();
+            // A state this app does not know is no answer: the phone is still waited for.
+            if (_smooth.NextDue == null) _smoothTimer.Stop();
             ShowSmoothRow();
             // The words about the prompt take a moment to read and act on.
             if (said != null) Toast.Show(said, said.Length > 80 ? 7000 : 3500);

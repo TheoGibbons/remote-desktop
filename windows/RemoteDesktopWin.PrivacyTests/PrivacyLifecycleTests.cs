@@ -358,8 +358,16 @@ internal static class PrivacyLifecycleTests
                     // Another device's word about it is not the phone's.
                     OffSocket(Sealed(Status("\"state\":\"started\""), "unapproved"), binary: false);
                     if (told.Count != 0 || tick.Visibility == Visibility.Visible) throw new Exception("A smooth-status from another device was believed");
+                    // A state from some later app says nothing to this one, and is not
+                    // the answer: the phone is still waited for, to be reported if it says no more.
+                    var waiting = Field<System.Windows.Threading.DispatcherTimer>(view, "_smoothTimer");
+                    if (!waiting.IsEnabled) throw new Exception("Asking the phone did not start the wait for its answer");
+                    OffSocket(Sealed(Status("\"state\":\"later\""), phone), binary: false);
+                    if (told.Count != 0 || !waiting.IsEnabled)
+                        throw new Exception("A state this PC does not know ended the wait for the phone's answer");
                     OffSocket(Sealed(Status("\"state\":\"prompting\""), phone), binary: false);
                     if (!told.SequenceEqual(new[] { SmoothVideo.PromptText })) throw new Exception("The person was not told the phone is asking");
+                    if (waiting.IsEnabled) throw new Exception("The phone answered and was still being waited for");
                     OffSocket(Sealed(Status("\"state\":\"started\""), phone), binary: false);
                     if (tick.Visibility != Visibility.Visible || told[^1] != "Smooth video is on.")
                         throw new Exception("Smooth video was not ticked when the phone said it started");
