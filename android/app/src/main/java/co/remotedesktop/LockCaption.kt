@@ -118,6 +118,35 @@ internal object LockCaption {
     }
 
     /**
+     * The `tap` for a key of the PIN pad, without its `to`. It is marked
+     * `onlyIfLocked`: where the keys are is what the other phone said a
+     * moment ago, and if it has unlocked since, that place is now something
+     * on its home screen. It drops the tap then.
+     */
+    fun pinTap(key: LockScreenReader.Key): JSONObject = JSONObject().put("type", "tap")
+        .put("x", key.rect.x + key.rect.width / 2).put("y", key.rect.y + key.rect.height / 2)
+        .put("onlyIfLocked", true)
+
+    /**
+     * What this phone's keyboard typed, as the other phone gets it while its
+     * PIN pad is up: a tap on the key for each digit, on its delete key for
+     * Backspace and on its OK key for Enter. Anything else typed is left
+     * out, and a pad without one of those two keys gets nothing for it:
+     * nothing typed at a PIN pad is sent as text. The Windows app has the
+     * same rule in LockOverlay.PinTaps.
+     */
+    fun pinMessages(pin: Entry.Pin, typed: List<TypingDiff.Edit>): List<JSONObject> {
+        fun key(label: String) = pin.keys.firstOrNull { it.label == label }
+        return typed.flatMap { edit ->
+            when (edit) {
+                TypingDiff.Backspace -> listOfNotNull(key(LockScreenReader.DELETE))
+                TypingDiff.Enter -> listOfNotNull(key(LockScreenReader.OK))
+                is TypingDiff.Text -> edit.text.filter { it in '0'..'9' }.mapNotNull { key(it.toString()) }
+            }
+        }.map(::pinTap)
+    }
+
+    /**
      * The centres of the nine dots, row by row, as fractions of the screen.
      * The phone reports the grid as one square, and its dots sit at the
      * centres of an even three by three split of it.

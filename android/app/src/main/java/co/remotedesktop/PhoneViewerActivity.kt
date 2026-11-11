@@ -50,6 +50,8 @@ class PhoneViewerActivity : AppCompatActivity() {
      *  for good with an app too old to say. */
     @Volatile private var lockState: LockCaption.State? = null
     private var pictureBlack = false
+    /** Goes up each time the other phone's screen or lock changes (main thread). */
+    @Volatile private var lockChanges = 0
     private val blackWatch = LockCaption.BlackWatch()
     private var imePrev = ""
     private var imeGuard = false
@@ -64,8 +66,12 @@ class PhoneViewerActivity : AppCompatActivity() {
         // Only type 1; an older relay may also pass on a PC's patches or video.
         if (viewing && data.size > 1 && data[0] == Crypto.CH_VIDEO) {
             BitmapFactory.decodeByteArray(data, 1, data.size - 1)?.let { bitmap ->
+                // The other phone may say its lock has changed while this picture
+                // is on its way to the screen. What was seen in the picture was
+                // seen before that, and is not carried over.
+                val asOf = lockChanges
                 val black = blackWatch.look(bitmap, lockState, SystemClock.uptimeMillis())
-                runOnUiThread { if (viewing) showFrame(bitmap, black) }
+                runOnUiThread { if (viewing) showFrame(bitmap, black.takeIf { asOf == lockChanges }) }
             }
         }
     }
@@ -92,6 +98,7 @@ class PhoneViewerActivity : AppCompatActivity() {
                     // line alone, which a lock screen that is counting down
                     // sends every second, changes nothing about the picture.
                     if (before == null || before.screenOn != state.screenOn || before.locked != state.locked) {
+                        lockChanges++
                         blackWatch.forget()
                         pictureBlack = false
                     }
@@ -150,7 +157,11 @@ class PhoneViewerActivity : AppCompatActivity() {
                 override fun afterTextChanged(s: Editable?) {
                     if (imeGuard) return
                     val cur = s?.toString() ?: ""
-                    TypingDiff.messages(imePrev, cur).forEach(::send)
+                    // While the other phone's PIN pad is up, what is typed
+                    // goes to its keys as taps, and none of it as text.
+                    val pin = lockState?.takeIf { it.screenOn && it.locked }?.entry as? LockScreenReader.Entry.Pin
+                    if (pin != null) LockCaption.pinMessages(pin, TypingDiff.edits(imePrev, cur)).forEach(::send)
+                    else TypingDiff.messages(imePrev, cur).forEach(::send)
                     imePrev = cur
                     if (cur.length > 512) { // keep the buffer from growing without end
                         imeGuard = true; text?.clear(); imePrev = ""; imeGuard = false
@@ -203,9 +214,11 @@ class PhoneViewerActivity : AppCompatActivity() {
         updateNotice()
     }
 
-    private fun showFrame(bitmap: android.graphics.Bitmap, black: Boolean) {
+    /** [black] is whether the picture is nearly all black; null when that
+     *  was worked out before the other phone's lock last changed. */
+    private fun showFrame(bitmap: android.graphics.Bitmap, black: Boolean?) {
         screen.setFrame(bitmap)
-        if (black != pictureBlack) {
+        if (black != null && black != pictureBlack) {
             pictureBlack = black
             updateCaption()
         }

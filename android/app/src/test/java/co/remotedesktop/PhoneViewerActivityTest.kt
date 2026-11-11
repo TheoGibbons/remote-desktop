@@ -341,6 +341,62 @@ class PhoneViewerActivityTest {
     }
 
     @Test
+    fun whatIsTypedAtAPinPadGoesToItsKeysAsTapsAndNeverAsText() {
+        open()
+        val keys = (0..9).map { """{"label":"$it","rect":[${it * 0.1},0.5,0.1,0.1]}""" } +
+            listOf("""{"label":"delete","rect":[0.0,0.7,0.1,0.1]}""", """{"label":"ok","rect":[0.5,0.7,0.1,0.1]}""")
+        deliver(JSONObject("""{"type":"lock-state","from":"phone","screenOn":true,"locked":true,"entry":{"kind":"pin","keys":[${keys.joinToString(",")}]}}"""))
+        val ime = activity.findViewById<EditText>(R.id.phoneViewerIme)
+        socket.messages.clear()
+        fun sentNow() = socket.messages.map { m ->
+            assertEquals("phone", m.getString("to"))
+            assertEquals("Marked, so the other phone drops it once unlocked", true, m.opt("onlyIfLocked"))
+            m.getString("type") + " " + "%.2f %.2f".format(java.util.Locale.ROOT, m.getDouble("x"), m.getDouble("y"))
+        }.also { socket.messages.clear() }
+
+        ime.setText("4")
+        assertEquals(listOf("tap 0.45 0.55"), sentNow())
+        // The keyboard hands over a digit and a letter together: the digit is tapped, the letter goes nowhere.
+        ime.setText("47a")
+        assertEquals(listOf("tap 0.75 0.55"), sentNow())
+        // Backspace is the pad's delete key, Enter its OK key.
+        ime.setText("47")
+        assertEquals(listOf("tap 0.05 0.75"), sentNow())
+        ime.setText("47\n")
+        assertEquals(listOf("tap 0.55 0.75"), sentNow())
+        ime.setText("47\nxyz")
+        assertEquals(emptyList<String>(), sentNow())
+
+        // Unlocked: typing is text again.
+        lockState("phone", screenOn = true, locked = false)
+        socket.messages.clear()
+        ime.setText("47\nxyz1")
+        assertEquals(listOf("text 1"), socket.messages.map { it.getString("type") + " " + it.optString("text") })
+        assertFalse(socket.messages.single().has("onlyIfLocked"))
+    }
+
+    @Test
+    fun aPictureFromBeforeThePhonesLockChangedDoesNotDecideTheCaption() {
+        open()
+        frame(Crypto.CH_VIDEO, jpeg(0x3366CC))
+        assertEquals(View.GONE, caption.visibility)
+
+        // A black picture is decoded where pictures arrive, off the main thread ...
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(LockCaption.BlackWatch.INTERVAL_MS))
+        Thread { ConnectionManager.binaryListeners.forEach { it(byteArrayOf(Crypto.CH_VIDEO) + jpeg()) } }.apply { start(); join() }
+        // ... and before it reaches the screen the phone says, for the first time, that it is awake on its lock screen.
+        ConnectionManager.jsonListeners.forEach {
+            it(JSONObject().put("type", "lock-state").put("from", "phone").put("screenOn", true).put("locked", true))
+        }
+        idle()
+        assertEquals("That picture was looked at before the phone said how it stands", View.GONE, caption.visibility)
+
+        // The next picture is looked at afresh: black on a locked phone is its unlock screen.
+        laterFrame()
+        assertEquals(View.VISIBLE, caption.visibility)
+    }
+
+    @Test
     fun aPhoneThatNeverSaysHowItStandsIsExplainedByItsBlackPicture() {
         open()
         frame(Crypto.CH_VIDEO, jpeg(0x3366CC))

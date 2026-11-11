@@ -170,6 +170,32 @@ class LockCaptionTest {
     }
 
     @Test
+    fun typingAtAPinPadBecomesTapsOnItsKeys() {
+        val pad = parse(pinPad())!!.entry as Entry.Pin
+        fun taps(vararg typed: TypingDiff.Edit, on: Entry.Pin = pad) = LockCaption.pinMessages(on, typed.toList())
+        fun centre(label: String) = pad.keys.first { it.label == label }.rect.let { Pair(it.x + it.width / 2, it.y + it.height / 2) }
+        fun at(message: JSONObject) = Pair(message.getDouble("x"), message.getDouble("y"))
+
+        // The same text as CheckPinTaps in RemoteDesktopWin.PhoneViewTests: digits tapped, the rest left out.
+        val mixed = taps(TypingDiff.Text("12a 3"))
+        assertEquals(listOf(centre("1"), centre("2"), centre("3")), mixed.map(::at))
+        for (tap in mixed) {
+            assertEquals("tap", tap.getString("type"))
+            assertEquals("Marked for the unlock screen only", true, tap.get("onlyIfLocked"))
+            assertFalse(tap.has("to"))
+        }
+        assertEquals(emptyList<JSONObject>(), taps(TypingDiff.Text("abc")))
+        assertEquals(emptyList<JSONObject>(), taps(TypingDiff.Text("\u0664")))
+
+        assertEquals(listOf(centre("delete"), centre("4"), centre("ok")),
+            taps(TypingDiff.Backspace, TypingDiff.Text("4"), TypingDiff.Enter).map(::at))
+        // A pad that confirms by itself has no OK key, and Enter then goes nowhere.
+        val bare = parse(pinPad("ok", "delete"))!!.entry as Entry.Pin
+        assertEquals(emptyList<JSONObject>(), taps(TypingDiff.Backspace, TypingDiff.Enter, on = bare))
+        assertEquals(1, taps(TypingDiff.Text("7"), on = bare).size)
+    }
+
+    @Test
     fun theNineDotsSitAtTheCentresOfAnEvenSplitOfTheGrid() {
         // The S26: a 765 pixel square at (157, 1203) on a 1080 x 2340 screen. The same
         // numbers as CheckPatternDots in RemoteDesktopWin.PhoneViewTests.
