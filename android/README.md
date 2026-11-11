@@ -105,6 +105,9 @@ which is less work for the phone and a fraction of the data. Everyone else
 gets JPEGs as before (up to 10 a second in smooth sharing): a PC on an older
 app, a PC whose Windows has no H.264 decoder, another phone, and every viewer
 while one of those is viewing too. Either way a still screen sends nothing.
+On a slow connection the phone gives the video fewer bits a second, so the
+picture gets softer instead of slower, and gives them back when the connection
+can take them; a still picture is sharpened either way.
 If the phone's encoder cannot be started, stops working or stops answering,
 the phone goes back to JPEGs by itself and the viewer keeps its picture. The
 next time a viewer opens, video is tried at three quarters size, and after

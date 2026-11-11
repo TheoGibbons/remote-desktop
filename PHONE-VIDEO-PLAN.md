@@ -1,6 +1,6 @@
 # Faster phone viewing from the PC
 
-Written 2026-11-10 against v1.0.53 (`30009c4`), then checked against the code by an independent review and revised the same day (the review log is the last section). Built so far: all of Phase 0 (step 0.1 first, the rest on 2026-11-11), Phase 1, Phase 2 and step 4.1 (all 2026-11-11), whose text below now describes what was built. What they still lack is on a phone and by hand: see the end of each phase and section 11. Phase 3, steps 4.2 and 4.3, and Phase 5 are still a plan.
+Written 2026-11-10 against v1.0.53 (`30009c4`), then checked against the code by an independent review and revised the same day (the review log is the last section). Built so far: all of Phase 0 (step 0.1 first, the rest on 2026-11-11), Phase 1, Phase 2 and steps 3.1 and 4.1 (all 2026-11-11), whose text below now describes what was built. What they still lack is on a phone and by hand: see the end of each phase and section 11. Steps 3.2, 4.2 and 4.3, and Phase 5, are still a plan.
 
 Theo answered the open questions on 2026-11-10; section 12 records the answers, and they changed the order of work (section 3) and added Phase U, which has since become a plan of its own.
 
@@ -564,15 +564,23 @@ The classes that touch Android decide nothing, and the ones that decide touch no
 
 After Phase 2 a slow link is on time but shows few pictures a second, each at full quality. This phase trades quality for rate.
 
-**3.1 Bitrate steps.** New plain class, driven once a second by how much of that second `InFlight` had no room:
-- no room more than about 30% of the time: multiply the bitrate by 0.7, down to 300 kbit/s;
-- room throughout for 5 s while the encoder was using most of its budget: multiply by 1.25, up to the ceiling (appendix A);
-- a still screen is not evidence either way, the same rule as the PC host's ladder;
-- two `request-keyframe`s within 5 s mean frames are being dropped at the relay: step down, as `ScreenStreamer` does.
+**3.1 Bitrate steps.** **Built on 2026-11-11, on unit tests alone: nothing of it has run on a phone or a slow link.** `BitrateSteps` (plain) holds the rules and `PhoneVideo` drives it. The text below describes what was built; where it differs from the plan as first written, it says so.
 
-Applied with `PARAMETER_KEY_VIDEO_BITRATE`, which needs no keyframe. Wait a few seconds between steps.
+- **What it goes by.** Every time the pacer looks whether to encode (at each new picture, and every 15 ms while one waits), `PhoneVideo` says whether a picture is due and has no room. Room is `PhoneScreenCapture.hasRoom`: `InFlight`, which is the viewers' acknowledgements (0.7), and the app's own queue. That time is added up over each second in which the encoder was looked at, with the size of every picture that came out.
+- **Down.** A picture kept waiting for more than 300 ms of such a second: the rate is multiplied by 0.7, down to 300 kbit/s. For the two seconds after a step down, pictures kept waiting are not counted, since what was sent at the old rate is still arriving; so steps down come three seconds apart. The same two seconds follow an encoder's start, whose first picture is its largest.
+- **Up.** Five seconds with room throughout (no more than 50 ms of waiting) in which the pictures came to 60% or more of what the encoder was given for them (the rate divided by 30, for each picture): the rate is multiplied by 1.25. After that it goes on up, one step for every such second while it is below the rate the encoder started at, and one for every two seconds above that, up to 8 Mbit/s. The plan had one step per five seconds; from 1 Mbit/s that would have taken 25 s to be back at the starting rate, against the "about 10 s" below. Getting back to the rate an encoder starts at is quick because that rate is known to be worth having; what lies above it is only tried.
+- **No evidence either way**: a second in which nothing was encoded (a still screen never has the encoder looked at), and one whose pictures needed few bits, as when someone types.
+- **Two `request-keyframe`s within 5 s** are a step down, as in `ScreenStreamer`. Counted are requests from viewers that the phone goes on to honour. One that crossed a keyframe on its way (2.1) is dropped before it gets here, and the phone's own keyframes (a viewer joining, a picture unsent, the last picture unacknowledged) do not count.
+- **A step up that has to be taken back** within ten seconds is not tried again for ten seconds, then twenty, then thirty at most. Not in the plan. It is the PC host's rule against a ladder that hunts: on a link that stays slow, each try is a second or two of fewer pictures. A step up that holds puts this back to nothing. So after a long steady limit, the first step up can come up to 30 s after the limit lifts.
+- **From one encoder to the next.** The rate is kept as a share of what an encoder of that size starts at. An encoder started within ten seconds of the last one ending (the phone was turned, the encoder failed and the next size down is tried) starts at that share of its own rate. One started later starts over: it may be another viewer on another link.
+- **Accessibility pictures (4.1) too, but never above the rate they start at.** Decided here. The rules need nothing changed for 2.5 pictures a second: they go by the share of a second pictures waited, and by the size of a picture against the rate. And the trade is the same: on a slow link a full-quality screenshot takes most of a second to arrive, and a softer one that the repeats then sharpen is the better picture to have. Not above the starting rate, because one picture every 400 ms already gets several times the bits of one in thirty, and more would bring it back to the size of the JPEG it replaced.
+- **How it is applied.** `PARAMETER_KEY_VIDEO_BITRATE`, which needs no keyframe and changes nothing about the stream. `diagnostic-pong`'s `bitrate` is the rate now aimed at, and the PC's readout shows it.
+- **Failures (2.1's rules).** The call that gives the encoder a new rate is timed like every other, so an encoder that never answers it is a wedge. One that throws has failed, like a draw that throws: JPEG, and the next size down at the next try. An encoder that takes the rate and ignores it has not failed: the pacer still holds back for room, so on such a phone a slow link shows fewer pictures at full quality, as after Phase 2.
+- **Tests.** `BitrateStepsTest` (every rule above, with a clock moved by hand) and `VideoBitrateTest` (the encoder driven as it is on a phone: a screen changing thirty times a second with and without room, a still screen, small pictures, keyframe requests, a turn, a pause, an encoder that throws, screenshots).
+- **What could go wrong.** The steps trust `InFlight`: a picture that waits for an acknowledgement 100 ms longer than the quickest of the last minute counts as the link being full. On a link that is fast but uneven (mobile data, where one acknowledgement in a few is a tenth of a second late for no reason the phone can do anything about), pictures would be held back often, and the rate would then sink towards the floor without the delay getting any better for it. If the readout shows a low `bitrate` beside a short delay and a soft picture, that is this, and the cure is in `InFlight`'s 100 ms (0.7) or in asking for more than 300 ms here, not in the steps themselves.
+- **Not seen:** any of it. `SCRATCH\step-11\E2E-CHECKS.md`, section 10, says what to look at and how the rig's relay can hold the phone's upload to a rate. The numbers above (300 ms, 0.7, 1.25, five seconds, 60%) are starting values, as 0.7's 100 ms is.
 
-**Done when**, with the upload limited to 5, 2 and 1 Mbit/s in turn, the delay stays under 0.3 s, scrolling stays above 15 pictures a second, and sharpness returns within about 10 s of the limit lifting.
+**Done when**, with the upload limited to 5, 2 and 1 Mbit/s in turn, the delay stays under 0.3 s, scrolling stays above 15 pictures a second, and sharpness returns within about 10 s of the limit lifting. As built, by the rules alone: from 1 Mbit/s the rate is back where it started about 10 s after the limit lifts, if no step up had just been taken back.
 
 **3.2 Optional: send no more pixels than the viewer shows.** The viewer window is about 1230 physical pixels tall on a 150% screen, while the phone sends 2340. The viewer could report its size, as `view-region` does for a PC host, and the phone could mirror at that size. It would cut the data by about two thirds, at the price of a keyframe on each window resize. Decide from Phase 2's measurements.
 
@@ -863,7 +871,7 @@ Phone encoder (`MediaCodec`, `video/avc`):
 |---|---|
 | Choice of encoder | Hardware first (`isHardwareAccelerated` on API 29+, otherwise by name). A software encoder only at a long side of 1280 or less. |
 | `KEY_COLOR_FORMAT` | `COLOR_FormatSurface` |
-| `KEY_BIT_RATE` | Start at 3 Mbit/s for a 1080×2400 picture, scaled by pixel count. Phase 3 moves it between 0.3 and 8 Mbit/s. |
+| `KEY_BIT_RATE` | Start at 3 Mbit/s for a 1080×2400 picture, scaled by pixel count. Step 3.1 moves it between 0.3 and 8 Mbit/s in smooth sharing, and between 0.3 Mbit/s and where it started for Accessibility pictures. An encoder that follows another at once starts at the share of its rate the other had come to. |
 | `KEY_BITRATE_MODE` | CBR where `isBitrateModeSupported` says so, else VBR |
 | `KEY_FRAME_RATE` | 30 |
 | `KEY_I_FRAME_INTERVAL` | 600 s, in effect never: it counts frames at the nominal rate, not seconds. Keyframes come from requests (D8). |

@@ -692,6 +692,19 @@ for that. A viewer that comes into a running stream is sent a keyframe.
   again before the phone has paused it).
 - `diagnostic-pong` says `codec: "h264"` and adds `bitrate`, the encoder's
   target in bits a second, only while video is being sent.
+- That target moves with the link. When pictures are kept waiting for room
+  (see "Holding back" above) for more than about a third of a second in a
+  second, the phone lowers it by three tenths, down to 300,000, and again
+  three seconds later if that was not enough. When there has been room
+  throughout for five seconds of a changing screen, it raises it by a
+  quarter, and goes on raising it while that lasts: back to what the picture's
+  size starts at (3,000,000 for 1080 × 2400, others by their number of
+  pixels), and in smooth sharing on to 8,000,000. Screenshots in
+  Accessibility viewing are never given more than they start with. A still
+  screen changes nothing. Two honoured `request-keyframe`s within five
+  seconds also lower it: frames are being dropped on the way. A change of
+  rate brings no keyframe and no new stream; a viewer sees it only in the
+  picture's sharpness and in `bitrate`.
 
 **Accessibility viewing as video.** Android gives the phone a screenshot at
 most every 400 ms, and that sets the rate, as it does for JPEGs:
