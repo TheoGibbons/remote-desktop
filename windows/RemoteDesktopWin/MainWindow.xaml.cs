@@ -51,7 +51,13 @@ public partial class MainWindow : Window
         public string Name { get; init; } = "";
         public string Title { get; init; } = "";
         public string Subtitle { get; init; } = "";
+        /// <summary>The app version, shown fainter after the subtitle. Empty for
+        /// apps too old to say and for devices that are offline.</summary>
+        public string VersionText { get; init; } = "";
         public System.Windows.Media.Brush? Dot { get; init; }
+        /// <summary>What the dot's colour means, for its tooltip and for screen
+        /// readers: the colour alone says whether a device is online.</summary>
+        public string DotTip { get; init; } = "";
         public bool ShowApprove { get; init; }
         public bool ShowView { get; init; }
         public bool ShowDisconnect { get; init; }
@@ -1102,20 +1108,25 @@ public partial class MainWindow : Window
             var fp = _auth.FingerprintOf(p.Id);
             var trusted = _auth.IsTrusted(p.Id);
             var pending = _auth.Pending.Any(r => r.PeerId == p.Id);
+            // The green dot already says "online", so the text only adds what
+            // the dot can't: the code, and why a device isn't approved yet.
             var status =
-                trusted ? "online" :
-                pending ? "online — waiting for your approval" :
-                fp != null ? "online — not approved" :
-                "online — verifying…";
-            var code = fp == null ? "" : $"Code {DeviceIdentity.ShortCode(fp)} — ";
+                trusted ? "" :
+                pending ? "waiting for your approval" :
+                fp != null ? "not approved" :
+                "Verifying…";
+            var code = fp == null ? "" : $"Code {DeviceIdentity.ShortCode(fp)}";
+            var subtitle = code.Length > 0 && status.Length > 0 ? $"{code} — {status}" : code + status;
             rows.Add(new DeviceRow
             {
                 PeerId = p.Id,
                 Fingerprint = fp,
                 Name = p.Name,
                 Title = $"{p.Name} ({p.Device})",
-                Subtitle = code + status + (p.Version == null ? "" : $" · version {p.Version}"),
+                Subtitle = subtitle,
+                VersionText = p.Version == null ? "" : $" · v{p.Version.TrimStart('v')}",
                 Dot = trusted ? good : warn,
+                DotTip = trusted ? "Online" : "Online, not approved",
                 ShowApprove = pending,
                 ShowView = true,
                 ShowDisconnect = trusted,
@@ -1135,6 +1146,7 @@ public partial class MainWindow : Window
                     Subtitle = $"Code {DeviceIdentity.ShortCode(d.Fingerprint)} — " +
                                $"offline, trusted (last seen {d.LastSeen.ToLocalTime():g})",
                     Dot = offline,
+                    DotTip = "Offline",
                     ShowRevoke = true,
                 });
 
