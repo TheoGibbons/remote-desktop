@@ -54,6 +54,12 @@ public partial class App : Application
         // Catch any drift from the shared cross-language crypto vectors.
         System.Diagnostics.Debug.Assert(Crypto.SelfTest(), "Crypto self-test failed");
         base.OnStartup(e);
+
+        // The main window is made here, not by a StartupUri in App.xaml: WPF
+        // opens a StartupUri even after one of the returns above has asked to
+        // shut down, and building the main window rewrites the startup entry
+        // to point at this copy and begins to connect.
+        new MainWindow().Show();
     }
 
     protected override void OnExit(ExitEventArgs e)

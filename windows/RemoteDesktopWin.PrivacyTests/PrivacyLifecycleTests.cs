@@ -13,8 +13,9 @@ internal static class PrivacyLifecycleTests
     {
         // Exercise real host event handlers without connecting to a relay,
         // altering saved settings, covering monitors, or installing input hooks.
-        // Use the host's styles without App.OnStartup or its StartupUri. Pumping
-        // the dispatcher must not start a second host or use saved settings.
+        // Use the host's styles without App.OnStartup, which opens the main
+        // window. Pumping the dispatcher must not start a second host or use
+        // saved settings.
         var app = new System.Windows.Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
         var markup = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "AppResources.xaml"));

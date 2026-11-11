@@ -190,7 +190,7 @@ public partial class MainWindow : Window
         Closing += OnClosingToTray;
 
         // Launched at login (--minimized): come up in the tray, not on screen.
-        // StartupUri shows the window regardless, so hide it once it's up — and
+        // App.OnStartup shows the window regardless, so hide it once it's up — and
         // don't let it steal focus from whatever the user is doing meanwhile.
         if (App.StartMinimized)
         {

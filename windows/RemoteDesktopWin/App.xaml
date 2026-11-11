@@ -1,7 +1,6 @@
 <Application x:Class="RemoteDesktopWin.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             StartupUri="MainWindow.xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Application.Resources>
         <!-- Shared palette + control styles (matches the mobile app's design). -->
         <SolidColorBrush x:Key="RdBackgroundBrush" Color="#F6F7F9"/>
