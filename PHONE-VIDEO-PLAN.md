@@ -561,12 +561,25 @@ A scratch program creates the decoder as step 2.3 describes, feeds the clip one 
 
 The recorder sets the encoder up its own way, so two answers must be taken again from a clip made with this app's own settings (C3 can write one): whether each frame comes out as soon as it goes in, and how the colours are signalled. Any hold-back is added delay, and would mean looking at how the stream signals frame order.
 
-**C2. Does the consent prompt work remotely?** Before Phase 1, on the debug build from 0.1, on the S26:
-- does the prompt appear when started from the Accessibility service with no app window open (Android's documentation is no longer explicit about this, and Android 17 is the one to watch);
-- does it show in Accessibility screenshots;
-- does a tap injected through the Accessibility service press its button;
-- does asking for the whole screen remove the single-app choice on a Samsung;
-- does a screen wake lock held by the service keep the screen on.
+**C2. Does the consent prompt work remotely?** Run on the S26 (Android 17) on 2026-11-11, on the rig, with a throwaway addition to the debug build that was never committed. A made-up message from the viewer made the phone start a request activity as step 1.2 describes it. Every tap, drag and Back was sent as a viewer's own message, so each went through the app's gesture injection and none through adb. Afterwards the debug app was put back to the build from `main` and the phone was left not sharing.
+
+| Question | Result |
+|---|---|
+| Does the prompt appear when started from the Accessibility service with no app window open? | **Yes.** With only the home screen in front and no window of the app anywhere, the prompt was up in 0.1 s. Android's log gives its reason for allowing the start as `BAL_ALLOW_TOKEN`: the pass a process holds while the system has its Accessibility service bound. Starting from the application's context instead of the service's got the same pass. |
+| Does it show in Accessibility screenshots? | **Yes**, whole and readable in the viewer, and so does the list its mode chooser opens. |
+| Does a tap injected through the Accessibility service press its button? | **Yes.** A viewer's `tap` on *Share screen* gave the request activity `RESULT_OK`, `ScreenCaptureService` started from that callback, and the viewer was told `capture: "screen-share"` 0.2 s after the tap. A tap on *Cancel*, and Back, each gave `RESULT_CANCELED`. A tap opened the mode chooser too. |
+| Does asking for the whole screen remove the single-app choice on a Samsung? | **Yes, in effect.** The chooser is still drawn, already on *Share entire screen*. Its other line reads "Share one app. Not supported by the app" and cannot be picked. One tap on *Share screen* is all it takes. Asked for the way Permissions asks today, the prompt comes up on *Share one app* with a *Next* button, so step 1.1 is needed. |
+| Does a screen wake lock held by the service keep the screen on? | **Probably. Not seen.** Android took the lock from the app while it was sharing, dimmed or bright, did not mark it disabled, and counted it as keeping the phone awake (`dumpsys power`: `mWakeLockSummary` `0x25` dimmed and `0x23` bright, both with the stay-awake bit). But the S26 was on its charger with its owner's "stay awake while charging" on, which holds the screen on by itself. So the screen outlasting its timeout was not watched. That takes the phone off its charger for longer than its timeout, which is 5 minutes on the S26. |
+
+Also seen:
+
+- **With the phone on its side, the prompt's buttons are out of view.** In landscape, over Settings, the prompt is taller than the screen. Its title, chooser and warning show; *Cancel* and *Share screen* are below the edge. A viewer's drag upwards scrolls it, and the buttons can then be pressed.
+- **A prompt nobody answers stays.** It stood untouched for over two minutes. Back from a viewer dismisses it, and the activity is told `RESULT_CANCELED`. While the chooser's list is open, the first Back closes only the list.
+- **Turning the phone while the prompt is up restarts the request activity under it.** The prompt stays and its answer reaches the new activity: sharing started from it. So the activity must not ask again when it is created a second time.
+- **A second request while a prompt is up shows no second prompt.** Android hands the start to the task that is already there.
+- Stopping the service on a viewer's message had the viewer back on Accessibility pictures in under 0.1 s.
+
+Not answered: the S20 (Android 13), where nothing is installed; whether other makers' phones allow the start; what the screen turning off does to a prompt that is up, which would have locked the phone.
 
 **C3. Does the GL path behave on the S26?** At the start of Phase 2, as a throwaway screen in the debug build showing a generated pattern:
 - a picture arrives as soon as the surface is attached, without the screen changing;

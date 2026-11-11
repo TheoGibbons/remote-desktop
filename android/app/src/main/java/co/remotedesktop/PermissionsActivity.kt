@@ -5,7 +5,6 @@ import android.app.Activity
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
-import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -98,8 +97,7 @@ class PermissionsActivity : AppCompatActivity() {
                 ScreenCaptureService.stop(this)
                 refresh()
             } else {
-                val mpm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                projectionLauncher.launch(mpm.createScreenCaptureIntent())
+                projectionLauncher.launch(ScreenShare.consentIntent(this))
             }
         }
         findViewById<View>(R.id.a11yRow).setOnClickListener {

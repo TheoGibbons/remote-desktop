@@ -442,6 +442,29 @@ class PhoneScreenCaptureTest {
         } finally { controller.pause().stop().destroy() }
     }
 
+    /** Left to itself Android 14 offers one app first, and a share of one app breaks
+     *  taps, which a viewer sends as fractions of the whole screen. */
+    @Test fun thePermissionsScreenAsksForTheWholeScreen() {
+        val controller = Robolectric.buildActivity(PermissionsActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            activity.findViewById<android.view.View>(R.id.screenShareRow).performClick()
+            val asked = shadowOf(activity).nextStartedActivityForResult.intent
+            assertTrue(asked.extras?.keySet().orEmpty().any { it.endsWith("MEDIA_PROJECTION_CONFIG") })
+        } finally { controller.pause().stop().destroy() }
+    }
+
+    @Test @Config(sdk = [33])
+    fun beforeAndroid14ThePromptHasNoSuchChoice() {
+        val controller = Robolectric.buildActivity(PermissionsActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            activity.findViewById<android.view.View>(R.id.screenShareRow).performClick()
+            val asked = shadowOf(activity).nextStartedActivityForResult.intent
+            assertFalse(asked.extras?.keySet().orEmpty().any { it.endsWith("MEDIA_PROJECTION_CONFIG") })
+        } finally { controller.pause().stop().destroy() }
+    }
+
     @Test @Config(sdk = [28])
     fun olderPhonesStillRequireScreenSharing() {
         val controller = Robolectric.buildActivity(PermissionsActivity::class.java).setup()
