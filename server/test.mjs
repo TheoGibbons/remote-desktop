@@ -116,6 +116,41 @@ async function main() {
   pc.ws.send(Buffer.from([0x83, 0, 1, 2, 3])); // addressed to nobody
   await sleep(150);
   ok("malformed addressed frames are dropped", phone.bins.length + phone2.bins.length === before);
+
+  // 3c. A phone's picture behind a header (type 5, "Phone frames" in
+  // PROTOCOL.md) needs nothing new from the relay. Addressed, it reaches only
+  // the viewers it names. And it counts as video: a viewer that has stopped
+  // reading is passed over once 256 KiB is waiting for it, where a file chunk
+  // would be kept for it up to 8 MiB.
+  pc.bins.length = 0;
+  phone2.bins.length = 0;
+  phone.ws.send(addressed(5, [pc.welcome.id], "header+jpeg"));
+  await sleep(150);
+  ok("a type 5 frame reaches the viewer it names, unwrapped", pc.bins.some((b) => b.equals(Buffer.from("\x05header+jpeg"))));
+  ok("a type 5 frame reaches nobody else", phone2.bins.length === 0);
+
+  // How much of 24 MiB sent to a viewer that is not reading arrives once it reads again.
+  const sentToStalled = 384 * 64 * 1024;
+  const arrivesAtStalled = async (type) => {
+    pc.bins.length = 0;
+    pc.ws.pause();
+    const frame = addressed(type, [pc.welcome.id], Buffer.alloc(64 * 1024, type));
+    for (let i = 0; i < sentToStalled / (64 * 1024); i++) phone.ws.send(frame);
+    // A message behind them to a device that is reading: when it arrives,
+    // the relay has dealt with every frame before it.
+    const marker = `after-type-${type}`;
+    phone.ws.send(JSON.stringify({ type: marker, to: phone2.welcome.id }));
+    for (let i = 0; i < 200 && !phone2.msgs.some((m) => m.type === marker); i++) await sleep(50);
+    pc.ws.resume();
+    for (let seen = -1; seen !== pc.bins.length;) { seen = pc.bins.length; await sleep(300); }
+    return pc.bins.reduce((bytes, b) => bytes + b.length, 0);
+  };
+  // Video first: reading fast can widen what the system itself will hold for
+  // this connection, which must not flatter the second figure's lead.
+  const videoArrived = await arrivesAtStalled(5);
+  const fileArrived = await arrivesAtStalled(2);
+  ok("type 5 frames are dropped for a viewer that is not reading", videoArrived < sentToStalled / 2);
+  ok("type 5 falls under the video buffer limit, not the file one", fileArrived - videoArrived >= 4 * 1024 * 1024);
   phone2.ws.close(1000, "bye");
   await sleep(150);
   ok("leave log says the device closed, and how",

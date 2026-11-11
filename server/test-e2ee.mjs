@@ -33,6 +33,20 @@ ok("GCM KAT blob matches vector", blob.toString("hex") === VEC.blobHex);
 ok("decrypt round-trips", decrypt(encKey, blob, CH_JSON)?.toString() === VEC.plaintext);
 ok("decrypt wrong channel fails (AAD bound)", decrypt(encKey, blob, CH_VIDEO) === null);
 
+// A phone frame (type 5: a header, then the picture) on its own channel. The
+// same bytes are PhoneFrame.VECTOR in the Android app and PhoneFrame.Vector in
+// the Windows app, and the same blob is in both their Crypto self-tests.
+const CH_PHONE = 5;
+const PHONE_VEC = {
+  frameHex: "fedcba9876543210f00000010109240438fffffff0ffd8ffd9",
+  blobHex:
+    "000102030405060708090a0b94cfa1257157e9eb0ca847bb5530f5d2670534023049dd9bf5c7c4c85dc7fd49ca1773758a5994f402",
+};
+const phoneBlob = encryptWithNonce(encKey, Buffer.from(PHONE_VEC.frameHex, "hex"), CH_PHONE, Buffer.from(VEC.nonceHex, "hex"));
+ok("phone frame blob matches vector (channel 5)", phoneBlob.toString("hex") === PHONE_VEC.blobHex);
+ok("phone frame decrypts on channel 5", decrypt(encKey, phoneBlob, CH_PHONE)?.toString("hex") === PHONE_VEC.frameHex);
+ok("phone frame does not decrypt as type 1 video", decrypt(encKey, phoneBlob, CH_VIDEO) === null);
+
 const tampered = Buffer.from(blob);
 tampered[20] ^= 0x01;
 ok("decrypt tampered fails (integrity)", decrypt(encKey, tampered, CH_JSON) === null);
