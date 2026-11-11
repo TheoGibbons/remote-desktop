@@ -59,6 +59,7 @@ internal static class Program
         CheckDelayArithmetic();
         CheckReadoutText();
         CheckFeedKeepsTheFigures();
+        H264Tests.Run();
     }
 
     // ---------------- the menu ----------------

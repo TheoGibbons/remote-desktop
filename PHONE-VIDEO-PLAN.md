@@ -158,8 +158,8 @@ The connection is TCP, so a frame is only lost when the relay drops one for a ba
 
 A still screen sends nothing.
 
-**D9. If Windows cannot decode tall pictures, the phone sends them sideways.**
-The GL step turns the picture 90°, a header flag says so, and the PC turns it back while converting colours. Only built if check C1 fails.
+**D9. If Windows cannot decode tall pictures, the phone sends them sideways. Not needed, not built.**
+The GL step would turn the picture 90°, a header flag would say so, and the PC would turn it back while converting colours. Check C1 (section 7) found that Windows decodes every phone size, upright and on its side, with nothing set, and generated pictures up to 4096 pixels either way. So none of this is built, and flag bit 3 stays reserved. That was one PC on Windows 11; Windows 10 is untried. A PC whose Windows does refuse a tall picture is not left with a black window: its decoder gives no picture for the keyframe, `H264Decoder` reports that as a failure, and the viewer goes back to JPEG (2.3, 2.4).
 
 **D10. On a slow link the bitrate goes down, not the resolution.**
 Text on a phone screen needs its pixels. Until Phase 3 lowers the bitrate, a slow link shows fewer pictures a second at full quality, still on time.
@@ -455,14 +455,25 @@ screen ─ VirtualDisplay ─► SurfaceTexture (GL texture)
 - Any encoder or GL error tears the video output down and switches to JPEG. Two failures in one run of the service keep it on JPEG until the service restarts.
 - An H.264 frame, once encoded, is always sent (D2). `sendBinary` must not refuse it for queue size.
 
-**2.3 The decoder on the PC.** New `H264Decoder.cs` and `Nv12Converter.cs`.
-- Create the Microsoft H.264 decoder by its class id (`CLSID_CMSH264DecoderMFT`), so it is the synchronous software one and not whatever enumerates first. Media Foundation must be started first; `H264Encoder.cs` keeps its start-up call private, so share it.
-- Set `CODECAPI_AVLowLatencyMode` to 1 as a 32-bit integer; it is the GUID `H264Encoder.cs` calls `MFLowLatency`. No Direct3D manager, so it decodes in software.
-- Input: one access unit per sample, the frame size from the header, and `seq` as the sample time, so a picture coming out can be matched to the frame that went in. Output: NV12. `MF_E_TRANSFORM_STREAM_CHANGE` means "choose the output type again", which happens on the first frame and whenever the size changes, so a turned phone needs no new decoder.
-- Read the visible rectangle and the row stride from the output type (`MF_MT_MINIMUM_DISPLAY_APERTURE`, `MF_MT_DEFAULT_STRIDE`). The decoder pads to whole 16-pixel blocks, so 1080×2340 comes out as 1088×2352. Read the colour matrix and range too (`MF_MT_YUV_MATRIX`, `MF_MT_VIDEO_NOMINAL_RANGE`) and convert accordingly. The phone asks its encoder for BT.709, limited range.
-- `Nv12Converter`: NV12 to BGRA in unsafe code, written so the inner loop can be vectorised later. Plain and tested against hand-computed values.
-- Reuse buffers and samples. A BGRA picture is about 10 MB; allocating one per frame at 30 a second would keep the garbage collector busy.
-- If the decoder cannot be created (Windows N editions lack it), the viewer simply never offers `h264`.
+**2.3 The decoder on the PC.** Built: `H264Decoder.cs`, `Nv12Converter.cs` and `MediaFoundationStartup.cs`, with their checks in `H264Tests.cs` of `RemoteDesktopWin.PhoneViewTests`. Nothing calls them until 2.4.
+- **The decoder** is Microsoft's H.264 decoder, made by its class id (`CLSID_CMSH264DecoderMFT`) so that it is the software one and not whatever enumerates first. No Direct3D device is given to it. Media Foundation is started through `MediaFoundationStartup`, which `H264Encoder.cs` now uses too.
+- **Set on it, before the types:** `CODECAPI_AVLowLatencyMode` 1 as a 32-bit integer (the GUID `H264Encoder.cs` calls `MFLowLatency`), and `CODECAPI_AVDecVideoMaxCodedWidth` and `…Height` at 4096. Low-latency mode is required: without it the decoder runs 31 pictures behind (C1). The size limits change nothing on Windows 11 and are there for an older decoder with a lower limit, which nobody has tried.
+- **Input:** H.264, progressive, and no size. The decoder reads the size from the stream, at the start and whenever it changes, so a turned phone needs no new decoder. The plan first put the frame header's size on the input type. That is not needed, and a wrong one does no harm either.
+- **Filler data is taken out** of every access unit before it is fed (NAL units of type 12). An encoder holding a constant bitrate pads with them, and the decoder keeps a picture whose access unit ends in one until the next arrives (C1). The phone should leave them out before sending too (2.1): they are bytes with nothing in them.
+- **Output:** NV12 into one sample of our own, reused for every picture (in software the decoder brings none). `MF_E_TRANSFORM_STREAM_CHANGE` means "choose the output type again": at the first picture and at every change of size. Only then are the padded size, the visible rectangle (`MF_MT_MINIMUM_DISPLAY_APERTURE`), the row stride (`MF_MT_DEFAULT_STRIDE`) and the colours (`MF_MT_YUV_MATRIX`, `MF_MT_VIDEO_NOMINAL_RANGE`) true; before it the output type only repeats the input type. 1080×2340 comes out as 1088×2352. A stream that does not say its colours is read as Android reads one: BT.601 up to 720×576, BT.709 above, limited range.
+- **One call does a frame:** `Decode(accessUnit, tag, handler)` feeds one access unit and calls the handler with each picture that comes out, which is one. The viewer passes `seq` as the tag and it comes back on the picture. A new input buffer is made for every access unit, because the decoder still reads it after `ProcessInput` returns. The answer is one of:
+  - `Picture`;
+  - `NoPicture`: taken, nothing out yet, not a fault;
+  - `NeedsKeyframe`: the decoder is at a fresh start (new, after `Reset`, after a failure) and this was not a keyframe with SPS and PPS in the same access unit, so it was not looked at;
+  - `Failed`: the decoder reported an error, **or a keyframe went in and no picture came out**. The decoder has been reset and wants a keyframe;
+  - `Disposed`.
+- **Why the last rule.** The decoder itself reports no error for a missing frame, a stream that starts without a keyframe, a keyframe without its parameter sets, or a size it cannot take. It gives nothing and says nothing. A keyframe that yields no picture is the one sure sign that this PC cannot decode the stream, and it is what makes D9 unnecessary. Gaps are still the viewer's to see, from the sequence numbers: `Reset`, then ask for a keyframe (2.4).
+- **Threads.** `Decode` and `Reset` may come from any thread, one call at a time; a second call while one is in progress throws. `Dispose` may come from any thread at any moment and never waits. If a frame is being decoded, the decoder is torn down when that call returns, after the handler has finished, on the decoding thread. A picture's memory is the decoder's and is good only inside the handler, so the handler converts it there.
+- **`Nv12Converter`:** NV12 to BGRA in unsafe code, with look-up tables, for BT.709 and BT.601 in limited and full range. It writes only the visible rectangle. It can be given a band of rows, so several threads can share a picture, and its inner loop carries nothing from one pair of pixels to the next, which is what vector code needs. Neither has been needed: about 3 to 6 ms a picture on one thread (C1). It may be called from any thread.
+- **`H264Decoder.IsAvailable`** says whether this Windows can decode H.264 at all, found out once. The N editions without the Media Feature Pack cannot, and nor can a Windows Server without Media Foundation. The viewer then never offers `h264`.
+- **Not built: hardware decoding.** Giving the same transform a Direct3D 11 device makes the graphics card decode. In C1 that was no quicker by the clock (4.0 to 4.7 ms a picture against 2.5 to 5.3 ms), because the picture has to be copied back to memory for WPF, but it took about a tenth of the processor time (0.4 to 0.9 ms a picture against 4 to 9 ms). It is some twenty lines: a device, a device manager, one message to the transform, and reading the picture through `IMF2DBuffer`. It was tried on one AMD card only. Something for a PC that turns out too slow.
+- **Not built either:** `CODECAPI_AVDecNumWorkerThreads`. Left to itself the decoder used twice the processor time of a two-thread decoder to save half a millisecond a picture.
+- **The checks** make their streams on the spot: a drawn pattern goes through the app's own `H264Encoder` and back. No recording of a phone is used. They cover 320×240, 322×242, 1080×2400, 1080×2340 and 2400×1080 (size, visible rectangle, patches of known colour in every corner, one picture for each access unit), filler, a fresh start, a reset, rubbish in the stream, a decoder limited below the stream's size, a size that changes mid-stream, the handler's rules, disposing while a frame is being decoded, and threads. Where there is no H.264 decoder or no encoder they print SKIP and pass. `H264Encoder` only ever gives a graphics card's encoder (its software fall-back is never returned: a fault of its own, not put right here), so on a PC without one they skip as well.
 
 **2.4 The viewer.**
 - `start-view` offers `codecs: ["h264", "jpeg"]` when a decoder could be created and the PC has approved the phone.
@@ -563,21 +574,61 @@ Not answered by this run:
 - Whether Android asks for the Accessibility service to be switched off and on when an installed app gains the new capability in an update. The probe was a fresh install enabled over adb.
 - Whether Google Play accepts the capability.
 
-**C1. Can Windows decode what the phones encode?** Before Phase 2.
-Theo agreed on 2026-11-10, for the S26 only. Record two seconds from its hardware encoder while something on its screen is moving (the recorder writes a frame only when the screen changes):
+**C1. Can Windows decode what the phones encode?** Run on 2026-11-11: **yes, every size, in software, with nothing raised. D9 is not needed.**
+
+Theo agreed on 2026-11-10, for the S26 only. Six clips were recorded from its hardware encoder (`c2.qti.avc.encoder`) with the phone's own recorder, while a Settings list was dragged (the recorder writes a frame only when the screen changes):
 
 ```
 adb exec-out screenrecord --output-format=h264 --time-limit 2 - > clip.h264
 ```
 
-Run that from Git Bash or cmd. Windows PowerShell's `>` rewrites binary output as text and would ruin the clip, which would look like "Windows can't decode it". The clips show whatever is on the phone's screen, so they stay in a scratch folder and are never committed.
+That is run from Git Bash or cmd. Windows PowerShell's `>` rewrites binary output as text and would ruin the clip, which would look like "Windows can't decode it". The recorder's `--size` gave the other sizes and `--bit-rate` the lower rate: two seconds at each of 1080×2340, 1080×2400, 2340×1080 and 2400×1080 at the recorder's 20 Mbit/s, and five seconds at 1080×2340 and 2340×1080 at 3 Mbit/s. The phone accepted every size asked for. The clips show the phone's screen, so they stayed in a scratch folder and were never committed.
 
-A scratch program creates the decoder as step 2.3 describes, feeds the clip one access unit at a time, and reports:
-- whether 1080×2340 is accepted at all, and 1080×2400 (the S20's size) from a generated clip; and the same sizes turned (2340×1080, 2400×1080), which a phone on its side sends since the size limit moved to the shorter side. If not, try raising `CODECAPI_AVDecVideoMaxCodedHeight` and `…Width` on the decoder before concluding that D9 is needed;
-- the padded size, visible rectangle, stride and colour information;
-- milliseconds per frame for decoding, for the colour conversion, and for drawing in a real WPF window, which adds a 10 MB copy to the graphics card per picture.
+A scratch program created the decoder as step 2.3 then described it and fed each clip one access unit at a time. The PC was an Intel Core i7-12700K (12 cores) with an AMD Radeon RX 6600, Windows 11 build 26200, decoder `msmpeg2vdec.dll` 10.0.26100.9711. Another build was running on it at the time, so the times are a little high rather than low.
 
-The recorder sets the encoder up its own way, so two answers must be taken again from a clip made with this app's own settings (C3 can write one): whether each frame comes out as soon as it goes in, and how the colours are signalled. Any hold-back is added delay, and would mean looking at how the stream signals frame order.
+| Size | Software decoder | With a Direct3D 11 device (hardware) | Had to be set |
+|---|---|---|---|
+| 1080×2340 | Accepted | Accepted | Nothing |
+| 1080×2400 | Accepted | Accepted | Nothing |
+| 2340×1080 | Accepted | Accepted | Nothing |
+| 2400×1080 | Accepted | Accepted | Nothing |
+
+- **No size limit was met.** Pictures generated on the PC went through as well, up to 1080×3840, 3840×1080, 2304×4096 and 4096×2304, in software and in hardware. `CODECAPI_AVDecVideoMaxCodedWidth` and `…Height` were never needed. They do work: set to 1920×1088, the decoder refused the 1080×2400 clip.
+- **What the decoder reports**, after the first picture: 1080×2340 comes out padded to 1088×2352, visible part 1080×2340 at (0, 0) (`MF_MT_MINIMUM_DISPLAY_APERTURE`), stride 1088 (`MF_MT_DEFAULT_STRIDE`). 1080×2400 is 1088×2400, stride 1088. 2340×1080 is 2352×1088, stride 2352. 2400×1080 is 2400×1088, stride 2400. Colours: `MF_MT_YUV_MATRIX` 1 (BT.709) and `MF_MT_VIDEO_NOMINAL_RANGE` 2 (16 to 235), which is what the stream itself says. Before the first picture the output type only repeats what the input type said, with no visible part, stride or colours.
+- **A picture comes out for every access unit fed**, at once, carrying the sample time that went in. That is with `CODECAPI_AVLowLatencyMode` on. With it off the software decoder held back 31 pictures and the hardware one 15, although the stream says there is no reordering.
+- **One thing does make it hold a picture back: filler data.** If an access unit ends with a filler NAL unit (type 12), the decoder keeps that picture until the next access unit arrives. Software and hardware both. Take the filler out and the picture comes at once. The S26's recorder clips have no filler. The PC's own encoder puts it in at a constant bitrate when the picture is simple, and a phone encoder in CBR mode may do the same.
+- **Software and hardware give the same picture.** The last picture of each clip matched between the two (a checksum over a sample of its bytes).
+- **Time per picture, by the clock** (median; 95 in 100 were within a millisecond or two of it):
+
+| Step | Time |
+|---|---|
+| Decode in software, 3 Mbit/s | 2.5 to 3.6 ms. A keyframe 7 to 11 ms. |
+| Decode in software, 20 Mbit/s | 3.9 to 5.3 ms. A keyframe 9 to 18 ms. |
+| Decode in hardware, either bitrate | 4.0 to 4.7 ms, the copy back from the graphics card included. The first picture 20 to 28 ms. |
+| NV12 to BGRA, one thread, plain code with tables | 3.0 to 5.8 ms |
+| The same in four bands of rows on four threads | 0.9 to 2.3 ms |
+| Drawing: `WritePixels` of the whole 10 MB picture, UI thread | 0.8 to 1.3 ms |
+| Drawing: WPF's own render thread, per picture | 2 to 4 ms of processor time |
+
+- **Processor time per picture**, at 3 Mbit/s. Software decoding takes about 8 ms summed over the decoder's threads when it picks their number itself, 4.0 ms with one thread (3.8 ms by the clock) and 4.8 ms with two (3.2 ms by the clock). Hardware decoding takes 0.4 to 0.9 ms. Decode, convert and draw together come to 11 to 19 ms of processor time a picture, spread over the decoder's threads, the feed's thread, the UI thread and WPF's render thread. At 30 pictures a second that is a third to a half of one core on this PC.
+- **Creating the decoder** takes 1 to 3 ms in software (about 20 ms the first time in a process) and 35 to 80 ms with a Direct3D device.
+- **The drawing figures** are from a real top-level WPF window, shown and drawn by the graphics card, 797×1767 pixels at 150% scaling, with an `Image` showing a `WriteableBitmap`. It was cloaked (Windows left it off the screen) and could not be activated. Reading the window's surface back showed WPF was drawing what was written. It kept up with 60 pictures a second. Not measured: the graphics card's own time, and Windows' work to put a visible window on the screen. Trust the UI thread figure; take the render thread figure as about right.
+- **Where WPF draws in software** (a Remote Desktop session, no usable graphics card) its render thread took about 33 ms a picture and managed 28 a second. That is the same for JPEG pictures of this size today, so it is not new, but on such a PC drawing is the limit, not decoding.
+
+**What the recorder's stream looks like:** High profile, level 5.2, CABAC, one reference frame, no B-frames, picture order type 2, one slice per picture. The colour description says BT.709, limited range. It carries a bitstream restriction (no reordering, one frame buffered). SPS and PPS come once, in front of the first keyframe; the 3 Mbit/s clips have two more keyframes each and those have no parameter sets. No delimiters, no SEI, no filler. Four-byte start codes. About 117 pictures a second (the phone's screen runs at 120).
+
+**How the decoder treats a broken stream.** It never reports an error for any of these:
+- A missing access unit: it carries on and gives a picture for every later one. Only the sequence numbers show the gap.
+- After a flush: nothing comes out until the next keyframe. It still knows the parameter sets from before the flush.
+- A new decoder fed a stream with no parameter sets: nothing comes out, ever.
+- A size above its limit, with no size on the input type: nothing comes out. With the size on the input type it is refused at set-up (`MF_E_INVALIDMEDIATYPE`).
+- A new size mid-stream (a turned phone), tall to wide and wide to tall: `MF_E_TRANSFORM_STREAM_CHANGE` once more, then pictures. No new decoder, in software and in hardware.
+
+**Still to take from a clip made with this app's own settings (C3).** The recorder sets the encoder up its own way, so:
+- Does the decoder hold a picture back? Look for NAL units of type 12 in the clip, which is what CBR may add.
+- Does the SPS still say BT.709, limited range, and no reordering?
+
+**Not checked:** Windows 10, and any Windows 11 older than this one, where the limit of 2304 lines that Mozilla wrote about may still be; hardware decoding on Intel or NVIDIA graphics; a slow PC.
 
 **C2. Does the consent prompt work remotely?** Run on the S26 (Android 17) on 2026-11-11, on the rig, with a throwaway addition to the debug build that was never committed. A made-up message from the viewer made the phone start a request activity as step 1.2 describes it. Every tap, drag and Back was sent as a viewer's own message, so each went through the app's gesture injection and none through adb. Afterwards the debug app was put back to the build from `main` and the phone was left not sharing.
 

@@ -14,4 +14,23 @@
     <Compile Include="../RemoteDesktopWin/PhoneFeed.cs" Link="PhoneFeed.cs" />
     <Compile Include="../RemoteDesktopWin/PhoneStats.cs" Link="PhoneStats.cs" />
   </ItemGroup>
+  <!-- The H.264 decoder for a phone's video and what turns its pictures into
+       colours (H264Tests.cs). They need pointers, and the Media Foundation
+       wrapper the app ships. H264Encoder makes the streams the tests decode;
+       it takes its pictures as System.Drawing bitmaps, which is all Windows
+       Forms is here for. -->
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseWindowsForms>true</UseWindowsForms>
+    <NoWarn>$(NoWarn);WFAC010;WFO0003</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <Compile Include="../RemoteDesktopWin/Nv12Converter.cs" Link="Nv12Converter.cs" />
+    <Compile Include="../RemoteDesktopWin/H264Decoder.cs" Link="H264Decoder.cs" />
+    <Compile Include="../RemoteDesktopWin/H264Encoder.cs" Link="H264Encoder.cs" />
+    <Compile Include="../RemoteDesktopWin/MediaFoundationStartup.cs" Link="MediaFoundationStartup.cs" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.8.3" />
+  </ItemGroup>
 </Project>

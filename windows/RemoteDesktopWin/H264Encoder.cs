@@ -52,9 +52,6 @@ public sealed class H264Encoder : IDisposable
     // MF_E_TRANSFORM_NEED_MORE_INPUT
     private const int NeedMoreInput = unchecked((int)0xC00D6D72);
 
-    private static int _startupCount;
-    private static readonly object StartupLock = new();
-
     private readonly IMFTransform _mft;
     private readonly IMFMediaEventGenerator? _events; // async MFTs only
     private long _sampleTime;
@@ -92,16 +89,25 @@ public sealed class H264Encoder : IDisposable
         height &= ~1;
         if (width < 16 || height < 16) return null;
 
-        Startup();
         // Hardware first. Failing that the software MFT, which is slower but
         // still beats re-encoding a moving region as fresh JPEG every frame.
-        foreach (var hardware in new[] { true, false })
-        {
-            var enc = TryCreateFrom(hardware, width, height, bitrate, fps);
-            if (enc != null) return enc;
-        }
-        Shutdown();
-        return null;
+        return TryCreate(width, height, bitrate, fps, hardware: true)
+            ?? TryCreate(width, height, bitrate, fps, hardware: false);
+    }
+
+    /// <summary>
+    /// The same, from one kind of encoder only: the graphics card's, or
+    /// Windows' own in software. Tests use it to try both.
+    /// </summary>
+    internal static H264Encoder? TryCreate(int width, int height, int bitrate, int fps, bool hardware)
+    {
+        width &= ~1;
+        height &= ~1;
+        if (width < 16 || height < 16) return null;
+        // Throws where Windows has no Media Foundation: then there is no encoder.
+        try { MediaFoundationStartup.EnsureStarted(); }
+        catch { return null; }
+        return TryCreateFrom(hardware, width, height, bitrate, fps);
     }
 
     private static H264Encoder? TryCreateFrom(bool hardware, int width, int height, int bitrate, int fps)
@@ -365,22 +371,6 @@ public sealed class H264Encoder : IDisposable
         finally { src.UnlockBits(data); }
     }
 
-    private static void Startup()
-    {
-        lock (StartupLock)
-        {
-            if (_startupCount++ == 0) MediaFactory.MFStartup(false);
-        }
-    }
-
-    private static void Shutdown()
-    {
-        lock (StartupLock)
-        {
-            if (_startupCount > 0) _startupCount--;
-        }
-    }
-
     public void Dispose()
     {
         if (_disposed) return;
@@ -389,6 +379,5 @@ public sealed class H264Encoder : IDisposable
         try { _mft.ProcessMessage(TMessageType.MessageNotifyEndStreaming, UIntPtr.Zero); } catch { }
         try { _events?.Dispose(); } catch { }
         try { _mft.Dispose(); } catch { }
-        Shutdown();
     }
 }
