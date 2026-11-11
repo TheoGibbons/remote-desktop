@@ -109,8 +109,8 @@ fingerprint, and:
 **Enforcement.** Messages that view, control, or touch files or the clipboard
 (`start-view`, `request-keyframe`, `privacy-mode`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
 `touch`, `pinch`, `back`, `homebtn`, `recents`, `notifications`, `quick-settings`, `screenshot`, `lock`, `volume`,
-`get-phone-state`, `fs-*`, `clip-get`, `clip-set`) are dropped unless the
-sending peer is trusted. A phone also drops input, `volume`, `get-phone-state`, `start-view` and `fs-*` from
+`rotate`, `get-phone-state`, `fs-*`, `clip-get`, `clip-set`) are dropped unless the
+sending peer is trusted. A phone also drops input, `volume`, `rotate`, `get-phone-state`, `start-view` and `fs-*` from
 another phone (a peer whose `device` is `android`) unless its *Allow other
 phones* switch is on, which it is by default; an `fs-list` or `fs-get` it refuses
 that way says so in its `error`. The switch goes by the type each device
@@ -182,6 +182,7 @@ The controller may be a PC or another phone.
 | `screenshot` | – | The phone takes a screenshot and saves it where it saves its own. Android 9 or later. A PC is then offered the file like any other capture (`fs-offer`, see [New captures](#new-captures)). |
 | `lock` | – | Locks the phone and turns its screen off. Android 9 or later. |
 | `volume` | `level`? (integer), `mute`? (boolean) | Sets the media volume to `level`, from 0 to `volumeMax`, and mutes or unmutes it. Either field may be left out; a `level` out of range is brought into it. The phone shows its own volume panel, as when its volume keys are pressed, and answers with `phone-state`. |
+| `rotate` | `orientation` (`auto` \| `portrait` \| `landscape`) | Holds the phone's screen upright or on its side, whichever way the phone is lying and whether or not its auto-rotate is on; `auto` gives rotation back to the phone. Dropped unless the sender is viewing the phone (its `start-view` was accepted and not stopped). The phone lets go by itself when its last viewer stops or leaves, and when its screen turns off, which is also when it locks; it does not take hold again afterwards. Any other `orientation` changes nothing. The phone answers with `phone-state`, and the picture's new size follows in `screen-info`. |
 | `get-phone-state` | – | Ask the phone for `phone-state`. |
 | `text`  | `text` | Type a unicode string into the focused text field, line breaks as `\n`. The sender composes characters with its own keyboard layout. |
 | `key`   | `code`, `ctrl`?, `shift`? | Press one key, with Ctrl and Shift held if set. `code` is `ENTER`, `BACKSPACE`, `DELETE`, `TAB`, `HOME`, `END`, `PGUP`, `PGDN`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `ESC`, or a letter `A`-`Z` for a Ctrl shortcut. Plain `ENTER` performs the field's own action (Search, Send, Next...) the way the on-screen keyboard's Enter does. `ESC` is Back. With no text field focused, the arrows and `ENTER` move between and press controls. |
@@ -194,20 +195,20 @@ a paste there is expected to come from the PC.
 
 A phone that has gone to sleep is woken by input, as touching it would wake
 it: by every message in the table except the `move`s of a `touch`, `lock`,
-`volume` and `get-phone-state`. `start-view` wakes it too. Its lock screen
-stays in place.
+`volume`, `rotate` and `get-phone-state`. `start-view` wakes it too. Its lock
+screen stays in place.
 
-The phone answers `volume` and `get-phone-state`, to the device that sent them, with:
+The phone answers `volume`, `rotate` and `get-phone-state`, to the device that sent them, with:
 
 | type          | fields | notes |
 |---------------|--------|-------|
-| `phone-state` | `to`, `volume`, `volumeMax`, `muted`, `rotation`, `can` | `volume` is the media volume, an integer from 0 to `volumeMax` (15 on most phones). Android reports 0 while `muted` (boolean) is true. `rotation` is `auto`, `portrait` or `landscape`: whether a viewer is holding the screen one way. Nothing does yet, so it is always `auto`. `can` lists what the phone is able to do right now, as an array of names: `volume` (absent on a device whose volume is fixed), `quick-settings`, `lock` and `screenshot` (absent while the accessibility service is off; the last two need Android 9), and `rotate` once phones can. |
+| `phone-state` | `to`, `volume`, `volumeMax`, `muted`, `rotation`, `can` | `volume` is the media volume, an integer from 0 to `volumeMax` (15 on most phones). Android reports 0 while `muted` (boolean) is true. `rotation` is `portrait` or `landscape` while a viewer is holding the screen that way with `rotate`, and `auto` otherwise; it is what is being held, not which way the screen happens to be. `can` lists what the phone is able to do right now, as an array of names: `volume` (absent on a device whose volume is fixed), and `rotate`, `quick-settings`, `lock` and `screenshot` (absent while the accessibility service is off; the last two need Android 9). The first apps to send `phone-state` could not rotate: they leave `rotate` out and always say `auto`. |
 
 A viewer offers only what `can` lists, and ignores names it doesn't know. Apps
 before these messages never send `phone-state`, so a viewer that asks and
 hears nothing offers none of it. The phone sends it only when asked; it is not
-pushed when the volume changes on the phone, so a viewer asks again whenever
-it is about to show the volume.
+pushed when the volume changes on the phone or when the phone lets go of a
+rotation, so a viewer asks again whenever it is about to show either.
 
 **File system** (`path` uses the native separators of the target device)
 

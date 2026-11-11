@@ -7,17 +7,21 @@ import org.json.JSONObject
 
 /**
  * What a viewer's menu asks of this phone besides input: its media volume,
- * and what it can do right now (`volume`, `get-phone-state` and `phone-state`
- * in PROTOCOL.md).
+ * which way its screen is held, and what it can do right now (`volume`,
+ * `rotate`, `get-phone-state` and `phone-state` in PROTOCOL.md).
  *
  * None of this is input, so none of it wakes a sleeping phone. That is why
  * these messages come here and not to [InputAccessibilityService.handle].
  */
 internal object PhoneControls {
-    /** Handles `volume` and `get-phone-state` from a device that may control
-     *  this phone, and tells it how things stand afterwards. */
+    /** Handles `volume`, `rotate` and `get-phone-state` from a device that
+     *  may control this phone, and tells it how things stand afterwards. */
     fun handle(context: Context, from: String, msg: JSONObject) {
-        if (msg.optString("type") == "volume") setVolume(context, msg)
+        when (msg.optString("type")) {
+            "volume" -> setVolume(context, msg)
+            // An orientation that isn't one of the three changes nothing.
+            "rotate" -> InputAccessibilityService.instance?.rotate(msg.optString("orientation"))
+        }
         ConnectionManager.sendJson(state(context).put("to", from))
     }
 
@@ -30,6 +34,7 @@ internal object PhoneControls {
             volumeMax = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
             muted = audio.isStreamMute(AudioManager.STREAM_MUSIC),
             volumeFixed = audio.isVolumeFixed,
+            rotation = InputAccessibilityService.rotation,
             actions = InputAccessibilityService.menuActions,
         )
     }
@@ -39,7 +44,8 @@ internal object PhoneControls {
      * unless the device has none to set (a TV box, a fixed-volume output),
      * then the actions the accessibility service can perform.
      */
-    fun state(volume: Int, volumeMax: Int, muted: Boolean, volumeFixed: Boolean, actions: List<String>): JSONObject {
+    fun state(volume: Int, volumeMax: Int, muted: Boolean, volumeFixed: Boolean, rotation: String,
+              actions: List<String>): JSONObject {
         val can = JSONArray()
         if (!volumeFixed && volumeMax > 0) can.put("volume")
         actions.forEach(can::put)
@@ -48,8 +54,7 @@ internal object PhoneControls {
             .put("volume", volume)
             .put("volumeMax", volumeMax)
             .put("muted", muted)
-            // Nothing holds the phone's orientation yet.
-            .put("rotation", "auto")
+            .put("rotation", rotation)
             .put("can", can)
     }
 

@@ -73,6 +73,8 @@ object PhoneScreenCapture {
         main.post {
             val context = appContext ?: return@post
             viewers.removeAll { !mayView(context, it) }
+            // A screen turned for a viewer goes back to the phone's own way with the last of them.
+            if (viewers.isEmpty()) InputAccessibilityService.instance?.releaseRotation()
             val active = maySendFrames(context)
             val smooth = ScreenCaptureService.isRunning
             // Stop the old source before starting the new one.

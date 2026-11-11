@@ -49,9 +49,12 @@ class InputAccessibilityService : AccessibilityService() {
         val menuActions: List<String>
             get() = when {
                 instance == null -> emptyList()
-                Build.VERSION.SDK_INT >= 28 -> listOf("quick-settings", "lock", "screenshot")
-                else -> listOf("quick-settings")
+                Build.VERSION.SDK_INT >= 28 -> listOf("rotate", "quick-settings", "lock", "screenshot")
+                else -> listOf("rotate", "quick-settings")
             }
+
+        /** Which way a viewer is holding the screen: `auto` when none is. */
+        val rotation: String get() = instance?.rotationOverride?.orientation ?: RotationOverride.AUTO
 
         /**
          * Whether a message is real input, which wakes a sleeping phone the
@@ -69,6 +72,14 @@ class InputAccessibilityService : AccessibilityService() {
 
     private val main = Handler(Looper.getMainLooper())
     private var screenCapture: AccessibilityScreenCapture? = null
+    private val rotationOverride = RotationOverride(this)
+
+    /** Holds the screen `portrait` or `landscape` for a viewer, or gives
+     *  rotation back to the phone for `auto`. Not input: it wakes nothing. */
+    fun rotate(orientation: String) = rotationOverride.set(orientation)
+
+    /** Nobody is viewing any more: the phone turns its own way again. */
+    fun releaseRotation() = rotationOverride.release()
 
     val canCaptureScreen: Boolean get() = screenCapture != null
 
@@ -95,6 +106,7 @@ class InputAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        rotationOverride.close()
         if (instance === this) instance = null
         if (Build.VERSION.SDK_INT >= 30) screenCapture?.close()
         screenCapture = null

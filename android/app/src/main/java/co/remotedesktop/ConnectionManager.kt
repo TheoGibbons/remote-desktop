@@ -532,6 +532,9 @@ object ConnectionManager {
             // The rest of a viewer's menu. Not input: these never wake the phone.
             "volume", "get-phone-state" ->
                 if (mayControl(from)) PhoneControls.handle(appContext, from, msg)
+            // Turning the screen is for whoever is looking at it, and is undone when they stop.
+            "rotate" ->
+                if (mayControl(from) && PhoneScreenCapture.isViewing(from)) PhoneControls.handle(appContext, from, msg)
 
             "start-view" ->
                 if (mayControl(from)) PhoneScreenCapture.onViewRequested(appContext, from)
