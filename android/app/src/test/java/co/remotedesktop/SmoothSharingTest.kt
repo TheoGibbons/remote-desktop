@@ -73,7 +73,7 @@ class SmoothSharingTest {
         // Nobody could see the prompt in a viewer while pictures are held back.
         assertEquals(listOf(tell("unavailable", SmoothSharing.WAITING_FOR_APPROVAL, "pc")),
             rules.request("pc", viewer, ready.copy(sending = false), now = 0))
-        assertEquals(listOf(tell("unavailable", SmoothSharing.CANNOT_SHOW, "pc")),
+        assertEquals(listOf(tell("unavailable", SmoothSharing.NO_NOTIFICATIONS, "pc")),
             rules.request("pc", viewer, ready.copy(canShowPrompt = false), now = 0))
         assertFalse(rules.prompting)
     }
@@ -190,6 +190,17 @@ class SmoothSharingTest {
         assertEquals(SmoothSharing.askAgainIn(10_000), refusedFor(other, last + 20_003))
     }
 
+    /** The PC shows a reason on one line and cuts it at 200 characters. */
+    @Test
+    fun everyReasonFitsWhereThePcShowsIt() {
+        val reasons = listOf(SmoothSharing.UNLOCK_FIRST, SmoothSharing.ONLY_WAY, SmoothSharing.ANSWER_ON_PHONE,
+            SmoothSharing.WAITING_FOR_APPROVAL, SmoothSharing.CANNOT_SHOW, SmoothSharing.NO_NOTIFICATIONS,
+            SmoothSharing.DID_NOT_START, SmoothSharing.SCREEN_TURNED_OFF, SmoothSharing.NOBODY_ANSWERED,
+            SmoothSharing.STOPPED_ON_PHONE, SmoothSharing.PHONE_LOCKED, SmoothSharing.TAP_NOTIFICATION,
+            SmoothSharing.askAgainIn(SmoothSharing.MAX_WAIT_MS))
+        for (reason in reasons) assertTrue(reason, reason.length <= 200 && '\n' !in reason)
+    }
+
     @Test
     fun theWaitIsSaidInWords() {
         assertEquals("The phone was asked a moment ago and nobody said yes. Ask again in 1 second.", SmoothSharing.askAgainIn(1))
@@ -248,6 +259,13 @@ class SmoothSharingTest {
             assertEquals(listOf(ClosePrompt, tell("unavailable", SmoothSharing.CANNOT_SHOW, "pc")),
                 it.answered(Outcome.NOT_SHOWN, now = 1))
             assertFalse(it.prompting)
+        }
+        asked().let {
+            assertEquals(listOf(ClosePrompt, tell("unavailable", SmoothSharing.NO_NOTIFICATIONS, "pc")),
+                it.answered(Outcome.NO_NOTIFICATIONS, now = 1))
+            assertFalse(it.prompting)
+            // Nothing was shown, so nobody is made to wait.
+            assertEquals(ShowPrompt, it.request("pc", viewer, ready, now = 2).last())
         }
         asked().let {
             assertEquals(emptyList<Any>(), it.tick(now = SmoothSharing.ANSWER_MS - 1))

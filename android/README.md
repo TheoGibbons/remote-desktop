@@ -105,7 +105,9 @@ has gone without a yes the PC cannot ask again for ten seconds, and for longer
 each time it happens again, up to five minutes. With the phone on
 its side the prompt's buttons are out of view until it is scrolled. Where a
 phone will not show the prompt from the background, a notification asks
-instead; tap it to see the prompt. The same row on the PC stops smooth sharing,
+instead; tap it to see the prompt. If the app's notifications are off, or just
+its "Requests from your devices" kind, the PC is told that the phone could not
+ask, and to turn smooth sharing on at the phone. The same row on the PC stops smooth sharing,
 and the PC is told why whenever it ends: stopped from a device, stopped on the
 phone, or the phone was locked. A PC cannot stop it where it is the only way
 the phone can show its screen (Android 8 to 10, or the Accessibility service

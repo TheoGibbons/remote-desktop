@@ -42,6 +42,9 @@ internal object SmoothPrompt {
 
     private val main = Handler(Looper.getMainLooper())
     internal var rules = SmoothSharing()
+
+    /** Android's prompt, as the activity asks for it. A test gives a phone that has none. */
+    internal var consentIntent: (Context) -> Intent = ScreenShare::consentIntent
     private var appContext: Context? = null
 
     /** The activity under the prompt, while there is one. */
@@ -64,8 +67,18 @@ internal object SmoothPrompt {
     fun offer(context: Context): String = SmoothSharing.offer(ScreenCaptureService.isRunning, canShowPrompt(context),
         PhoneScreenCapture.canViewWithoutSharing)
 
-    private fun canShowPrompt(context: Context) =
-        InputAccessibilityService.instance != null || PermissionsActivity.notificationsOn(context)
+    private fun canShowPrompt(context: Context) = InputAccessibilityService.instance != null || canNotify(context)
+
+    /**
+     * Whether a notification from here would be seen: the app's notifications
+     * are on, and so is the kind this one is. Someone can switch that kind
+     * off by itself in the phone's settings, and then posting it shows nothing.
+     */
+    private fun canNotify(context: Context): Boolean {
+        if (!PermissionsActivity.notificationsOn(context)) return false
+        val channel = context.getSystemService(NotificationManager::class.java).getNotificationChannel(CHANNEL_ID)
+        return channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
+    }
 
     /** `request-smooth` or `stop-smooth` from [from], with what is known of that device. */
     fun handle(context: Context, from: String, type: String, asker: SmoothSharing.Asker) {
@@ -166,8 +179,8 @@ internal object SmoothPrompt {
 
     /** "Tap to see the prompt": a notification's tap may always open an activity. */
     private fun notifyInstead(context: Context) {
-        if (!PermissionsActivity.notificationsOn(context)) {
-            ended(SmoothSharing.Outcome.NOT_SHOWN)
+        if (!canNotify(context)) {
+            ended(SmoothSharing.Outcome.NO_NOTIFICATIONS)
             return
         }
         try {
@@ -233,6 +246,13 @@ internal object SmoothPrompt {
         }
     }
 
+    /** Android has no prompt to show on this phone. Nobody declined anything. */
+    fun noPrompt(from: ScreenShareRequestActivity) {
+        if (activity !== from) return
+        activity = null
+        if (rules.prompting) ended(SmoothSharing.Outcome.NOT_SHOWN)
+    }
+
     /** The activity went without an answer: Android closed it, or its task was swiped away. */
     fun gone(from: ScreenShareRequestActivity) {
         if (activity !== from) return
@@ -267,9 +287,11 @@ class ScreenShareRequestActivity : Activity() {
         asked = true
         try {
             @Suppress("DEPRECATION")
-            startActivityForResult(ScreenShare.consentIntent(this), REQUEST)
+            startActivityForResult(SmoothPrompt.consentIntent(this), REQUEST)
         } catch (e: RuntimeException) {
             Log.w("SmoothPrompt", "Android has no prompt to show", e)
+            asked = false
+            SmoothPrompt.noPrompt(this)
             finish()
         }
     }

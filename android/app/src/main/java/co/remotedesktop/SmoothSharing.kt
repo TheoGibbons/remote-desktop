@@ -68,8 +68,10 @@ internal class SmoothSharing(
         DECLINED,
         /** The phone's screen turned off under it. */
         SCREEN_OFF,
-        /** Android would not show it, and there was no other way to ask. */
+        /** Android would not show it. */
         NOT_SHOWN,
+        /** Android did not show it, and the notification that asks instead is switched off on the phone. */
+        NO_NOTIFICATIONS,
     }
 
     /** One thing for [SmoothPrompt] to do. */
@@ -130,7 +132,7 @@ internal class SmoothSharing(
                 listOf(asking)
             }
             waitLeft(now) != null -> no(askAgainIn(waitLeft(now)!!))
-            !phone.canShowPrompt -> no(CANNOT_SHOW)
+            !phone.canShowPrompt -> no(NO_NOTIFICATIONS)
             else -> {
                 waiting.clear()
                 waiting.add(from)
@@ -173,8 +175,10 @@ internal class SmoothSharing(
                 refused(now)
                 listOf(ClosePrompt, Tell(asked, DECLINED, SCREEN_TURNED_OFF))
             }
-            // Nothing was put in front of anyone, so there is nothing to wait out.
+            // Nothing was put in front of anyone, so there is nothing to wait out, and
+            // nobody declined: the viewer is told what is in the way.
             Outcome.NOT_SHOWN -> listOf(ClosePrompt, Tell(asked, UNAVAILABLE, CANNOT_SHOW))
+            Outcome.NO_NOTIFICATIONS -> listOf(ClosePrompt, Tell(asked, UNAVAILABLE, NO_NOTIFICATIONS))
         }
     }
 
@@ -266,7 +270,10 @@ internal class SmoothSharing(
         const val ANSWER_ON_PHONE = "The phone is asking. Someone has to approve it on the phone itself: " +
             "it has no picture to show until smooth video is on."
         const val WAITING_FOR_APPROVAL = "The phone is waiting for a new device to be approved."
-        const val CANNOT_SHOW = "The phone can't show its prompt. Turn on smooth screen sharing in its Permissions screen."
+        const val CANNOT_SHOW = "The phone couldn't show Android's prompt. " +
+            "Turn on Smooth screen sharing on the phone itself, in Remote Desktop's Permissions screen."
+        const val NO_NOTIFICATIONS = "The phone couldn't show Android's prompt, and can't ask with a notification: " +
+            "those are switched off there. Turn on Smooth screen sharing on the phone itself, in Remote Desktop's Permissions screen."
         const val DID_NOT_START = "The phone could not start sharing its screen."
         const val SCREEN_TURNED_OFF = "The phone's screen turned off before the prompt was answered."
         const val NOBODY_ANSWERED = "Nobody answered the prompt on the phone."

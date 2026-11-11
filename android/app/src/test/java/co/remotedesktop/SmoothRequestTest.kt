@@ -90,6 +90,7 @@ class SmoothRequestTest {
         otherPicture(true)
         // Whatever an earlier test left behind.
         SmoothPrompt.rules = SmoothSharing()
+        SmoothPrompt.consentIntent = ScreenShare::consentIntent
         ScreenCaptureService.awake = KeepAwake()
         promptField("activity").set(SmoothPrompt, null)
         promptField("stoppedBy").set(SmoothPrompt, null)
@@ -464,14 +465,62 @@ class SmoothRequestTest {
         // The service is there, but on this phone the activity never comes.
         receive("pc", "request-smooth")
         later(SmoothPrompt.SHOW_WAIT_MS)
-        assertEquals(listOf("prompting", "unavailable: " + SmoothSharing.CANNOT_SHOW), statuses("pc").map(::said))
+        assertEquals(listOf("prompting", "unavailable: " + SmoothSharing.NO_NOTIFICATIONS), statuses("pc").map(::said))
         assertFalse(SmoothPrompt.pending)
 
         // And with the service off as well, it says so at once.
         instanceField.set(null, null)
         receive("pc", "request-smooth")
-        assertEquals("unavailable: " + SmoothSharing.CANNOT_SHOW, said(statuses("pc").last()))
+        assertEquals("unavailable: " + SmoothSharing.NO_NOTIFICATIONS, said(statuses("pc").last()))
         assertEquals(0, notifications.allNotifications.size)
+    }
+
+    /**
+     * The app's notifications are on, and the one kind that asks for the
+     * prompt has been switched off in the phone's settings. Posting it would
+     * show nothing, and the viewer would hear "Nobody answered" a minute on.
+     */
+    @Test
+    fun withJustTheRequestNotificationsOffThePhoneSaysSoToo() {
+        context.getSystemService(NotificationManager::class.java).createNotificationChannel(
+            android.app.NotificationChannel("requests", "Requests from your devices", NotificationManager.IMPORTANCE_NONE))
+        view("pc")
+        receive("pc", "request-smooth")
+        // On this phone the activity never comes.
+        later(SmoothPrompt.SHOW_WAIT_MS)
+        assertEquals(listOf("prompting", "unavailable: " + SmoothSharing.NO_NOTIFICATIONS), statuses("pc").map(::said))
+        assertEquals(0, notifications.allNotifications.size)
+        assertFalse(SmoothPrompt.pending)
+        // A minute later nothing more is said.
+        later(SmoothSharing.ANSWER_MS)
+        assertEquals(2, statuses().size)
+
+        // With the service off as well there is no way to ask, and screen-info says so.
+        instanceField.set(null, null)
+        assertEquals("unavailable", SmoothPrompt.offer(context))
+        receive("pc", "request-smooth")
+        assertEquals("unavailable: " + SmoothSharing.NO_NOTIFICATIONS, said(statuses("pc").last()))
+        context.getSystemService(NotificationManager::class.java).deleteNotificationChannel("requests")
+    }
+
+    /** A phone whose Android has no screen-sharing prompt to show: nobody declined, and nobody need wait. */
+    @Test
+    fun aPhoneWithNoPromptToShowSaysThatAndNotThatSomeoneDeclined() {
+        SmoothPrompt.consentIntent = { throw android.content.ActivityNotFoundException("no prompt on this phone") }
+        view("pc")
+        receive("pc", "request-smooth")
+        val prompt = promptActivity()
+        idle()
+        assertNull(consent(prompt.get()))
+        assertTrue(prompt.get().isFinishing)
+        assertEquals(listOf("prompting", "unavailable: " + SmoothSharing.CANNOT_SHOW), statuses("pc").map(::said))
+        assertFalse(SmoothPrompt.pending)
+
+        // Not a refusal: it may be asked for again at once, and nothing is waited out.
+        SmoothPrompt.consentIntent = ScreenShare::consentIntent
+        receive("pc", "request-smooth")
+        assertEquals("prompting", said(statuses("pc").last()))
+        assertNotNull(promptStart())
     }
 
     @Test
