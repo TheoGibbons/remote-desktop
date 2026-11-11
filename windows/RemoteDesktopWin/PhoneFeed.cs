@@ -24,6 +24,11 @@ internal readonly record struct PhonePicture(byte[] Data, int Offset, int Length
 /// waiting and hands it on to be drawn, so neither the socket nor the window
 /// ever waits for a JPEG.
 ///
+/// It also keeps the figures for the Stats readout (<see cref="PhoneStats"/>),
+/// since it is where things arrive: while the readout is open its thread
+/// pings the phone every two seconds, and the answer is timed here, on the
+/// socket's thread, and not whenever the window gets round to it.
+///
 /// No WPF here: RemoteDesktopWin.PhoneViewTests compiles this file in.
 /// </summary>
 internal sealed class PhoneFeed : IDisposable
@@ -37,6 +42,8 @@ internal sealed class PhoneFeed : IDisposable
     private readonly Func<long> _nowMs;
     private readonly PhoneVideoStream _stream = new();
     private readonly AckPacer _acks = new();
+    private readonly PhoneStats _stats = new();
+    private bool _statsShown;       // the readout is open: the phone is pinged
 
     private string? _phoneId;       // the phone being viewed
     private bool _offered;          // it was offered codecs: this PC has approved it
@@ -99,7 +106,19 @@ internal sealed class PhoneFeed : IDisposable
     {
         _stream.Forget();
         _acks.Forget();
+        _stats.Reset();
         _waiting = null;
+    }
+
+    private static string? Text(JsonNode? node) => node is JsonValue v && v.TryGetValue<string>(out var text) ? text : null;
+
+    /// <summary>A whole number, however the JSON came by it; null for anything else.</summary>
+    private static long? Number(JsonNode? node)
+    {
+        if (node is not JsonValue v) return null;
+        if (v.TryGetValue<long>(out var whole)) return whole;
+        if (v.TryGetValue<int>(out var small)) return small;
+        return v.TryGetValue<double>(out var real) && Math.Abs(real) < 1e15 ? (long)real : null;
     }
 
     /// <summary>
@@ -110,11 +129,14 @@ internal sealed class PhoneFeed : IDisposable
     /// </summary>
     public void OnScreenInfo(JsonNode msg)
     {
-        if (msg is not JsonObject info || info["from"] is not JsonValue f || !f.TryGetValue<string>(out var from)) return;
+        if (msg is not JsonObject info || Text(info["from"]) is not { } from) return;
         var (stream, paused) = PhoneVideoStream.Read(msg);
         lock (_gate)
         {
-            if (_phoneId == null || from != _phoneId || !_offered) return;
+            if (_phoneId == null || from != _phoneId) return;
+            _stats.Size((int)(Number(info["width"]) ?? 0), (int)(Number(info["height"]) ?? 0));
+            if (!_offered) return;
+            _stats.Announce(Text(info["capture"]), Text(info["codec"]));
             _stream.Announce(stream, paused);
             // A picture still waiting is of what was announced before.
             if (!_stream.DrawsType1 && _waiting is { Header: null }) _waiting = null;
@@ -139,6 +161,7 @@ internal sealed class PhoneFeed : IDisposable
             {
                 if (!_stream.DrawsType1) return;
                 _stream.Count(data.Length - 1, now);
+                _stats.Arrived(data.Length - 1, null, now);
                 _waiting = new PhonePicture(data, 1, data.Length - 1, null, now);
             }
             else if (data[0] == Crypto.ChPhone)
@@ -147,6 +170,7 @@ internal sealed class PhoneFeed : IDisposable
                 int bytes = data.Length - 1 - PhoneFrame.HeaderSize;
                 var verdict = _stream.Take(header, bytes, now);
                 if (verdict == FrameVerdict.Refuse) return;
+                _stats.Arrived(bytes, header, now);
                 ack = _acks.Received(header.Stream, header.Seq, now)?.Message(_phoneId);
                 // Every JPEG is a whole picture, so the newest replaces any that is still waiting.
                 if (verdict == FrameVerdict.Draw)
@@ -158,6 +182,61 @@ internal sealed class PhoneFeed : IDisposable
         if (ack != null) _send(ack);
     }
 
+    /// <summary>
+    /// A <c>diagnostic-pong</c> arrived. Timed here, on the thread that reads
+    /// the socket; only the viewed phone's answer to a ping of ours counts.
+    /// </summary>
+    public void OnPong(JsonNode msg)
+    {
+        if (msg is not JsonObject pong || Text(pong["from"]) is not { } from) return;
+        if (Number(pong["nonce"]) is not { } nonce || Number(pong["hostTimeMs"]) is not { } hostTime) return;
+        lock (_gate)
+        {
+            if (from != _phoneId) return;
+            _stats.Pong(nonce, hostTime, Number(pong["hostQueueBytes"]) ?? 0, _nowMs());
+        }
+    }
+
+    /// <summary>The window has put a picture on show. <paramref name="header"/>
+    /// is the header it came behind, if it had one.</summary>
+    public void Drawn(PhoneFrameHeader? header)
+    {
+        if (header is not { } drawn) return;
+        lock (_gate)
+            if (_stream.Current == drawn.Stream) _stats.Drawn(drawn, _nowMs());
+    }
+
+    /// <summary>The readout was opened or closed. While it is open the phone
+    /// is pinged every two seconds, which is what the delay is worked out from.</summary>
+    public void ShowStats(bool shown)
+    {
+        lock (_gate)
+        {
+            _statsShown = shown;
+            Monitor.Pulse(_gate);
+        }
+    }
+
+    /// <summary>The readout's text, as things stand now.</summary>
+    public string StatsText()
+    {
+        lock (_gate)
+        {
+            _stats.Lost = _stream.Gaps;
+            return _stats.Text(_nowMs());
+        }
+    }
+
+    /// <summary>The last minute's figures as text, for the clipboard.</summary>
+    public string StatsHistory()
+    {
+        lock (_gate)
+        {
+            _stats.Lost = _stream.Gaps;
+            return _stats.History(_nowMs());
+        }
+    }
+
     /// <summary>The stream of the phone being viewed, for a test to look at.</summary>
     internal (ulong? Stream, bool DrawsType1, long Gaps) State
     {
@@ -165,15 +244,15 @@ internal sealed class PhoneFeed : IDisposable
     }
 
     /// <summary>Does what the feed's thread would do now: sends an
-    /// acknowledgement that has come due and draws the picture that is
-    /// waiting. False if there was nothing to do.</summary>
+    /// acknowledgement or a ping that has come due and draws the picture
+    /// that is waiting. False if there was nothing to do.</summary>
     internal bool Pump()
     {
         PhonePicture? picture;
-        JsonObject? ack;
+        JsonObject? ack, ping;
         lock (_gate)
-            if (!TakeWork(out picture, out ack)) return false;
-        Do(picture, ack);
+            if (!TakeWork(out picture, out ack, out ping)) return false;
+        Do(picture, ack, ping);
         return true;
     }
 
@@ -182,36 +261,46 @@ internal sealed class PhoneFeed : IDisposable
         while (true)
         {
             PhonePicture? picture;
-            JsonObject? ack;
+            JsonObject? ack, ping;
             lock (_gate)
             {
                 while (true)
                 {
                     if (_closed) return;
-                    if (TakeWork(out picture, out ack)) break;
-                    // Asleep until a frame arrives, or until an acknowledgement that is owed may go.
-                    if (_acks.DueIn(_nowMs()) is { } ms) Monitor.Wait(_gate, (int)Math.Clamp(ms, 1, 1000));
+                    if (TakeWork(out picture, out ack, out ping)) break;
+                    // Asleep until a frame arrives, or until an acknowledgement
+                    // that is owed may go, or until the next ping is due.
+                    long now = _nowMs();
+                    long? wait = _acks.DueIn(now);
+                    if (_statsShown && _phoneId != null) wait = Math.Min(wait ?? long.MaxValue, _stats.PingDueIn(now));
+                    if (wait is { } ms) Monitor.Wait(_gate, (int)Math.Clamp(ms, 1, 1000));
                     else Monitor.Wait(_gate);
                 }
             }
-            Do(picture, ack);
+            Do(picture, ack, ping);
         }
     }
 
     /// <summary>Under the lock.</summary>
-    private bool TakeWork(out PhonePicture? picture, out JsonObject? ack)
+    private bool TakeWork(out PhonePicture? picture, out JsonObject? ack, out JsonObject? ping)
     {
+        long now = _nowMs();
         picture = _waiting;
         _waiting = null;
-        ack = _phoneId != null ? _acks.Due(_nowMs())?.Message(_phoneId) : null;
-        return picture != null || ack != null;
+        ack = _phoneId != null ? _acks.Due(now)?.Message(_phoneId) : null;
+        ping = null;
+        if (_statsShown && _phoneId != null && _stats.PingDueIn(now) == 0)
+            // The time is noted as it is handed to the socket, a line from here.
+            ping = new JsonObject { ["type"] = "diagnostic-ping", ["to"] = _phoneId, ["nonce"] = _stats.Ping(now) };
+        return picture != null || ack != null || ping != null;
     }
 
-    private void Do(PhonePicture? picture, JsonObject? ack)
+    private void Do(PhonePicture? picture, JsonObject? ack, JsonObject? ping)
     {
         // Nothing here may end the thread: a picture that won't decode is one picture lost.
         try
         {
+            if (ping != null) _send(ping);
             if (ack != null) _send(ack);
             if (picture is { } waiting) _draw(waiting);
         }

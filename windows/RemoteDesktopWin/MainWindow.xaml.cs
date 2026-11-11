@@ -20,7 +20,7 @@ public partial class MainWindow : Window
     private readonly PhoneFeed _phoneFeed;
     // The phone picture that is decoded and waiting to be shown, with the
     // window it was decoded for. Only the newest is kept.
-    private (PhoneViewWindow View, PhoneViewWindow.DecodedPicture Picture)? _phonePicture;
+    private (PhoneViewWindow View, PhoneViewWindow.DecodedPicture Picture, PhoneFrameHeader? Header)? _phonePicture;
     private readonly object _phonePictureLock = new();
     private bool _phoneDrawPosted;
     private readonly FrameMailbox _pcPatches;
@@ -754,6 +754,8 @@ public partial class MainWindow : Window
         // thread, where it is still in order with the frames behind it. The
         // window hears the rest of the message later, like any other.
         if (type == "screen-info") _phoneFeed.OnScreenInfo(msg);
+        // And its answer to a ping is timed here, not when the window gets to it.
+        else if (type == "diagnostic-pong") _phoneFeed.OnPong(msg);
         // fs-begin is the exception: it opens the file that the chunks behind
         // it are written to, and chunks are written on the socket thread.
         if (type == "fs-begin") Dispatcher.Invoke(() => OnJson(msg));
@@ -767,7 +769,7 @@ public partial class MainWindow : Window
         if (_phoneView is not { } view || view.Decode(picture.Data, picture.Offset, picture.Length) is not { } decoded) return;
         lock (_phonePictureLock)
         {
-            _phonePicture = (view, decoded);
+            _phonePicture = (view, decoded, picture.Header);
             if (_phoneDrawPosted) return;
             _phoneDrawPosted = true;
         }
@@ -778,7 +780,7 @@ public partial class MainWindow : Window
 
     private void ShowPhonePicture()
     {
-        (PhoneViewWindow View, PhoneViewWindow.DecodedPicture Picture)? waiting;
+        (PhoneViewWindow View, PhoneViewWindow.DecodedPicture Picture, PhoneFrameHeader? Header)? waiting;
         lock (_phonePictureLock)
         {
             waiting = _phonePicture;
@@ -786,7 +788,10 @@ public partial class MainWindow : Window
             _phoneDrawPosted = false;
         }
         // Not into a window that has been closed, or opened on another phone, meanwhile.
-        if (waiting is { } latest && ReferenceEquals(latest.View, _phoneView)) latest.View.ShowPicture(latest.Picture);
+        if (waiting is not { } latest || !ReferenceEquals(latest.View, _phoneView)) return;
+        latest.View.ShowPicture(latest.Picture);
+        // For the readout: this is the moment the picture's age is counted to.
+        _phoneFeed.Drawn(latest.Header);
     }
 
     private void OnJson(JsonNode msg)

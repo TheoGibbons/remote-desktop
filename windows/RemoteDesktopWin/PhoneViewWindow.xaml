@@ -69,6 +69,16 @@
                            FontFamily="Segoe UI" FontSize="13" Foreground="White"
                            AutomationProperties.LiveSetting="Polite"/>
             </Border>
+            <!-- The Stats readout (F8, or Stats in the menu): how fast
+                 pictures arrive and how far behind the phone they are. The
+                 top layer, in a bottom corner, clear of the caption. Clicks
+                 go through it to the picture. -->
+            <Border x:Name="StatsBox" VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="8"
+                    Padding="10,7" CornerRadius="6" Background="#D9000000" BorderBrush="#40FFFFFF"
+                    BorderThickness="1" IsHitTestVisible="False" Visibility="Collapsed">
+                <TextBlock x:Name="StatsText" FontFamily="Segoe UI" FontSize="12" Foreground="White"
+                           TextWrapping="Wrap" AutomationProperties.Name="Stats"/>
+            </Border>
         </Grid>
 
         <!-- The "⋯" menu. A Popup rather than a ContextMenu, which would take
@@ -169,6 +179,10 @@
                             Content="Screenshot" Visibility="Collapsed" Click="MenuAction_Click"/>
                     <Button x:Name="LockButton" Style="{StaticResource RdMenuButton}" Tag="lock"
                             Content="Lock screen" Visibility="Collapsed" Click="MenuAction_Click"/>
+                    <Separator Style="{StaticResource RdMenuSeparator}"/>
+                    <Button x:Name="StatsButton" Style="{StaticResource RdMenuButton}" Content="Stats"
+                            ToolTip="Shows how fast pictures arrive and how far behind the phone they are. F8 does the same; Shift+F8 copies the last minute."
+                            Click="StatsButton_Click"/>
                     <!-- For a phone whose app is too old to say what it can do. -->
                     <StackPanel x:Name="UpdateLine" Visibility="Collapsed">
                         <Separator Style="{StaticResource RdMenuSeparator}"/>

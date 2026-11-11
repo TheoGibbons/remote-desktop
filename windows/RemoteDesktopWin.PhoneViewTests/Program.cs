@@ -7,8 +7,9 @@ using RemoteDesktopWin;
 // picture of a phone that is asleep or locked (LockOverlay.cs); and which of
 // the frames that arrive are the phone's own, how they are acknowledged and
 // how they reach the window (PhoneFrame.cs, PhoneVideoStream.cs,
-// PhoneFeed.cs). None of these files has any WPF in it, so none of this needs
-// a window.
+// PhoneFeed.cs); and the figures of the Stats readout, the delay above all
+// (PhoneStats.cs). None of these files has any WPF in it, so none of this
+// needs a window.
 internal static class Program
 {
     private static readonly DateTime T0 = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -54,6 +55,9 @@ internal static class Program
         CheckFeedKeepsTheNewest();
         CheckFeedOnItsOwnThread();
         CheckStartView();
+        CheckDelayArithmetic();
+        CheckReadoutText();
+        CheckFeedKeepsTheFigures();
     }
 
     // ---------------- the menu ----------------
@@ -1425,6 +1429,162 @@ internal static class Program
         // The window sends every start-view through this one function, the
         // first and each one after, so a later one cannot take the offer back.
         Console.WriteLine("PASS: every start-view to an approved phone says what this viewer can draw");
+    }
+
+    // ---------------- the Stats readout ----------------
+
+    private static void CheckDelayArithmetic()
+    {
+        var stats = new PhoneStats();
+        Check(stats.Clock(0) == null, "Until the phone has answered a ping, the difference between the clocks is not known");
+        Check(stats.PingDueIn(0) == 0, "The first ping is due at once");
+
+        // The phone's clock is 500 000 ms ahead of the PC's, and a ping takes 10 ms each way.
+        long first = stats.Ping(1000);
+        Check(stats.PingDueIn(1000) == PhoneStats.PingEveryMs && stats.PingDueIn(2999) == 1 && stats.PingDueIn(3000) == 0,
+            "The next ping is due two seconds after the last");
+        stats.Pong(first, hostTimeMs: 501_010, queueBytes: 0, nowMs: 1020);
+        Check(stats.Clock(1020) == (500_000, 10), "The difference is the phone's time less the sending time less half the round trip, give or take that half");
+
+        // A pong that was held up on its way back: a long round trip, the same phone time.
+        long late = stats.Ping(3000);
+        stats.Pong(late, hostTimeMs: 503_010, queueBytes: 0, nowMs: 3500);
+        Check(stats.Clock(3500) == (500_000, 10), "A pong held up on its way back changes nothing");
+        // A ping that was held up on its way there: the phone answered 300 ms late.
+        long slow = stats.Ping(5000);
+        stats.Pong(slow, hostTimeMs: 505_300, queueBytes: 0, nowMs: 5310);
+        Check(stats.Clock(5310) == (500_000, 10), "Nor does a ping held up on its way there: the fastest one in the last minute counts");
+        // An answer to nothing we asked, and the same answer twice.
+        stats.Pong(999, hostTimeMs: 1, queueBytes: 0, nowMs: 5400);
+        stats.Pong(slow, hostTimeMs: 1, queueBytes: 0, nowMs: 5400);
+        Check(stats.Clock(5400) == (500_000, 10), "A pong that answers no ping of ours is ignored");
+
+        // A picture captured when the phone's clock said 505 850, drawn when the PC's says 6000.
+        Check(PhoneStats.Delay(6000, 500_000, 505_850) == 150, "Delay is the PC's clock at drawing, plus the difference, less the capture time");
+        // The phone's clock wraps at 32 bits between the capture and the drawing.
+        long wrapped = 4_294_967_296 + 100 - 10_000;
+        Check(PhoneStats.Delay(10_000, wrapped, 4_294_967_096) == 300, "A clock that wraps round between capture and drawing gives the same answer");
+        Check(PhoneStats.Delay(10_000, wrapped + 3 * 4_294_967_296, 4_294_967_096) == 300, "However long the phone has been up");
+        Check(PhoneStats.Delay(6000, 500_000, 506_050) == -50, "A capture time ahead of the clock shows as it is, not as 49 days");
+
+        // Over the last second: latest, average and worst.
+        var header = new PhoneFrameHeader(StreamA, 0, true, PhoneFrame.Jpeg, false, false, 1080, 2340, 0);
+        stats.Arrived(100_000, header with { CaptureMs = 505_500 }, 5600);
+        stats.Drawn(header with { CaptureMs = 505_500 }, 5620);      // 120 ms old
+        stats.Drawn(header with { CaptureMs = 505_850 }, 6100);      // 250
+        stats.Drawn(header with { CaptureMs = 506_250, Repeat = true }, 6400);   // a repeat: left out
+        stats.Drawn(header with { CaptureMs = 506_260 }, 6440);      // 180
+        var second = stats.Between(5441, 6441, 6440);
+        Check(second.DelayLatest == 180 && second.DelayAverage == 183 && second.DelayWorst == 250 && second.DelayMedian == 180,
+            "The delays of a second: the latest, their average, the worst, and the middle one; a repeat is left out");
+        Check(stats.Between(6441, 7441, 7440).DelayLatest == null, "A second with no picture drawn has no delay");
+        Check(stats.Clock(5310 + PhoneStats.KeptMs) == null, "A minute after the last answer, the difference is not known any more");
+        Console.WriteLine("PASS: the delay is worked out from the fastest ping of the last minute, and survives the phone's clock wrapping");
+    }
+
+    private static void CheckReadoutText()
+    {
+        // A phone on an older app: type 1 frames, and nothing said but the size.
+        var old = new PhoneStats();
+        old.Size(1080, 2340);
+        old.Arrived(100_000, null, 9_200);
+        old.Arrived(100_000, null, 9_600);
+        old.Arrived(100_000, null, 10_000);
+        Check(old.Text(10_000) == string.Join(Environment.NewLine,
+            "Capture not known · JPEG, type 1 · 1080 × 2340",
+            "3 pictures/s · 2400 kbit/s",
+            "Delay: not known. The phone's app is too old to say when a picture was taken.",
+            "Round trip not known · phone's queue not known",
+            "Frames lost: 0"), "An older phone's readout has the rate and the size and says why there is no delay:\n" + old.Text(10_000));
+
+        var stats = new PhoneStats();
+        stats.Announce("accessibility", "jpeg");
+        var header = new PhoneFrameHeader(StreamA, 0, true, PhoneFrame.Jpeg, false, false, 2340, 1080, 0);
+        stats.Arrived(51_200, header, 9_500);
+        stats.Arrived(51_200, header, 9_900);
+        Check(stats.Text(10_000).Contains("Delay: measuring"), "Before the phone has answered a ping the delay is being measured");
+        stats.Pong(stats.Ping(9_000), hostTimeMs: 509_010, queueBytes: 3_000, nowMs: 9_020);
+        stats.Drawn(header with { CaptureMs = 509_380 }, 9_520);     // 140 ms
+        stats.Drawn(header with { CaptureMs = 509_760 }, 9_920);     // 160 ms
+        stats.Lost = 2;
+        Check(stats.Text(10_000) == string.Join(Environment.NewLine,
+            "Accessibility viewing · JPEG · 2340 × 1080",
+            "2 pictures/s · 819 kbit/s",
+            "Delay 160 ms · average 150 · worst 160 (± 10 ms)",
+            "Round trip 20 ms · phone's queue 2.9 KB",
+            "Frames lost: 2"), "The readout of a phone that sends type 5:\n" + stats.Text(10_000));
+        Check(stats.Text(11_500).Contains("Delay: no new picture in the last second (± 10 ms)") && stats.Text(11_500).Contains("0 pictures/s · 0 kbit/s"),
+            "A still screen has no delay to show, and says so");
+        stats.Announce("screen-share", "jpeg");
+        Check(stats.Text(11_500).StartsWith("Smooth sharing · JPEG"), "Smooth sharing is named as the phone's own screens name it");
+
+        // Shift+F8: the last minute, a line for the whole of it and one for each second.
+        var copied = stats.History(10_000).Split(Environment.NewLine);
+        Check(copied[0] == "Remote Desktop phone viewer, the last 1 s" && copied[1] == "Smooth sharing · JPEG · 2340 × 1080",
+            "The copy says what it is and how the phone was being viewed: " + copied[0]);
+        Check(copied[2] == "Pictures/s 2.0 · KB per picture 50 · delay median / worst (ms) 160 / 160 (± 10) · round trip (ms) 20 · phone's queue, worst (KB) 2.9 · frames lost 2",
+            "Then the figures the baseline table asks for: " + copied[2]);
+        Check(copied[4].StartsWith("s ago\tpictures\tkbit/s") && copied[5] == "1\t2\t819\t150\t160\t20\t2.9",
+            "Then each second, with tabs between, so it pastes into a table: " + copied[5]);
+        // Half a minute on, with nothing more: thirty-one rows, the old second at the top.
+        var longer = stats.History(40_000).Split(Environment.NewLine);
+        Check(longer[0] == "Remote Desktop phone viewer, the last 31 s" && longer[5].StartsWith("31\t") && longer[35].StartsWith("1\t0\t0\t-"),
+            "The copy covers the time there are figures for, up to a minute: " + longer[0]);
+        stats.Reset();
+        Check(stats.Text(50_000).StartsWith("Capture not known") && stats.Clock(50_000) == null, "Another phone starts from nothing");
+        Console.WriteLine("PASS: the readout says how the phone is viewed, how fast pictures come and how far behind they are");
+    }
+
+    private static void CheckFeedKeepsTheFigures()
+    {
+        var rig = new FeedRig { Now = 10_000 };
+        rig.Feed.View("7", offered: true);
+        rig.Info("7", IdA);
+        rig.Pump();
+        Check(rig.Sent.Count == 0, "With the readout closed the phone is not pinged");
+
+        rig.Feed.ShowStats(true);
+        rig.Pump();
+        Check(rig.Sent.SequenceEqual(["""{"type":"diagnostic-ping","to":"7","nonce":1}"""]), "Opening it pings the phone at once");
+        rig.Now = 11_999;
+        rig.Pump();
+        Check(rig.Sent.Count == 1, "Not again within two seconds");
+        // The answer is timed as it arrives.
+        rig.Now = 10_020;
+        rig.Feed.OnPong(Json("""{"type":"diagnostic-pong","from":"8","nonce":1,"hostTimeMs":1}"""));
+        rig.Feed.OnPong(Json("""{"type":"diagnostic-pong","nonce":1,"hostTimeMs":1}"""));
+        rig.Feed.OnPong(Json("""{"type":"diagnostic-pong","from":"7","nonce":"one","hostTimeMs":1}"""));
+        Check(rig.Feed.StatsText().Contains("Round trip not known"), "Only the viewed phone's answer counts, and only one that makes sense");
+        rig.Feed.OnPong(Json("""{"type":"diagnostic-pong","from":"7","nonce":1,"hostTimeMs":510010,"hostQueueBytes":0,"codec":"jpeg","capture":"accessibility","fps":2}"""));
+        Check(rig.Feed.StatsText().Contains("Round trip 20 ms · phone's queue 0.0 KB"), "The phone's answer gives the round trip and its queue");
+        rig.Now = 12_000;
+        rig.Pump();
+        Check(rig.Sent.Count == 2 && rig.Sent[1].Contains("\"nonce\":2"), "Two seconds on, the next ping goes");
+
+        // A picture arrives, is decoded, and the window says when it drew it.
+        var header = Header(StreamA, 0) with { CaptureMs = 511_900 };
+        rig.Feed.OnFrame([Crypto.ChPhone, .. PhoneFrame.Build(header, new byte[2000])]);
+        rig.Pump();
+        rig.Now = 12_100;
+        rig.Feed.Drawn(rig.Drawn[^1].Header);
+        var text = rig.Feed.StatsText();
+        Check(text.StartsWith("Accessibility viewing · JPEG · 1080 × 2340") && text.Contains("1 picture/s · 16 kbit/s") &&
+            text.Contains("Delay 200 ms · average 200 · worst 200 (± 10 ms)"), "The feed's figures are what the readout shows:\n" + text);
+        rig.Feed.Drawn(Header(StreamB, 0) with { CaptureMs = 1 });
+        rig.Feed.Drawn(null);
+        Check(rig.Feed.StatsText().Contains("worst 200"), "A picture of some other stream, or one with no header, adds no delay");
+        rig.Feed.OnFrame([Crypto.ChPhone, .. PhoneFrame.Build(Header(StreamA, 3), [1])]);
+        Check(rig.Feed.StatsText().EndsWith("Frames lost: 2") && rig.Feed.StatsHistory().Contains("frames lost 2"), "Lost frames are counted in it");
+
+        rig.Feed.ShowStats(false);
+        rig.Now = 20_000;
+        rig.Pump();
+        Check(rig.Sent.Count(m => m.Contains("diagnostic-ping")) == 2, "Closing the readout stops the pings");
+        rig.Feed.Stop("7");
+        rig.Feed.View("9", offered: true);
+        Check(rig.Feed.StatsText().StartsWith("Capture not known") && rig.Feed.StatsText().Contains("Delay: measuring"),
+            "A window on another phone starts its figures from nothing");
+        Console.WriteLine("PASS: the feed pings the phone while the readout is open and keeps the figures it shows");
     }
 
     private static JsonObject Json(string text) => JsonNode.Parse(text)!.AsObject();

@@ -59,6 +59,10 @@ public partial class PhoneViewWindow : Window
     private readonly Func<bool>? _approved;
     private bool _offered;              // the last start-view offered codecs
 
+    // The Stats readout: whether it is open, and the timer that refreshes it.
+    private bool _statsShown;
+    private readonly DispatcherTimer _statsTimer;
+
     public string PeerId => _phoneId;
 
     private Point? _downPos;
@@ -163,6 +167,12 @@ public partial class PhoneViewWindow : Window
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, FitToPicture);
         };
         Closed += (_, _) => CloseMenu();
+
+        _statsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _statsTimer.Tick += (_, _) => RefreshStats();
+        Closed += (_, _) => _statsTimer.Stop();
+        // A window with no feed has no figures to show.
+        if (_feed == null) StatsButton.Visibility = Visibility.Collapsed;
 
         _updateLineTimer = new DispatcherTimer();
         _updateLineTimer.Tick += (_, _) => ShowMenuRows();
@@ -323,6 +333,51 @@ public partial class PhoneViewWindow : Window
     public void TrustChanged()
     {
         if (_feed != null && (_approved?.Invoke() == true) != _offered) SendStartView();
+    }
+
+    // ---------------- the Stats readout ----------------
+
+    private void StatsButton_Click(object sender, RoutedEventArgs e) => ToggleStats();
+
+    /// <summary>Opens or closes the readout. While it is open the feed pings
+    /// the phone, which is what the delay is worked out from.</summary>
+    internal void ToggleStats()
+    {
+        if (_feed == null) return;
+        _statsShown = !_statsShown;
+        _feed.ShowStats(_statsShown);
+        StatsBox.Visibility = _statsShown ? Visibility.Visible : Visibility.Collapsed;
+        StatsButton.Content = _statsShown ? "Hide stats" : "Stats";
+        if (_statsShown)
+        {
+            RefreshStats();
+            _statsTimer.Start();
+        }
+        else _statsTimer.Stop();
+    }
+
+    private void RefreshStats()
+    {
+        if (_feed != null) StatsText.Text = _feed.StatsText();
+    }
+
+    /// <summary>Copies the last minute's figures as text, whether or not the
+    /// readout is open; the delay is only in them if it was.</summary>
+    /// <param name="copy">Puts text on the clipboard; a test gives its own.</param>
+    /// <returns>What to tell the person, or null if there is nothing to copy from.</returns>
+    internal string? CopyStats(Action<string>? copy = null)
+    {
+        if (_feed == null) return null;
+        try
+        {
+            (copy ?? (text => Clipboard.SetDataObject(text, true)))(_feed.StatsHistory());
+            return "Copied the last minute of figures.";
+        }
+        catch (Exception ex)
+        {
+            // Another program can be holding the clipboard at that moment.
+            return "Couldn't copy the figures: " + ex.Message;
+        }
     }
 
     // ---------------- what the phone can do, and its volume ----------------
@@ -986,7 +1041,7 @@ public partial class PhoneViewWindow : Window
     /// Every key pressed in the window comes through here, and the order of
     /// the checks is the order keys are claimed in. It is shared with the
     /// plans that add to it (PHONE-PLANS-ORDER.md, row 14):
-    ///   1. F8 and Shift+F8: the Stats readout. Not built yet.
+    ///   1. F8 and Shift+F8: the Stats readout, and copying its last minute.
     ///   2. Esc while the menu is open: closes the menu.
     ///   3. Digits, Backspace and Enter while the phone asks for a PIN: taps
     ///      on its keys, never text. Digits are claimed in
@@ -1000,6 +1055,19 @@ public partial class PhoneViewWindow : Window
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         var modifiers = Keyboard.Modifiers;
+
+        // 1. F8 opens and closes the readout, and Shift+F8 copies its last
+        // minute. No F-key goes to the phone, so nothing is taken from it.
+        if (key == Key.F8 && (modifiers & ~ModifierKeys.Shift) == 0)
+        {
+            if (!e.IsRepeat)
+            {
+                if ((modifiers & ModifierKeys.Shift) == 0) ToggleStats();
+                else if (CopyStats() is { } said) Toast.Show(said);
+            }
+            e.Handled = true;
+            return;
+        }
 
         // 2. Esc closes the open menu instead of going Back on the phone, and
         // holding it down doesn't then go Back either.

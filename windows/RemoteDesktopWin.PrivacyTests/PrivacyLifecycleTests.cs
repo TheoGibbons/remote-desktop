@@ -187,6 +187,100 @@ internal static class PrivacyLifecycleTests
             OffSocket("{\"type\":\"peer-left\",\"id\":\"" + peer + "\"}", binary: false);
             if (streamer.Regions.IsViewing(peer)) throw new Exception("The relay's own peer-left was not heard");
             Console.WriteLine("PASS: only an encrypted message is a device's, and only the relay says who is in the session");
+
+            // A phone's pictures, all the way: off the socket on one thread,
+            // through the feed, decoded on its thread, shown by the window.
+            // The window is never put on screen. What it sends is kept in a
+            // queue of the socket client's own kind, to be read back.
+            const string phone = "phone-7";
+            trusted.Add(phone);
+            var outbox = Activator.CreateInstance(typeof(Queue<>).MakeGenericType(
+                typeof(WsClient).GetNestedType("OutFrame", BindingFlags.NonPublic)!))!;
+            typeof(WsClient).GetField("_reliable", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(ws, outbox);
+            List<JsonObject> Outgoing()
+            {
+                var list = new List<JsonObject>();
+                lock (Field<object>(ws, "_outLock"))
+                {
+                    foreach (var frame in (System.Collections.IEnumerable)outbox)
+                    {
+                        var envelope = JsonNode.Parse((byte[])frame.GetType().GetField("Data")!.GetValue(frame)!)!;
+                        var inner = Crypto.Decrypt(Field<byte[]>(ws, "_encKey"), Convert.FromBase64String(envelope["d"]!.GetValue<string>()), Crypto.ChJson)!;
+                        list.Add(JsonNode.Parse(inner)!.AsObject());
+                    }
+                    outbox.GetType().GetMethod("Clear")!.Invoke(outbox, null);
+                }
+                return list;
+            }
+            var view = new PhoneViewWindow(ws, phone, "Test phone", Field<PhoneFeed>(host, "_phoneFeed"), () => auth.IsTrusted(phone));
+            typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, view);
+            try
+            {
+                var screen = (System.Windows.Controls.Image)view.FindName("ScreenImage");
+                var asked = Outgoing();
+                if (asked.Count == 0 || asked[0].ToJsonString() != "{\"type\":\"start-view\",\"to\":\"phone-7\",\"codecs\":[\"jpeg\"]}")
+                    throw new Exception("The phone window did not offer codecs to an approved phone");
+                byte[] jpeg;
+                using (var bitmap = new System.Drawing.Bitmap(8, 16))
+                using (var bytes = new MemoryStream())
+                {
+                    bitmap.Save(bytes, System.Drawing.Imaging.ImageFormat.Jpeg);
+                    jpeg = bytes.ToArray();
+                }
+                byte[] Type5(uint seq, uint captureMs) => Frame(Crypto.ChPhone, PhoneFrame.Build(
+                    new PhoneFrameHeader(0xaa, seq, true, PhoneFrame.Jpeg, false, false, 8, 16, captureMs), jpeg));
+                void Until(Func<bool> done, string what)
+                {
+                    for (int i = 0; i < 100 && !done(); i++) Pump(20);
+                    if (!done()) throw new Exception(what);
+                }
+
+                // The stream is named, and its first frame is right behind.
+                OffSocket(Sealed("{\"type\":\"screen-info\",\"width\":8,\"height\":16,\"typing\":true," +
+                    "\"stream\":\"00000000000000aa\",\"codec\":\"jpeg\",\"capture\":\"accessibility\"}", phone), binary: false);
+                OffSocket(Type5(0, 0), binary: true);
+                Until(() => screen.Source != null, "A type 5 frame that followed its announcement was not shown");
+                if (screen.Source is not System.Windows.Media.Imaging.BitmapSource { PixelWidth: 8, PixelHeight: 16 })
+                    throw new Exception("The picture shown is not the one that was sent");
+                var acks = Outgoing();
+                if (acks.Count != 1 || acks[0].ToJsonString() != "{\"type\":\"frame-ack\",\"to\":\"phone-7\",\"stream\":\"00000000000000aa\",\"seq\":0}")
+                    throw new Exception("The frame was not acknowledged");
+                // A bare JPEG, which names no sender, is not drawn beside a stream.
+                var shown = screen.Source;
+                OffSocket(Frame(Crypto.ChVideo, jpeg), binary: true);
+                Pump(200);
+                if (!ReferenceEquals(shown, screen.Source)) throw new Exception("A type 1 frame was drawn while a stream was announced");
+                Console.WriteLine("PASS: a phone's type 5 frame goes from the socket to its window, and is acknowledged");
+
+                // The readout: opening it pings the phone, and the answer and
+                // the next picture give a delay.
+                var readout = (System.Windows.Controls.TextBlock)view.FindName("StatsText");
+                view.ToggleStats();
+                JsonObject? ping = null;
+                Until(() => (ping ??= Outgoing().FirstOrDefault(m => m["type"]?.GetValue<string>() == "diagnostic-ping")) != null,
+                    "Opening the readout did not ping the phone");
+                // The phone's clock reads a million, and its next picture was captured 40 ms before that.
+                OffSocket(Sealed("{\"type\":\"diagnostic-pong\",\"nonce\":" + ping!["nonce"]!.GetValue<long>() +
+                    ",\"hostTimeMs\":1000000,\"hostQueueBytes\":2048,\"codec\":\"jpeg\",\"capture\":\"accessibility\",\"fps\":2}", phone), binary: false);
+                OffSocket(Type5(1, 999_960), binary: true);
+                Until(() => !ReferenceEquals(shown, screen.Source), "The second frame was not shown");
+                Until(() => System.Text.RegularExpressions.Regex.IsMatch(readout.Text, @"Delay \d+ ms · average \d+ · worst \d+ \(± \d+ ms\)"),
+                    "The readout shows no delay: " + readout.Text);
+                if (!readout.Text.StartsWith("Accessibility viewing · JPEG · 8 × 16") || !readout.Text.Contains("phone's queue 2.0 KB") ||
+                    !readout.Text.EndsWith("Frames lost: 0"))
+                    throw new Exception("The readout is not what was measured: " + readout.Text);
+                string? copied = null;
+                if (view.CopyStats(text => copied = text) != "Copied the last minute of figures." ||
+                    copied == null || !copied.StartsWith("Remote Desktop phone viewer, the last") || !copied.Contains("Accessibility viewing · JPEG · 8 × 16"))
+                    throw new Exception("Copying the figures gave: " + copied);
+                view.ToggleStats();
+                Console.WriteLine("PASS: the readout pings the phone and shows the delay of the pictures that are drawn");
+            }
+            finally
+            {
+                view.Close();
+                typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
+            }
         }
         finally
         {

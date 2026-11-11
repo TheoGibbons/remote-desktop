@@ -12,5 +12,6 @@
     <Compile Include="../RemoteDesktopWin/PhoneFrame.cs" Link="PhoneFrame.cs" />
     <Compile Include="../RemoteDesktopWin/PhoneVideoStream.cs" Link="PhoneVideoStream.cs" />
     <Compile Include="../RemoteDesktopWin/PhoneFeed.cs" Link="PhoneFeed.cs" />
+    <Compile Include="../RemoteDesktopWin/PhoneStats.cs" Link="PhoneStats.cs" />
   </ItemGroup>
 </Project>
