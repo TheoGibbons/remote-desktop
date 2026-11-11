@@ -112,6 +112,48 @@ class SmoothScreenHoldTest {
         assertTrue(held)
     }
 
+    /**
+     * Android's prompt can be approved twice: once put up for a viewer and
+     * once from the Permissions screen. The second approval reaches a service
+     * that is already sharing, and must start no second capture beside the
+     * first: Android would end them both.
+     */
+    @Test
+    fun aSecondApprovalWhileSharingStartsNothing() {
+        fun field(name: String) = ConnectionManager::class.java.getDeclaredField(name).apply { isAccessible = true }
+        // Connected already, as far as the service's own call to connect is concerned.
+        val wasContext = field("appContext").get(ConnectionManager)
+        val wasEnabled = field("enabled").get(ConnectionManager)
+        val socket = field("ws").get(ConnectionManager)
+        field("appContext").set(ConnectionManager, controller.get().applicationContext)
+        field("enabled").set(ConnectionManager, true)
+        field("ws").set(ConnectionManager, object : okhttp3.WebSocket {
+            override fun request() = okhttp3.Request.Builder().url("https://example.test/").build()
+            override fun queueSize() = 0L
+            override fun send(text: String) = true
+            override fun send(bytes: okio.ByteString) = true
+            override fun close(code: Int, reason: String?) = true
+            override fun cancel() {}
+        })
+        try {
+            val service = controller.get()
+            val approval = android.content.Intent()
+                .putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, android.app.Activity.RESULT_OK)
+                .putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, android.content.Intent())
+            assertEquals(android.app.Service.START_NOT_STICKY, service.onStartCommand(approval, 0, 2))
+            for (name in listOf("captureThread", "projection", "virtualDisplay")) {
+                val made = ScreenCaptureService::class.java.getDeclaredField(name).apply { isAccessible = true }.get(service)
+                assertNull("a second capture was begun: $name", made)
+            }
+            assertSame(service, instanceField.get(null))
+            assertTrue(ScreenCaptureService.isRunning)
+        } finally {
+            field("ws").set(ConnectionManager, socket)
+            field("enabled").set(ConnectionManager, wasEnabled)
+            field("appContext").set(ConnectionManager, wasContext)
+        }
+    }
+
     @Test
     fun nothingIsTakenOnceSharingHasEnded() {
         ScreenCaptureService.viewerStarted("pc")

@@ -190,10 +190,17 @@ class SmoothRequestTest {
             assertEquals(who, emptyList<JSONObject>(), statuses())
             assertEquals(who, 0, notifications.allNotifications.size)
             assertFalse(who, SmoothPrompt.pending)
+            assertFalse(who, stopAsked())
         }
+        // Asked to start while the phone is not sharing, and to stop while it is: a stop
+        // that arrives when nothing is shared does nothing whoever sends it, and would prove nothing.
+        val shared = Robolectric.buildService(ScreenCaptureService::class.java).create().get()
         fun ask(from: String) {
             receive(from, "request-smooth")
+            sharingField.set(null, shared)
+            assertTrue(ScreenCaptureService.isRunning)
             receive(from, "stop-smooth")
+            sharingField.set(null, null)
         }
 
         // In the session with the key, never approved. Asking to view changes nothing for it.

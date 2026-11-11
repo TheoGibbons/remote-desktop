@@ -358,6 +358,13 @@ internal static class PrivacyLifecycleTests
                     // Another device's word about it is not the phone's.
                     OffSocket(Sealed(Status("\"state\":\"started\""), "unapproved"), binary: false);
                     if (told.Count != 0 || tick.Visibility == Visibility.Visible) throw new Exception("A smooth-status from another device was believed");
+                    // Nor is the phone's own word, while this PC does not approve it. (The
+                    // check above never got this far: it is turned away for not being the phone.)
+                    trusted.Remove(phone);
+                    OffSocket(Sealed(Status("\"state\":\"started\""), phone), binary: false);
+                    trusted.Add(phone);
+                    if (told.Count != 0 || tick.Visibility == Visibility.Visible)
+                        throw new Exception("A smooth-status from a phone this PC has not approved was believed");
                     // A state from some later app says nothing to this one, and is not
                     // the answer: the phone is still waited for, to be reported if it says no more.
                     var waiting = Field<System.Windows.Threading.DispatcherTimer>(view, "_smoothTimer");
