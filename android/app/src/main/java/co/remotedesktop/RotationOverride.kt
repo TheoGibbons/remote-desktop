@@ -27,7 +27,9 @@ import android.view.WindowManager
  * It is let go when nobody is viewing any more ([PhoneScreenCapture]), and
  * when the screen turns off, which is also when the phone locks: the lock
  * screen is where someone unlocks the phone, and keeps the phone's own
- * orientation. It is not put back afterwards.
+ * orientation. It is not put back afterwards, and for the same reason it is
+ * never taken up while the screen is off or the phone is locked
+ * ([PhoneControls.screenInUse]).
  */
 internal class RotationOverride(private val service: AccessibilityService) {
     companion object {
@@ -46,63 +48,86 @@ internal class RotationOverride(private val service: AccessibilityService) {
 
     private val main = Handler(Looper.getMainLooper())
 
-    /** What is being held, as `phone-state` reports it. Set at once, so the
-     *  answer to a `rotate` already says it; the window follows on the main thread. */
+    /** What is being held right now, as `phone-state` reports it: what the
+     *  window asks for, or [AUTO] when there is no window. */
     @Volatile var orientation: String = AUTO
         private set
 
     // Main thread only.
     private var window: View? = null
     private var listening = false
+    private var closed = false
 
     private val screenOff = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            set(AUTO)
+            release()
         }
     }
 
-    /** Holds the screen [wanted] way, or gives rotation back for [AUTO].
-     *  Returns false for anything else, which changes nothing. */
-    fun set(wanted: String): Boolean {
+    /**
+     * Holds the screen [wanted] way, or gives rotation back for [AUTO].
+     *
+     * It happens on the main thread, in the order asked. [allowed] is asked
+     * there, at that moment: whoever asked may have stopped viewing, or the
+     * screen may have gone off, since the message was let in, and then
+     * nothing is held. [then] runs straight after, when [orientation] says
+     * what is really held, so an answer sent from it never claims a window
+     * that could not be added.
+     *
+     * Returns false for anything that isn't one of the three, which changes
+     * nothing and runs neither.
+     */
+    fun set(wanted: String, allowed: () -> Boolean = { true }, then: () -> Unit = {}): Boolean {
         if (wanted != AUTO && windowOrientation(wanted) == null) return false
-        orientation = wanted
-        main.post(::apply)
+        main.post {
+            apply(if (wanted == AUTO || allowed()) wanted else AUTO)
+            then()
+        }
         return true
     }
 
-    /** Gives rotation back to the phone. */
-    fun release() {
-        if (orientation != AUTO) set(AUTO)
+    /** Gives rotation back to the phone: at once on the main thread, where
+     *  the viewers are counted and the screen is heard turning off. */
+    fun release() = onMain { apply(AUTO) }
+
+    /** The service is going: take the window with it now rather than when
+     *  Android gets round to it, and add none after. */
+    fun close() = onMain {
+        closed = true
+        apply(AUTO)
     }
 
-    /** The service is going: take the window with it now rather than when Android gets round to it. */
-    fun close() {
-        orientation = AUTO
-        if (Looper.myLooper() == Looper.getMainLooper()) apply() else main.post(::apply)
+    private fun onMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block() else main.post(block)
     }
 
-    /** Makes the window match [orientation]. Main thread. */
-    private fun apply() {
-        val wanted = windowOrientation(orientation)
-        val manager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    /** Makes the window ask for [target]. Main thread. */
+    private fun apply(target: String) {
+        val wanted = if (closed) null else windowOrientation(target)
         try {
+            val manager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val view = window
             when {
                 wanted == null -> if (view != null) {
                     window = null
+                    orientation = AUTO
                     manager.removeView(view)
                 }
                 view == null -> {
                     val added = View(service)
                     manager.addView(added, params(wanted))
                     window = added
+                    orientation = target
                 }
-                else -> manager.updateViewLayout(view, params(wanted))
+                else -> {
+                    manager.updateViewLayout(view, params(wanted))
+                    orientation = target
+                }
             }
         } catch (e: RuntimeException) {
             // E.g. the service was switched off between the message and now.
+            // What is held is what it was: nothing, if there is no window.
             Log.w("RotationOverride", "Could not change the rotation window", e)
-            if (window == null) orientation = AUTO
         }
         listen(window != null)
     }

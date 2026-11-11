@@ -1,7 +1,9 @@
 package co.remotedesktop
 
+import android.app.KeyguardManager
 import android.content.Context
 import android.media.AudioManager
+import android.os.PowerManager
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -17,12 +19,37 @@ internal object PhoneControls {
     /** Handles `volume`, `rotate` and `get-phone-state` from a device that
      *  may control this phone, and tells it how things stand afterwards. */
     fun handle(context: Context, from: String, msg: JSONObject) {
+        val answer = { ConnectionManager.sendJson(state(context).put("to", from)) }
         when (msg.optString("type")) {
             "volume" -> setVolume(context, msg)
-            // An orientation that isn't one of the three changes nothing.
-            "rotate" -> InputAccessibilityService.instance?.rotate(msg.optString("orientation"))
+            "rotate" -> {
+                // The window that turns the screen is added on the main thread.
+                // The answer waits for it, so it says what is really held. By
+                // then the viewer may have stopped viewing, or the screen gone
+                // off, so that is asked again there.
+                val turning = InputAccessibilityService.instance?.rotate(
+                    msg.optString("orientation"),
+                    allowed = { PhoneScreenCapture.isViewing(from) && screenInUse(context) },
+                    then = answer,
+                )
+                if (turning == true) return
+                // No service, or an orientation that isn't one of the three: nothing changes.
+            }
         }
-        ConnectionManager.sendJson(state(context).put("to", from))
+        answer()
+    }
+
+    /**
+     * Whether the screen is on and past the lock screen, which is the only
+     * time it may be turned for a viewer. The lock screen is where someone
+     * unlocks the phone, and keeps the phone's own orientation; and a screen
+     * turned while it was off would come back on turned, with nothing left
+     * to tell the phone to let go.
+     */
+    fun screenInUse(context: Context): Boolean {
+        val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val keyguard = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        return power.isInteractive && !keyguard.isKeyguardLocked
     }
 
     /** This phone's `phone-state`, without its `to`. */
@@ -35,7 +62,8 @@ internal object PhoneControls {
             muted = audio.isStreamMute(AudioManager.STREAM_MUSIC),
             volumeFixed = audio.isVolumeFixed,
             rotation = InputAccessibilityService.rotation,
-            actions = InputAccessibilityService.menuActions,
+            // Not something the phone can do right now while it is asleep or locked.
+            actions = InputAccessibilityService.menuActions.filter { it != "rotate" || screenInUse(context) },
         )
     }
 

@@ -75,8 +75,10 @@ class InputAccessibilityService : AccessibilityService() {
     private val rotationOverride = RotationOverride(this)
 
     /** Holds the screen `portrait` or `landscape` for a viewer, or gives
-     *  rotation back to the phone for `auto`. Not input: it wakes nothing. */
-    fun rotate(orientation: String) = rotationOverride.set(orientation)
+     *  rotation back to the phone for `auto`. Not input: it wakes nothing.
+     *  See [RotationOverride.set] for [allowed], [then] and the result. */
+    fun rotate(orientation: String, allowed: () -> Boolean, then: () -> Unit): Boolean =
+        rotationOverride.set(orientation, allowed, then)
 
     /** Nobody is viewing any more: the phone turns its own way again. */
     fun releaseRotation() = rotationOverride.release()

@@ -1,5 +1,7 @@
 package co.remotedesktop
 
+import android.accessibilityservice.AccessibilityService
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -8,6 +10,7 @@ import android.os.PowerManager
 import android.util.Base64
 import android.view.View
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityEvent
 import okhttp3.Request
 import okhttp3.WebSocket
 import okio.ByteString
@@ -25,6 +28,25 @@ import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowPowerManager
 import org.robolectric.shadows.ShadowWindowManagerImpl
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Proxy
+
+/** A service whose windows Android refuses, as when it is being switched off. */
+class RefusedWindowService : AccessibilityService() {
+    var asked = 0
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
+    override fun onInterrupt() = Unit
+    override fun getSystemService(name: String): Any? {
+        if (name != Context.WINDOW_SERVICE) return super.getSystemService(name)
+        return Proxy.newProxyInstance(javaClass.classLoader, arrayOf(WindowManager::class.java), InvocationHandler { _, method, _ ->
+            if (method.name == "addView") {
+                asked++
+                throw WindowManager.BadTokenException("Unable to add window: the service is gone")
+            }
+            null
+        })
+    }
+}
 
 /** A viewer may hold the phone's screen upright or on its side, and the
  *  phone takes rotation back when the viewers have gone or the screen turns off. */
@@ -258,15 +280,119 @@ class RotationOverrideTest {
         assertEquals("auto", InputAccessibilityService.rotation)
     }
 
+    private fun can(state: JSONObject) = state.getJSONArray("can").let { list -> List(list.length()) { list.getString(it) } }
+
     @Test
-    fun turningTheScreenDoesNotWakeASleepingPhone() {
+    fun aSleepingPhoneIsNeitherTurnedNorWoken() {
         receive("pc", message("start-view"))
-        idle()
-        shadowOf(context.getSystemService(Context.POWER_SERVICE) as PowerManager).setIsInteractive(false)
-        ShadowPowerManager.clearWakeLocks()
         rotate("pc", "landscape")
+        assertEquals(1, windows.size)
+
+        // The screen goes off, and the phone lets go.
+        val power = shadowOf(context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+        power.setIsInteractive(false)
+        context.sendBroadcast(Intent(Intent.ACTION_SCREEN_OFF))
+        idle()
+        assertEquals(emptyList<View>(), windows)
+        ShadowPowerManager.clearWakeLocks()
+        socket.messages.clear()
+
+        // The viewer's window is still open, and asks again. Nothing would ever tell
+        // the phone to let go of this one: the screen is off already.
+        rotate("pc", "landscape")
+        assertEquals(emptyList<View>(), windows)
+        assertNull("Turning the screen is not input", ShadowPowerManager.getLatestWakeLock())
+        states().single().let {
+            assertEquals("auto", it.getString("rotation"))
+            assertFalse("It can't right now, and says so", "rotate" in can(it))
+            assertTrue("The rest is unaffected", "lock" in can(it))
+        }
         rotate("pc", "auto")
         assertNull(ShadowPowerManager.getLatestWakeLock())
+    }
+
+    @Test
+    fun aLockedPhoneKeepsItsOwnOrientation() {
+        receive("pc", message("start-view"))
+        // Awake again, on its lock screen.
+        val keyguard = shadowOf(context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager)
+        keyguard.setKeyguardLocked(true)
+        rotate("pc", "landscape")
+        assertEquals(emptyList<View>(), windows)
+        states().last().let {
+            assertEquals("auto", it.getString("rotation"))
+            assertFalse("rotate" in can(it))
+        }
+
+        // Unlocked: the phone can turn again, and says so.
+        keyguard.setKeyguardLocked(false)
+        receive("pc", message("get-phone-state"))
+        assertTrue("rotate" in can(states().last()))
+        rotate("pc", "landscape")
+        assertEquals(1, windows.size)
+        assertEquals("landscape", states().last().getString("rotation"))
+    }
+
+    @Test
+    fun aTurnIsNotHeldForAViewerWhoHasStoppedByTheTimeItIsApplied() {
+        receive("pc", message("start-view"))
+        // The message was let in while the PC was viewing, on the connection's thread...
+        handleJson.invoke(ConnectionManager, message("rotate").put("orientation", "landscape").put("from", "pc"))
+        // ...and before the main thread gets to it, the view is over.
+        PhoneScreenCapture.onViewStopped("pc")
+        idle()
+        assertEquals(emptyList<View>(), windows)
+        assertEquals("auto", InputAccessibilityService.rotation)
+        assertEquals("auto", states().last().getString("rotation"))
+
+        // The other order: the phone has already let go, finding nothing held, when
+        // the turn arrives from a check made a moment earlier.
+        PhoneControls.handle(context, "pc", message("rotate").put("orientation", "landscape"))
+        idle()
+        assertEquals(emptyList<View>(), windows)
+        assertEquals("auto", states().last().getString("rotation"))
+    }
+
+    @Test
+    fun theAnswerSaysWhatIsReallyHeld() {
+        // Asked and answered in that order: the answer comes after the window.
+        receive("pc", message("start-view"))
+        handleJson.invoke(ConnectionManager, message("rotate").put("orientation", "landscape").put("from", "pc"))
+        assertEquals("Nothing is said before the window is there", emptyList<JSONObject>(), states())
+        idle()
+        assertEquals(1, windows.size)
+        assertEquals("landscape", states().single().getString("rotation"))
+
+        // Android refuses the window: nothing is held, and nothing claims to be.
+        val refused = Robolectric.buildService(RefusedWindowService::class.java).create().get()
+        val override = RotationOverride(refused)
+        var told: String? = null
+        assertTrue(override.set("landscape", then = { told = override.orientation }))
+        idle()
+        assertEquals(1, refused.asked)
+        assertEquals("auto", told)
+        assertEquals("auto", override.orientation)
+
+        // An orientation that isn't one runs nothing: the caller answers for itself.
+        assertFalse(override.set("sideways", then = { fail("nothing was asked of the window") }))
+        idle()
+
+        // What the viewer may no longer ask for is not held either.
+        val working = RotationOverride(service)
+        assertTrue(working.set("portrait", allowed = { false }, then = { told = working.orientation }))
+        idle()
+        assertEquals("auto", told)
+        assertEquals(1, windows.size) // Only the PC's, from above.
+    }
+
+    @Test
+    fun nothingIsAddedOnceTheServiceHasGone() {
+        receive("pc", message("start-view"))
+        // A turn is on its way to the main thread when Android stops the service.
+        handleJson.invoke(ConnectionManager, message("rotate").put("orientation", "landscape").put("from", "pc"))
+        controller.destroy()
+        idle()
+        assertEquals(emptyList<View>(), windows)
     }
 
     private class RecordingSocket : WebSocket {
