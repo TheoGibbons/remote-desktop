@@ -151,6 +151,21 @@ async function main() {
   const fileArrived = await arrivesAtStalled(2);
   ok("type 5 frames are dropped for a viewer that is not reading", videoArrived < sentToStalled / 2);
   ok("type 5 falls under the video buffer limit, not the file one", fileArrived - videoArrived >= 4 * 1024 * 1024);
+  // 3d. JSON that is no message (null, a number, a string, a list) is
+  // dropped, before the hello and after it. `null` used to end the relay.
+  const odd = new WebSocket(URL);
+  await once(odd, "open");
+  for (const text of ["null", "5", '"hello"', "[1,2]", "true"]) odd.send(text);
+  await sleep(150);
+  odd.close();
+  pc.msgs.length = 0;
+  for (const text of ["null", "5", '"hello"', "[1,2]", "true"]) phone2.ws.send(text);
+  phone2.ws.send(JSON.stringify({ type: "still-here", to: pc.welcome.id }));
+  await sleep(200);
+  ok("JSON that is no message does not end the relay", server.exitCode === null);
+  ok("JSON that is no message is not passed on, and what follows it is",
+    pc.msgs.length === 1 && pc.msgs[0].type === "still-here" && pc.msgs[0].from === phone2.welcome.id);
+
   phone2.ws.close(1000, "bye");
   await sleep(150);
   ok("leave log says the device closed, and how",

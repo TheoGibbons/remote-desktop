@@ -161,6 +161,10 @@ wss.on("connection", (ws, req) => {
     } catch {
       return;
     }
+    // `null`, a number, a string and a list are all valid JSON and none is a
+    // message. Reading `type` off null threw, which took the relay down with
+    // every session on it, for one frame from anyone who could connect.
+    if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return;
     if (!client.sessionHash) {
       if (msg.type !== "hello") return;
       handleHello(client, msg, helloTimer);
