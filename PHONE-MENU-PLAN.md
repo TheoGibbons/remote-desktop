@@ -1,6 +1,6 @@
 # Phone menu in the Windows viewer: plan
 
-Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Nothing is built yet.
+Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). Phase 1 is built; the rest is not.
 
 This is the first of three plans to be built. `PHONE-PLANS-ORDER.md` gives the order (this plan is its steps 1 to 4, after a step 0 that lets a debug build sit beside the release app) and settles where this plan met `PHONE-UNLOCK-PLAN.md` and `PHONE-VIDEO-PLAN.md`. This file has been edited to match.
 
@@ -28,7 +28,7 @@ Back, Home, Recents and Notifications already exist as protocol messages, so the
 ## Decisions I made (change any before we start)
 
 1. **The menu opens on hover and on click, and closes when the pointer leaves.** Clicking an item does not close it, so Back can be clicked several times.
-2. **The title bar becomes ours, the three window buttons stay Windows' own.** WPF has no way to add a button to a system title bar, so the phone window draws its own (dark) bar and leaves a gap where Windows keeps drawing and handling minimise / maximise / close. Verified on this PC; see [Title bar](#title-bar-verified-on-this-pc).
+2. **The title bar becomes ours, the three window buttons stay Windows' own.** WPF has no way to add a button to a system title bar, so the phone window draws its own (dark) bar and leaves a gap where Windows keeps drawing and handling minimise / maximise / close. Built and checked on this PC; see [Title bar](#title-bar-built-in-phase-1).
 3. **Rotation is three choices (Auto / Portrait / Landscape), not a toggle,** and the phone holds a forced orientation only while someone is viewing it. A toggle can't say "give rotation back to the phone", and a phone left stuck sideways after a session would be a nasty surprise.
 4. **Volume means media volume,** and the phone shows its own volume panel as it changes, the same as pressing its volume keys.
 5. **Extras included:** Notifications, Quick settings, Screenshot, Lock screen. See [Anything else?](#anything-else) for what I left out and why.
@@ -36,36 +36,44 @@ Back, Home, Recents and Notifications already exist as protocol messages, so the
 
 ## What I found
 
-### Title bar (verified on this PC)
+### Title bar (built in Phase 1)
 
-I built a throwaway WPF window (not in the repo) on Windows 11 build 26200 at 150 % scaling. With `WindowChrome` and the settings below:
+`WindowCaption.cs` gives a window this title bar. It was checked on Windows 11 build 26200 at 150 % scaling, by sending hit tests to the real window and looking at screenshots of it, normal and maximised:
 
-- Windows still draws minimise / maximise / close in the top right, and hit-testing those points returns the native codes (minimise 8, maximise 9, close 20). Windows 11 offers the snap-layouts flyout to any window that answers "maximise button" there, so that should keep working.
-- A `⋯` button placed just left of them hit-tests as ordinary client area (1), so WPF gets its hover and click.
-- The rest of the bar hit-tests as caption (2): drag, double-click to maximise and the right-click system menu are untouched.
-- With dark mode and a caption colour set, the system-drawn part and our part are the same `#1E1E1E`, with no visible seam, active and inactive.
+- Windows still draws minimise / maximise / close in the top right, and those points hit-test as the native codes (minimise 8, maximise 9, close 20). Windows 11 offers the snap-layouts flyout to any window that answers "maximise button" there, so that should keep working.
+- The `⋯` button just left of them hit-tests as ordinary client area (1), top row included, so WPF gets its hover and click.
+- The rest of the bar hit-tests as caption (2): drag, double-click to maximise and the right-click system menu are untouched. Its top few pixels resize the window (12), as on any window.
+- The frame on the left, right and bottom is still the system's own. The window is resized from just outside its edge, and every pixel of the picture takes clicks.
+- With dark mode and a caption colour set, the system-drawn part and our part are the same `#1E1E1E`, with no visible seam. The title and `⋯` dim with the system's buttons when the window is not the active one.
 
 The recipe:
 
 ```
-WindowChrome   CaptionHeight = bar height, GlassFrameThickness = 0,barHeight,0,0,
-               ResizeBorderThickness = 6, UseAeroCaptionButtons = True, CornerRadius = 0
-Window         Background = Transparent (the picture area paints #111 itself)
-Title bar row  no background at all, so the system frame shows through and colours can't mismatch
-DwmSetWindowAttribute(hwnd, 20, 1)            dark caption, white glyphs
+WM_NCCALCSIZE hook   DefWindowProc works out the standard frame; then the top is put back where it
+                     was, so the title bar's share goes to the client area. Maximised, the top is
+                     moved down by the frame's thickness instead, to the screen's edge.
+                     The hook is added after WindowChrome's own, so it is asked first.
+WindowChrome         GlassFrameThickness = 0,barHeight,0,0, UseAeroCaptionButtons = True, CornerRadius = 0
+                     ResizeBorderThickness = the system frame's thickness (0 while maximised)
+                     CaptionHeight = the bar's bottom edge, from the top of the window, less the top resize border
+Window               Background = Transparent (the picture area paints #111 itself)
+Title bar row        no background at all, so the system frame shows through and colours can't mismatch
+DwmSetWindowAttribute(hwnd, 20, 1)            dark caption, white glyphs (19 on Windows 10 before 2004)
 DwmSetWindowAttribute(hwnd, 35, 0x001E1E1E)   caption colour (COLORREF). Windows 11 only; ignore failure
 DwmGetWindowAttribute(hwnd, 5, out RECT)      caption-button bounds in window pixels
 ```
 
-Two things the window must do itself:
+The first recipe let `WindowChrome` own the whole window with `ResizeBorderThickness = 6`. That puts the resize border inside the window, over the outer edge of the picture, which is where Android's edge swipes start. Keeping the system's frame on three sides avoids it, and also deals with a maximised window: nothing hangs past the screen's edge, so the window needs no padding of its own.
 
-- **Take its bar metrics from Windows.** The button bounds came back as 220 × 44 px (about 147 × 29 DIP). Reserve that width on the right and use that height for the bar. Re-read on `SourceInitialized`, `StateChanged` and `DpiChanged`.
-- **Pad itself while maximised.** A maximised window's client area still covers the oversized window rectangle (11 px past each screen edge here), so content was cut off and the `⋯` sat too high. Pad the root by the frame thickness (`GetSystemMetricsForDpi` of `SM_CXSIZEFRAME` + `SM_CXPADDEDBORDER`) while `WindowState` is `Maximized`. The native buttons are then only 33 px tall, so the bar height is `bounds.Bottom − padding`.
+What `WindowChrome` must be told, because it answers every hit test itself, measuring from the window's edges:
+
+- **The resize borders, sized to the system's frame** (`GetSystemMetricsForDpi` of `SM_CXSIZEFRAME` + `SM_CXPADDEDBORDER`, 11 px here). They then fall exactly on the invisible frame at the sides and bottom.
+- **The bar's metrics, from Windows.** The button bounds came back as 220 × 44 px (about 146 × 29 DIP), and 33 px tall maximised. That width is kept free on the right and that height is the bar's. They are read again on `SourceInitialized`, `Loaded`, `ContentRendered`, `StateChanged` and `DpiChanged`; before the window is shown they are not known.
 
 Not verified, because it can't be on this PC:
 
+- **A real mouse.** Synthetic mouse input is dropped here. So: clicking minimise, maximise and close; their hover highlight; the snap flyout; dragging and double-clicking the bar; resizing from each edge; and the hover-to-open menu itself are all hand checks.
 - **Windows 10.** The caption-colour attribute doesn't exist there, so the bar would be black rather than `#1E1E1E` (still seamless, since the whole bar is the system frame). I expect the buttons to work, since this is what `WindowChrome` was designed for, but nobody has looked.
-- **The snap flyout on hover, and the hover-to-open menu itself.** Synthetic mouse input is dropped on this PC, so both are hand checks.
 - High-contrast themes, and dragging the window between monitors with different scaling.
 
 Fallback if Windows 10 misbehaves: `UseAeroCaptionButtons = False`, `GlassFrameThickness = 0,0,0,1`, and draw three buttons ourselves (Segoe MDL2 `E921`, `E922`/`E923`, `E8BB`, wired to `SystemCommands`). About 40 lines, and it loses the snap flyout.
@@ -106,12 +114,12 @@ The alternative, writing the system rotation setting, needs a new "Modify system
 
 ## How the menu behaves
 
-- **Open:** pointer rests on `⋯` for 150 ms, or a click.
-- **Close:** 350 ms after the pointer has left both the button and the menu; at once when the window loses focus, moves or resizes; on Esc.
+- **Open:** pointer rests on `⋯` for 150 ms, or a click. Resting only counts while the window is the active one, so passing over a window in the background doesn't pop a menu up over other work.
+- **Close:** 350 ms after the pointer has left both the button and the menu; at once when the window loses focus, moves or resizes; on Esc; on a click on `⋯` once the menu has been open for 600 ms (a click sooner than that was meant to open it). A menu opened without the pointer on it, by a touch or by UI Automation, has nothing to leave and stays until one of the others closes it.
 - **Never closes during a slider drag,** even if the pointer leaves the menu.
 - **Never takes keyboard focus.** The window types into the phone whenever it is focused, so the `⋯` button and everything in the menu are `Focusable="False"`. Otherwise a click would move focus onto a button, and the next Space typed for the phone would press it. While the menu is open, Esc closes the menu instead of sending Back.
 - **Built as a WPF `Popup`,** not a `ContextMenu`: a context menu takes focus and mouse capture and closes on every click. `StaysOpen="True"`, `AllowsTransparency="True"`, placed under the button with right edges aligned. It looks like the app's other `⋯` menus (the `RdMenu` card: white, 10 px corners, soft shadow), with a button style that copies `RdMenuItem`.
-- **State:** the window asks the phone for its state when it opens and each time the menu opens. Until the first answer, the phone-update rows are hidden behind one line: "Update Remote Desktop on this phone for volume, rotation and more."
+- **State (from Phase 2):** the window asks the phone for its state when it opens and each time the menu opens. Until the first answer, the phone-update rows are hidden behind one line: "Update Remote Desktop on this phone for volume, rotation and more." Phase 1 shows neither the rows nor the line: until Phase 2 is out there is no update that would bring them.
 - **Volume slider:** 0 to `volumeMax`, snapping to whole steps. Sends at most one message per 100 ms while dragging and always the final value. Ignores incoming state while dragging so the thumb doesn't jump back.
 - **Rotation:** highlights what the phone reports. After choosing Portrait or Landscape, if the picture hasn't changed shape within 3 seconds, toast: "The phone didn't rotate. The app on screen may not allow it."
 - Right-click for Back and middle-click for Home stay as they are.
@@ -130,20 +138,22 @@ All go in PROTOCOL.md under *Input: controlling Android*, and the new viewer-to-
 
 ## Work, in order
 
-### Phase 1: title bar and menu, Windows only
+### Phase 1: title bar and menu, Windows only (built)
 
 Ships on its own and works with the phone app people already have.
 
-- `windows/RemoteDesktopWin/WindowCaption.cs` (new): applies the recipe above to a window and exposes bar height, reserved width and maximised padding. Kept separate so `PcViewWindow` can use it later.
-- `PhoneViewWindow.xaml`: `WindowChrome`; a title bar row (title text bound to `Title`, trimmed with an ellipsis; `⋯` with `WindowChrome.IsHitTestVisibleInChrome="True"`; right spacer); the picture below in a host element; the `Popup`.
+- `windows/RemoteDesktopWin/WindowCaption.cs` (new): applies the recipe above to a window and exposes the bar's height, the width kept for the system's buttons, and the work area of the window's monitor. Kept separate so `PcViewWindow` can use it later.
+- `PhoneViewWindow.xaml`: a title bar row (`TitleText` bound to `Title`, trimmed with an ellipsis; `MenuButton`, the `⋯`, with `WindowChrome.IsHitTestVisibleInChrome="True"`; a column kept clear for the system's buttons); the picture below in `PictureHost`; the `Popup`.
 - The picture host is a `Grid` holding the picture alone for now. The other two plans add layers above the picture in it (unlock overlay and captions, then the Stats readout), so nothing else should assume the host has one child.
-- `PhoneViewWindow.xaml.cs`: hover logic, senders for `back` / `homebtn` / `recents` / `notifications`, Esc handling, dimming title and `⋯` when inactive. Put the key handling in one method with an explicit order of checks: the later plans add F8 ahead of the Esc check and PIN digits after it (`PHONE-PLANS-ORDER.md`, row 14).
-- `windows/RemoteDesktopWin/PhoneMenu.cs` (new, no WPF types): the hover timing as a small state machine with the clock passed in, the window-fit maths, the send throttle, `phone-state` parsing.
-- Window fit: measure the frame against the picture host, not `Content`. Keep the phone the same size on screen when it turns (the long side stays what it was), cap to the work area, keep the window on screen, don't resize while maximised, and only re-fit when the picture's shape changes, so a size the user chose survives repeated `screen-info`.
-- `App.xaml`: `RdMenuButton` style.
-- Tests: new console project `windows/RemoteDesktopWin.PhoneViewTests` that compiles `PhoneMenu.cs` in, like `ClipboardTests`. Cases: hover opens after the delay and not before; leaving closes after the delay; re-entering cancels the close; a drag holds it open; portrait and landscape both fit a small work area. Add it to the Windows step in `.github/workflows/release.yml`. The unlock and video plans add their Windows cases to this same project.
-- Check by eye: render the window and the open menu offscreen to confirm every glyph draws (Segoe MDL2 code points have surprised us before).
-- Check by hand: hover opens and closes; typing still reaches the phone after using the menu; snap flyout on maximise; maximised layout; minimum window width (280) with a long phone name.
+- The menu has a row of Back, Home and Recents, then a separator, then Notifications. Phase 2's volume row and Phase 3's rotation row go between the two, each under a separator; Quick settings, Screenshot and Lock screen go after Notifications. The three navigation icons are drawn shapes; the only font glyph is the `⋯` (Segoe MDL2 `E712`, as on the main window's device rows).
+- `PhoneViewWindow.xaml.cs`: hover logic, senders for `back` / `homebtn` / `recents` / `notifications`, Esc handling. Title and `⋯` dim when inactive (in XAML). All key handling is in `Window_PreviewKeyDown`, with the order of checks written out: the later plans add F8 ahead of the Esc check and PIN digits after it (`PHONE-PLANS-ORDER.md`, row 14). After Esc has closed the menu, holding it down does not go Back.
+- `windows/RemoteDesktopWin/PhoneMenu.cs` (new, no WPF types): the hover timing as a small state machine with the clock passed in (`MenuHover`), the window-fit maths (`PhoneFit`), the send throttle (`SendThrottle`) and `phone-state` parsing (`PhoneState`). The last two have tests and no caller until Phase 2.
+- Window fit: the frame is measured against the picture host, not `Content`. The phone stays the same size on screen when it turns (the long side of the picture as drawn stays what it was). The window is never larger than the work area of the monitor it is on, and is moved only as far as keeps it there. It is not resized while maximised or minimised, and catches up when it is restored. It is only fitted again when the picture's shape changes, so a size the user chose survives repeated `screen-info`.
+- `App.xaml`: `RdMenuButton` (a menu row that is a `Button` and never takes the focus) and `RdCaptionButton` (a button in a `WindowCaption` title bar).
+- Tests: console project `windows/RemoteDesktopWin.PhoneViewTests` that compiles `PhoneMenu.cs` in, like `ClipboardTests`, and runs in the Windows step of `.github/workflows/release.yml`. It covers: hover opens after the delay and not before; leaving closes after the delay; re-entering cancels the close; clicks; a drag holds it open; Esc; the first fit, turning, a small work area and staying on screen; the throttle; `phone-state`. The unlock and video plans add their Windows cases to this same project.
+- Checked by eye, from screenshots of the real window (the system's part of the bar does not show in an offscreen render): normal, inactive, maximised, landscape, minimum width with a long name, and the open menu.
+- Checked against the S26 through UI Automation: see the build-order table in `PHONE-PLANS-ORDER.md` for what was and wasn't.
+- Still to check by hand, with a real mouse: minimise, maximise and close respond to clicks; hover opens and closes the menu; the snap flyout on maximise; dragging and double-clicking the bar; resizing from each edge and corner. And Windows 10.
 
 ### Phase 2: phone state, volume and the extra actions
 
@@ -157,7 +167,7 @@ Phone:
 Windows:
 
 - `MainWindow.OnJson`: `phone-state` from the viewed phone goes to `_phoneView.OnPhoneState`.
-- `PhoneViewWindow`: ask on open, on `ResendStartView` and on each menu open; show rows per `can`; the slider; the mute icon; the "update the phone" line.
+- `PhoneViewWindow`: ask on open, on `ResendStartView` and on each menu open; show rows per `can`; the slider; the mute icon; the "update the phone" line. `PhoneState.Parse`, `SendThrottle` and `MenuHover.DragStarted` / `DragEnded` are there from Phase 1.
 
 ### Phase 3: rotation
 

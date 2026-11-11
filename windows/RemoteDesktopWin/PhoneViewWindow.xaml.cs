@@ -1,7 +1,9 @@
 using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
@@ -15,15 +17,17 @@ namespace RemoteDesktopWin;
 ///  - mouse wheel                -> pinch zoom in/out at the cursor
 ///  - right-click                -> Back
 ///  - middle-click               -> Home
-/// The window has no navigation buttons of its own: clicking the phone's
-/// buttons in the picture works, and right- and middle-click stand in for
-/// them on a phone that uses gestures.
+/// The "⋯" button in the title bar opens a menu with Back, Home, Recents and
+/// Notifications, for a phone that uses gestures; clicking the phone's own
+/// buttons in the picture works too. The menu opens when the pointer rests on
+/// the button and closes when it leaves (see <see cref="MenuHover"/>).
 ///
 /// While it is focused, the keyboard types into the phone's focused text
 /// field: characters as <c>text</c>, composed here with this PC's layout, and
 /// editing keys and Ctrl shortcuts as <c>key</c>. Ctrl+V pastes this PC's
 /// clipboard rather than the phone's, and Esc is Back. Alt combinations stay
-/// with Windows.
+/// with Windows. Nothing in the title bar or the menu takes the focus, so
+/// using them never gets in the way of typing.
 /// </summary>
 public partial class PhoneViewWindow : Window
 {
@@ -43,6 +47,18 @@ public partial class PhoneViewWindow : Window
     private bool? _phoneTypes;
     private bool _warnedNoTyping;
 
+    private readonly WindowCaption _caption;
+    private readonly MenuHover _menu = new();
+    private readonly DispatcherTimer _menuTimer;
+    private bool _escClosedMenu;        // Esc is still held from closing the menu
+
+    // The size of the phone's picture, and the one the window was last sized
+    // round. They differ while the window is maximised or minimised.
+    private (int W, int H)? _picture;
+    private (int W, int H)? _fitted;
+
+    private static readonly Brush MenuOpenBrush = Frozen(Color.FromArgb(0x1F, 0xFF, 0xFF, 0xFF));
+
     private const double DragSlopPx = 6;
     private static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(450);
     private static readonly TimeSpan MoveInterval = TimeSpan.FromMilliseconds(30);
@@ -53,6 +69,28 @@ public partial class PhoneViewWindow : Window
         _ws = ws;
         _phoneId = phoneId;
         Title = name;
+
+        _caption = new WindowCaption(this);
+        _caption.Changed += LayOutTitleBar;
+        LayOutTitleBar();
+
+        _menuTimer = new DispatcherTimer(DispatcherPriority.Input);
+        _menuTimer.Tick += (_, _) => { _menu.Tick(DateTime.UtcNow); ShowMenuState(); };
+        MenuPopup.CustomPopupPlacementCallback = PlaceMenu;
+        // The menu doesn't follow the window, so it goes when the window
+        // moves, changes size or is left for another.
+        Deactivated += (_, _) => CloseMenu();
+        LocationChanged += (_, _) => CloseMenu();
+        SizeChanged += (_, _) => CloseMenu();
+        StateChanged += (_, _) =>
+        {
+            CloseMenu();
+            // Back from maximised or minimised: catch up with a phone that
+            // turned meanwhile, once the window has its restored size.
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, FitToPicture);
+        };
+        Closed += (_, _) => CloseMenu();
+
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
         Closed += (_, _) => _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _phoneId });
 
@@ -63,7 +101,99 @@ public partial class PhoneViewWindow : Window
             _holdTimer.Stop();
             if (_downPos is { } p && !_touching) BeginTouch(p);
         };
-        Loaded += (_, _) => { Focus(); Keyboard.Focus(this); };
+        Loaded += (_, _) => { Focus(); Keyboard.Focus(this); FitToPicture(); };
+    }
+
+    private static Brush Frozen(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
+    private void SendAction(string type) =>
+        _ws.SendJson(new JsonObject { ["type"] = type, ["to"] = _phoneId });
+
+    // ---------------- title bar and menu ----------------
+
+    private void LayOutTitleBar()
+    {
+        BarRow.Height = new GridLength(_caption.BarHeight);
+        SystemButtonsColumn.Width = new GridLength(_caption.ButtonsWidth);
+    }
+
+    /// <summary>Under the button, right edges in line. The sizes come in
+    /// screen pixels, and the popup's is the card without the margin that
+    /// holds its shadow; the point is where the margin starts.</summary>
+    private CustomPopupPlacement[] PlaceMenu(Size popup, Size target, Point offset)
+    {
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        double x = target.Width - popup.Width - MenuCard.Margin.Left * scale;
+        return [new CustomPopupPlacement(new Point(x, target.Height), PopupPrimaryAxis.Horizontal)];
+    }
+
+    /// <summary>Makes the popup and the timer match what <see cref="_menu"/> has decided.</summary>
+    private void ShowMenuState()
+    {
+        if (MenuPopup.IsOpen != _menu.IsOpen)
+        {
+            MenuPopup.IsOpen = _menu.IsOpen;
+            if (_menu.IsOpen) MenuButton.Background = MenuOpenBrush;
+            else MenuButton.ClearValue(BackgroundProperty);
+        }
+        _menuTimer.Stop();
+        if (_menu.NextDue is { } due)
+        {
+            var wait = due - DateTime.UtcNow;
+            _menuTimer.Interval = wait > TimeSpan.Zero ? wait : TimeSpan.Zero;
+            _menuTimer.Start();
+        }
+    }
+
+    private void CloseMenu()
+    {
+        _menu.Dismiss();
+        ShowMenuState();
+    }
+
+    private void MenuButton_Click(object sender, RoutedEventArgs e)
+    {
+        _menu.Click(DateTime.UtcNow);
+        ShowMenuState();
+    }
+
+    private void MenuButton_MouseEnter(object sender, MouseEventArgs e)
+    {
+        // Passing over a window in the background shouldn't pop a menu up
+        // over whatever is being worked in. A click still opens it.
+        if (!IsActive) return;
+        _menu.PointerOnButton(true, DateTime.UtcNow);
+        ShowMenuState();
+    }
+
+    private void MenuButton_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _menu.PointerOnButton(false, DateTime.UtcNow);
+        ShowMenuState();
+    }
+
+    private void MenuCard_MouseEnter(object sender, MouseEventArgs e)
+    {
+        _menu.PointerOnMenu(true, DateTime.UtcNow);
+        ShowMenuState();
+    }
+
+    private void MenuCard_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _menu.PointerOnMenu(false, DateTime.UtcNow);
+        ShowMenuState();
+    }
+
+    /// <summary>A row of the menu whose Tag is the message to send. The menu
+    /// stays open, so the row can be pressed again.</summary>
+    private void MenuAction_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is string type) SendAction(type);
     }
 
     /// <summary>Ask for the stream again — the first start-view is dropped when
@@ -71,25 +201,44 @@ public partial class PhoneViewWindow : Window
     public void ResendStartView() =>
         _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _phoneId });
 
+    // ---------------- window size ----------------
+
     public void OnScreenInfo(int width, int height, bool typing)
     {
-        Dispatcher.BeginInvoke(() => _phoneTypes = typing);
-        if (width <= 0 || height <= 0) return;
-        // Size the window to the phone's aspect ratio, so the picture fills it
-        // between the title bar and frame. They are measured once the window
-        // has been laid out, and estimated before.
         Dispatcher.BeginInvoke(() =>
         {
-            var targetH = Math.Min(820, SystemParameters.WorkArea.Height - 60);
-            double frameW = 16, frameH = 39;
-            if (Content is FrameworkElement client && client.ActualWidth > 0)
-            {
-                frameW = ActualWidth - client.ActualWidth;
-                frameH = ActualHeight - client.ActualHeight;
-            }
-            Height = targetH;
-            Width = Math.Max(280, (targetH - frameH) * width / height + frameW);
+            _phoneTypes = typing;
+            if (width <= 0 || height <= 0) return;
+            _picture = (width, height);
+            FitToPicture();
         });
+    }
+
+    /// <summary>
+    /// Sizes the window round the picture, so the picture fills it below the
+    /// title bar. Only when the picture's shape has changed: the phone repeats
+    /// screen-info, and a size the user chose should survive that. A phone
+    /// that turns stays the same size on screen (see <see cref="PhoneFit"/>).
+    /// </summary>
+    private void FitToPicture()
+    {
+        if (_picture is not { } picture || !IsLoaded) return;
+        if (_fitted is { } last && PhoneFit.SameShape(last.W, last.H, picture.W, picture.H)) return;
+        // A maximised window keeps its size; it is fitted when it is restored.
+        if (WindowState != WindowState.Normal) return;
+
+        double hostW = PictureHost.ActualWidth, hostH = PictureHost.ActualHeight;
+        double longSide = _fitted is { } old ? PhoneFit.ShownLongSide(old.W, old.H, hostW, hostH) : 0;
+        var work = _caption.WorkArea;
+        var fit = PhoneFit.Fit(picture.W, picture.H, longSide,
+            frameW: ActualWidth - hostW, frameH: ActualHeight - hostH,
+            window: new FitRect(Left, Top, ActualWidth, ActualHeight),
+            work: new FitRect(work.Left, work.Top, work.Width, work.Height));
+        _fitted = picture;
+        Left = fit.Left;
+        Top = fit.Top;
+        Width = fit.Width;
+        Height = fit.Height;
     }
 
     public void OnFrame(byte[] frame)
@@ -213,7 +362,7 @@ public partial class PhoneViewWindow : Window
         };
         if (action == null) return;
         e.Handled = true;
-        _ws.SendJson(new JsonObject { ["type"] = action, ["to"] = _phoneId });
+        SendAction(action);
     }
 
     // ---------------- keyboard ----------------
@@ -258,17 +407,51 @@ public partial class PhoneViewWindow : Window
     private static bool IsPaste(Key key, ModifierKeys modifiers) =>
         modifiers == ModifierKeys.Control && key == Key.V || modifiers == ModifierKeys.Shift && key == Key.Insert;
 
+    /// <summary>
+    /// Every key pressed in the window comes through here, and the order of
+    /// the checks is the order keys are claimed in. It is shared with the
+    /// plans that add to it (PHONE-PLANS-ORDER.md, row 14):
+    ///   1. F8 and Shift+F8: the Stats readout. Not built yet.
+    ///   2. Esc while the menu is open: closes the menu.
+    ///   3. Digits, Backspace and Enter while the phone asks for a PIN: taps
+    ///      on its keys. Not built yet.
+    ///   4. Everything else is typed into the phone.
+    /// A key that makes a character is left unhandled here and arrives in
+    /// <see cref="Window_PreviewTextInput"/>; handling it here stops that.
+    /// </summary>
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
-        if (IsPaste(key, Keyboard.Modifiers))
+        var modifiers = Keyboard.Modifiers;
+
+        // 2. Esc closes the open menu instead of going Back on the phone, and
+        // holding it down doesn't then go Back either.
+        if (key == Key.Escape && (modifiers & ModifierKeys.Alt) == 0)
+        {
+            if (_menu.IsOpen)
+            {
+                CloseMenu();
+                _escClosedMenu = true;
+                e.Handled = true;
+                return;
+            }
+            if (_escClosedMenu && e.IsRepeat)
+            {
+                e.Handled = true;
+                return;
+            }
+            _escClosedMenu = false;
+        }
+
+        // 4. The phone's keys.
+        if (IsPaste(key, modifiers))
         {
             if (!e.IsRepeat) _ = PasteAsync();
             e.Handled = true;
             return;
         }
         // Held keys repeat, so holding Backspace keeps deleting.
-        if (KeyMessage(key, Keyboard.Modifiers) is not { } msg) return;
+        if (KeyMessage(key, modifiers) is not { } msg) return;
         msg["to"] = _phoneId;
         _ws.SendJson(msg);
         e.Handled = true;

@@ -67,6 +67,11 @@ Run `dotnet run --project windows/RemoteDesktopWin.ClipboardTests` for the
 clipboard's HTML envelope (including non-ASCII offsets), its size limit and the
 terminal shortcuts. They never touch the real clipboard or press keys.
 
+Run `dotnet run --project windows/RemoteDesktopWin.PhoneViewTests` for the phone
+viewer: when its title-bar menu opens and closes, how the window is sized round
+the phone's picture and follows a phone that turns, and how it reads what a
+phone says about itself. They need no window, phone or relay.
+
 ## Clipboard
 
 When a phone taps **Copy**, this app presses copy in the window in front, waits
@@ -181,7 +186,9 @@ unapproved device is present in the session, streaming and file serving pause.
   - **a phone** → click = tap, press-and-drag = real drag, hold in place =
     long-press, mouse wheel = pinch zoom in/out, right-click = Back,
     middle-click = Home. If the phone shows its own navigation buttons,
-    clicking them works too. While the window is focused, your keyboard types
+    clicking them works too. The **⋯** button in the title bar opens a menu
+    with Back, Home, Recents and Notifications; rest the pointer on it or
+    click it. While the window is focused, your keyboard types
     into the phone's focused text box (Android 13 and later), with Enter,
     Backspace, arrows and Ctrl shortcuts; Esc is Back, and Ctrl+V pastes this
     PC's clipboard.

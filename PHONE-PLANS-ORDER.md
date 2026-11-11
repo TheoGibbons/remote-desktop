@@ -1,6 +1,6 @@
 # The three phone plans: build order and how they fit together
 
-Written 2026-11-10 against `main` at `30009c4`. Nothing is built yet.
+Written 2026-11-10 against `main` at `30009c4`. The Status column of the table below says what is built.
 
 Three plans change how a phone is viewed and controlled:
 
@@ -17,7 +17,7 @@ One plan at a time, one commit per step, working tree clean between steps.
 | # | Step | From | Can be released after it? | Status |
 |---|------|------|---------------------------|--------|
 | 0 | Debug build installs beside the release app (`.debug` id) | Video 0.1 | Nothing for users in it | Built: debug build is `co.remotedesktop.debug`; not installed on a phone. |
-| 1 | Title bar, menu, window fit, `RemoteDesktopWin.PhoneViewTests` | Menu Phase 1 | Yes. Windows only, works with phones on v1.0.53. |  |
+| 1 | Title bar, menu, window fit, `RemoteDesktopWin.PhoneViewTests` | Menu Phase 1 | Yes. Windows only, works with phones on v1.0.53. | Built. On the S26: Back, Home, Recents and Notifications from the menu, and typing. Not checked: anything that needs a real mouse (clicking minimise / maximise / close, hover, snap flyout, dragging, resizing), and Windows 10. |
 | 2 | Phone state, volume, Quick settings, Screenshot, Lock | Menu Phase 2 | Yes |  |
 | 3 | Rotation, and smooth sharing following a turned phone | Menu Phase 3 | Yes |  |
 | 4 | Docs | Menu Phase 4 | Release |  |
