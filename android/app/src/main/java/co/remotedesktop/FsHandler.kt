@@ -398,9 +398,32 @@ class FsHandler(private val context: Context) {
         try {
             t.out.write(frame, 5, frame.size - 5)
             t.received += frame.size - 5
-        } catch (_: IOException) {
-            // Aborted by a disconnect on another thread; the transfer has already failed.
+        } catch (e: IOException) {
+            // Closed by a disconnect or a cancel on another thread: that took the
+            // transfer out first, and has already failed it.
+            if (!incoming.remove(id, t)) return
+            // Otherwise the storage is full, or gone. The file ends here: left in,
+            // it would go on with a piece missing, be put down to a slow connection
+            // at the end, and when its size was never said, be saved cut short.
+            failIncoming(id, t, e.message ?: "Could not write the file")
         }
+    }
+
+    /**
+     * Ends a file that can no longer be written, with the reason, and tells its
+     * sender to stop: a file this phone asked for is called off like any
+     * cancelled download, and one that was pushed here is answered as a failed
+     * save, which is what its sender waits to hear. Whatever still arrives of it
+     * is dropped, its fs-end included.
+     */
+    private fun failIncoming(xferId: Int, t: Incoming, error: String) {
+        try { t.out.close() } catch (_: IOException) {}
+        t.temp.delete()
+        if (t.onDone != null) {
+            ConnectionManager.sendJson(JSONObject().put("type", "fs-cancel").put("to", t.peer).put("xferId", xferId))
+        } else sendSaved(t.peer, xferId, error = error)
+        status("Receive failed: $error")
+        t.onError?.invoke(error)
     }
 
     private fun handleEnd(msg: JSONObject) {

@@ -162,6 +162,55 @@ class FsHandlerTest {
         assertTrue(partFiles().isEmpty())
     }
 
+    /** Stands in for full storage: the file a transfer's chunks go to can no longer be written. */
+    private fun FsHandler.breakWrites(xferId: Int) {
+        val incoming = FsHandler::class.java.getDeclaredField("incoming").apply { isAccessible = true }
+            .get(this) as Map<*, *>
+        val transfer = incoming[xferId]!!
+        (transfer.javaClass.getDeclaredField("out").apply { isAccessible = true }.get(transfer) as java.io.Closeable).close()
+    }
+
+    @Test
+    fun aChunkThatCannotBeWrittenFailsTheFileAtOnceWithTheReason() {
+        val fs = FsHandler(context)
+        val statuses = mutableListOf<String>()
+        fs.transferStatus.add { statuses.add(it) }
+
+        // A file this phone asked for. Its second chunk cannot be written.
+        fs.expect(31)
+        fs.begin(31, size = 6)
+        fs.chunk(31, 3)
+        fs.breakWrites(31)
+        fs.chunk(31, 3)
+        val reason = errors.single()
+        assertFalse("not put down to a slow connection", reason.startsWith("Only "))
+        assertEquals("Receive failed: $reason", statuses.last())
+        assertEquals("pc", sent("fs-cancel", 31).single().getString("to"))
+        assertFalse(fs.isActive(31))
+        assertTrue(partFiles().isEmpty())
+        // What still arrives of it is dropped, its ending included.
+        fs.chunk(31, 3)
+        fs.end(31, ok = true)
+        assertTrue(saved.isEmpty())
+        assertEquals(1, errors.size)
+        assertTrue(sent("fs-saved", 31).isEmpty())
+
+        // A file pushed here, its size never said: nothing at the end would notice the missing piece.
+        fs.begin(32, size = -1, accessAllowed = true)
+        fs.chunk(32, 3)
+        fs.breakWrites(32)
+        fs.chunk(32, 3)
+        val reply = sent("fs-saved", 32).single()
+        assertEquals("pc", reply.getString("to"))
+        assertEquals(reason, reply.getString("error"))
+        assertFalse(reply.has("path"))
+        fs.chunk(32, 3)
+        fs.end(32, ok = true)
+        assertEquals("not saved cut short, and answered once", 1, sent("fs-saved", 32).size)
+        assertFalse(statuses.any { it.startsWith("Saved") })
+        assertTrue(partFiles().isEmpty())
+    }
+
     @Test
     fun aRefusedPushTellsItsSenderAtOnce() {
         val fs = FsHandler(context)

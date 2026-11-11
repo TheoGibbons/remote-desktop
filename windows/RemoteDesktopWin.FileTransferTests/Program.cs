@@ -72,6 +72,7 @@ internal static class Program
             Check(!File.Exists(Path.Combine(dir, "denied.jpg")), "Denied file access never writes a file");
             Console.WriteLine("PASS: complete, duplicate, incomplete, cancelled, unknown-size, empty, denied and failed-save transfers");
 
+            CheckFailedWrites(ws, fs, dir, Begin, Chunk, End);
             CheckCancelling(ws, fs, dir, Begin, Chunk, End);
             CheckUploadsThatBreak(dir);
             CheckCaptureOffers(dir);
@@ -425,6 +426,75 @@ internal static class Program
         Check(Offer(new JsonArray { File("/x/a.jpg", "photo") }, "not base64!")!.Thumbnail == null &&
               Offer(new JsonArray { File("/x/a.jpg", "photo") }, "")!.Thumbnail == null, "A broken or empty preview is dropped");
         Console.WriteLine("PASS: offers fail cleanly when the phone leaves or the download is cancelled, and name what they hold");
+    }
+
+    /// <summary>Stands in for a full disk: the file a transfer's chunks go to can no longer be written.</summary>
+    private static void BreakWrites(FsService fs, int id)
+    {
+        var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance;
+        var incoming = (System.Collections.IDictionary)typeof(FsService).GetField("_incoming", flags)!.GetValue(fs)!;
+        var transfer = incoming[(uint)id]!;
+        var field = transfer.GetType().GetField("Stream", flags)!;
+        var stream = (FileStream)field.GetValue(transfer)!;
+        var path = stream.Name;
+        stream.Dispose();
+        field.SetValue(transfer, new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
+    }
+
+    private static void CheckFailedWrites(WsClient ws, FsService fs, string dir,
+        Action<int, string, long, bool> begin, Action<int, byte[]> chunk, Action<int, bool> end)
+    {
+        var updates = new List<TransferUpdate>();
+        void Note(TransferUpdate update) => updates.Add(update);
+        fs.TransferChanged += Note;
+        List<JsonObject> Sent(int id) => ws.Messages.Where(m => m["xferId"]?.GetValue<uint>() == (uint)id).ToList();
+        TransferUpdate Final(int id) => updates.Last(u => u.XferId == (uint)id);
+
+        // A file pushed here, its size known. The second chunk cannot be written.
+        begin(301, "full-disk.bin", 6, true);
+        chunk(301, new byte[] { 1, 2, 3 });
+        BreakWrites(fs, 301);
+        chunk(301, new byte[] { 4, 5, 6 });
+        var reason = Final(301).Error;
+        Check(Final(301).State == TransferState.Failed && !string.IsNullOrEmpty(reason) && reason != "Incomplete file transfer",
+            "A chunk that cannot be written fails the file at once, with the reason the write gave");
+        Check(Sent(301).Count == 1 && Sent(301)[0]["type"]?.GetValue<string>() == "fs-saved" &&
+            Sent(301)[0]["to"]?.GetValue<string>() == "phone" && Sent(301)[0]["error"]?.GetValue<string>() == reason,
+            "The phone that pushed it is told why it was not saved, so it stops sending");
+        Check(!fs.IsActive(301) && !Directory.EnumerateFiles(dir, "*.part").Any(), "Nothing of the file is left behind");
+        chunk(301, new byte[] { 7 });
+        end(301, true);
+        Check(Sent(301).Count == 1 && !File.Exists(Path.Combine(dir, "full-disk.bin")) && Final(301).State == TransferState.Failed,
+            "What still arrives of it is dropped, and it is not saved");
+
+        // The same with the size unknown, where nothing at the end would notice a missing piece.
+        begin(302, "cloud-full-disk.bin", -1, true);
+        chunk(302, new byte[] { 1, 2, 3 });
+        BreakWrites(fs, 302);
+        chunk(302, new byte[] { 4, 5, 6 });
+        chunk(302, new byte[] { 7, 8, 9 });
+        end(302, true);
+        Check(!File.Exists(Path.Combine(dir, "cloud-full-disk.bin")) && Final(302).State == TransferState.Failed &&
+            Sent(302).Count == 1 && Sent(302)[0]["path"] == null && Sent(302)[0]["error"] != null,
+            "A file of unknown size is not saved cut short and called done after a failed write");
+
+        // A file this PC asked for: whoever asked hears the real reason, and the phone is told to stop.
+        var saved = new List<string>();
+        var failed = new List<string>();
+        fs.ExpectDownload(303, "phone", "asked.bin", saved.Add, failed.Add);
+        begin(303, "asked.bin", 6, false);
+        chunk(303, new byte[] { 1, 2, 3 });
+        BreakWrites(fs, 303);
+        chunk(303, new byte[] { 4, 5, 6 });
+        Check(failed.Count == 1 && failed[0] == Final(303).Error && failed[0] != "Incomplete file transfer" && saved.Count == 0,
+            "A download that cannot be written fails with the reason the write gave");
+        Check(Sent(303).Count == 1 && Sent(303)[0]["type"]?.GetValue<string>() == "fs-cancel" &&
+            Sent(303)[0]["to"]?.GetValue<string>() == "phone", "The phone is asked to stop sending it");
+        end(303, false);
+        Check(failed.Count == 1 && saved.Count == 0 && !Directory.EnumerateFiles(dir, "*.part").Any(),
+            "The phone's own ending of it changes nothing");
+        fs.TransferChanged -= Note;
+        Console.WriteLine("PASS: a chunk that cannot be written fails the file with the real reason, whatever its size and whoever asked for it");
     }
 
     private static void CheckCancelling(WsClient ws, FsService fs, string dir,

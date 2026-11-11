@@ -320,20 +320,53 @@ public class FsService
         if (frame.Length < 5) return;
         uint id = (uint)((frame[1] << 24) | (frame[2] << 16) | (frame[3] << 8) | frame[4]);
         IncomingTransfer? t;
-        int percent;
+        int percent = -1;
+        string? failed = null;
         lock (_incoming)
         {
             if (!_incoming.TryGetValue(id, out t)) return;
-            t.Stream.Write(frame, 5, frame.Length - 5);
-            t.Received += frame.Length - 5;
-            if (t.Expected <= 0) return;
-            percent = (int)Math.Min(100, t.Received * 100 / t.Expected);
-            if (percent == t.Percent) return;
-            t.Percent = percent;
+            try { t.Stream.Write(frame, 5, frame.Length - 5); }
+            catch (Exception ex)
+            {
+                // A full disk, or a drive that has gone. The file ends here: left
+                // in, it would go on with a piece missing, and one whose size was
+                // never said would then be saved cut short and called done.
+                _incoming.Remove(id);
+                failed = ex.Message;
+            }
+            if (failed == null)
+            {
+                t.Received += frame.Length - 5;
+                if (t.Expected <= 0) return;
+                percent = (int)Math.Min(100, t.Received * 100 / t.Expected);
+                if (percent == t.Percent) return;
+                t.Percent = percent;
+            }
         }
         // Outside the lock: a handler that waited on the UI thread, which takes it
         // in ExpectDownload, would deadlock.
-        TransferChanged?.Invoke(t.Update(id, TransferState.Running, percent));
+        if (failed != null) FailIncoming(id, t, failed);
+        else TransferChanged?.Invoke(t.Update(id, TransferState.Running, percent));
+    }
+
+    /// <summary>
+    /// Ends a file that can no longer be written, with the reason it gave, and
+    /// tells its sender to stop: a file this PC asked for is called off like any
+    /// cancelled download, and one that was pushed here is answered as a failed
+    /// save, which is what its sender waits to hear. Whatever still arrives of
+    /// it is dropped, its fs-end included.
+    /// </summary>
+    private void FailIncoming(uint id, IncomingTransfer t, string error)
+    {
+        try { t.Stream.Dispose(); } catch { /* What is still buffered fails for the same reason. */ }
+        try { File.Delete(t.TempPath); } catch { /* The failure is reported either way. */ }
+        if (t.OnDone != null)
+            _ws.SendJson(new JsonObject { ["type"] = "fs-cancel", ["to"] = t.Peer, ["xferId"] = id });
+        else
+            _ws.SendJson(new JsonObject { ["type"] = "fs-saved", ["to"] = t.Peer, ["xferId"] = id, ["error"] = error });
+        TransferChanged?.Invoke(t.Update(id, TransferState.Failed, error: error));
+        t.OnError?.Invoke(error);
+        AskNext(id);
     }
 
     private void HandleList(JsonNode msg)
