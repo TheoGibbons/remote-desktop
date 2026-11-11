@@ -804,7 +804,13 @@ public partial class MainWindow : Window
         // approved device (see PROTOCOL.md, "Device authentication").
         bool controlAllowed = AllowStreamCheck.IsChecked == true && _auth.IsTrusted(from);
 
-        switch (msg["type"]?.GetValue<string>())
+        var type = msg["type"]?.GetValue<string>();
+        // Only the relay says who is in the session, and its own messages
+        // have no sender. From a device, these are a device posing as the
+        // relay, whether or not it encrypted them.
+        if (from != null && type is "welcome" or "peer-joined" or "peer-left" or "error" or "latest") return;
+
+        switch (type)
         {
             case "welcome":
                 _peers.Clear();

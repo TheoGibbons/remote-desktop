@@ -676,6 +676,14 @@ The `to` is copied from the inner message so the relay routes it unchanged; the
 relay adds `from` to the envelope, and the receiver copies it onto the decrypted
 inner message.
 
+**What a receiver refuses.** The relay adds `from` to everything it passes on
+from a device, and its own messages have none. So an app drops a message that
+is not encrypted and has a `from`: a device speaks to another only inside
+`enc`. It takes `from` from the envelope alone, never from inside the
+encrypted message. And it drops `welcome`, `peer-joined`, `peer-left`, `error`
+and `latest` when they come with a `from`, encrypted or not: only the relay
+says who is in the session.
+
 **What the relay can still see (metadata):** connection timing/size, IP (for
 rate limiting), the `pairId`, each peer's `device` type and chosen `name`, and
 `to`/`from` routing ids. It cannot see screen contents, input, file names or file

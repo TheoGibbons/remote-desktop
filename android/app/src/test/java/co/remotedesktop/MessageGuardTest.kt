@@ -128,6 +128,47 @@ class MessageGuardTest {
         assertTrue(PhoneScreenCapture.isViewing("pc"))
     }
 
+    @Test
+    fun onlyTheRelaySaysWhoIsInTheSessionAndOnlyEncryptedMessagesAreADevices() {
+        // A device's message that is not encrypted is not heard, though the
+        // relay names an approved device as its sender. Without this, the
+        // session key would not be needed to control the phone.
+        arrives("""{"type":"start-view","from":"pc"}""")
+        assertFalse(PhoneScreenCapture.isViewing("pc"))
+        arrives(sealed("""{"type":"start-view"}""", "pc"))
+        assertTrue(PhoneScreenCapture.isViewing("pc"))
+
+        // A device posing as the relay, encrypted or not, to have a viewer dropped.
+        val heard = mutableListOf<String>()
+        val screens: (JSONObject) -> Unit = { heard.add(it.optString("type")) }
+        ConnectionManager.jsonListeners.add(screens)
+        try {
+            arrives("""{"type":"peer-left","id":"pc","from":"stranger"}""")
+            arrives(sealed("""{"type":"peer-left","id":"pc"}""", "stranger"))
+            arrives(sealed("""{"type":"welcome","id":"9","peers":[]}""", "stranger"))
+            arrives(sealed("""{"type":"error","message":"banned","retryAfter":3600}""", "stranger"))
+            arrives(sealed("""{"type":"peer-joined","peer":{"id":"x","device":"windows","name":"Ghost"}}""", "stranger"))
+            assertTrue(PhoneScreenCapture.isViewing("pc"))
+            assertEquals(listOf("pc", "other-pc", "stranger"), ConnectionManager.peers.map { it.id })
+            assertEquals("connected", ConnectionManager.state)
+            // The screens are not told either: a viewer closes on peer-left.
+            assertEquals(emptyList<String>(), heard)
+
+            // The sender is who the relay says, whatever the message itself claims.
+            arrives(sealed("""{"type":"stop-view","from":"pc"}""", "stranger"))
+            assertTrue(PhoneScreenCapture.isViewing("pc"))
+
+            // The relay's own word, which has no sender.
+            arrives("""{"type":"peer-left","id":"pc"}""")
+            assertFalse(PhoneScreenCapture.isViewing("pc"))
+            assertEquals(listOf("other-pc", "stranger"), ConnectionManager.peers.map { it.id })
+            // (The stop-view is passed on like any message; each screen looks at who sent it.)
+            assertEquals(listOf("stop-view", "peer-left"), heard)
+        } finally {
+            ConnectionManager.jsonListeners.remove(screens)
+        }
+    }
+
     private class RecordingSocket : WebSocket {
         val key = ByteArray(32) { 7 }
         val messages = mutableListOf<JSONObject>()

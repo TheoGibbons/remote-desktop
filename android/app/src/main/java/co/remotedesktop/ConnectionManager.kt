@@ -434,8 +434,14 @@ object ConnectionManager {
                 inner.put("from", msg.optString("from"))
                 handleJson(inner)
             } else {
+                // Not encrypted, so the relay's own (welcome / peer-* / error /
+                // latest). The relay puts a sender on everything it passes on
+                // from a device, and the apps speak to each other encrypted
+                // only. So one with a sender is a device posing as the relay,
+                // or trying to be heard without the session key.
+                if (msg.has("from")) return
                 if (msg.optString("type") == "welcome") admittedSocket = webSocket
-                handleJson(msg) // cleartext server messages (welcome / peer-* / error)
+                handleJson(msg)
             }
         }
 
@@ -483,8 +489,14 @@ object ConnectionManager {
         }
     }
 
+    /** What only the relay says: who is in the session, and its own refusals and news. */
+    private val RELAY_ONLY = setOf("welcome", "peer-joined", "peer-left", "error", "latest")
+
     private fun handleJson(msg: JSONObject) {
         val from = msg.optString("from")
+        // From a device, these are a device posing as the relay, whether or
+        // not it encrypted them. Nobody acts on them, the screens included.
+        if (from.isNotEmpty() && msg.optString("type") in RELAY_ONLY) return
         when (msg.optString("type")) {
             "welcome" -> {
                 PhoneScreenCapture.onViewStopped()

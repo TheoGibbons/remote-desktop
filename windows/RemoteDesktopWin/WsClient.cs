@@ -406,12 +406,20 @@ public class WsClient : IDisposable
             var pt = Crypto.Decrypt(_encKey, blob, Crypto.ChJson);
             if (pt == null) return;
             if (JsonNode.Parse(Encoding.UTF8.GetString(pt)) is not JsonObject inner) return;
+            // Whatever the sender wrote there, the sender is who the relay says.
+            inner.Remove("from");
             if (from != null) inner["from"] = from;
             JsonReceived?.Invoke(inner);
             return;
         }
 
-        // Cleartext server messages.
+        // Not encrypted, so the relay's own: welcome, peer-joined, peer-left,
+        // error, latest. The relay puts a sender on everything it passes on
+        // from a device, and the apps speak to each other encrypted only. So
+        // one with a sender is a device posing as the relay, or trying to be
+        // heard without the session key, and is dropped.
+        if (node.ContainsKey("from")) return;
+
         if (type == "welcome")
         {
             MyId = Text(node["id"]);

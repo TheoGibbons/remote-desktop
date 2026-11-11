@@ -167,6 +167,26 @@ internal static class PrivacyLifecycleTests
             if (sent.Count != 1 || sent[0]["reqId"]?.GetValue<string>() != "6")
                 throw new Exception("A message that makes no sense stopped the ones after it");
             Console.WriteLine("PASS: a message that makes no sense is skipped on the socket's thread, and the next one is heard");
+
+            // A device's message that is not encrypted is not heard, though
+            // the relay names an approved device as its sender: without this
+            // the session key would not be needed to be answered.
+            sent.Clear();
+            OffSocket("{\"type\":\"clip-get\",\"reqId\":\"7\",\"from\":\"" + peer + "\"}", binary: false);
+            if (sent.Count != 0) throw new Exception("A message that was not encrypted was answered");
+            // The sender is who the relay says, whatever the message itself claims.
+            OffSocket(Sealed("{\"type\":\"clip-get\",\"reqId\":\"8\",\"from\":\"" + peer + "\"}", "unapproved"), binary: false);
+            if (sent.Count != 0) throw new Exception("A device was taken for the one it said it was");
+            // A device posing as the relay, encrypted or not, to have a viewer dropped.
+            streamer.Regions.AddViewer(peer);
+            OffSocket("{\"type\":\"peer-left\",\"id\":\"" + peer + "\",\"from\":\"unapproved\"}", binary: false);
+            OffSocket(Sealed("{\"type\":\"peer-left\",\"id\":\"" + peer + "\"}", "unapproved"), binary: false);
+            OffSocket(Sealed("{\"type\":\"welcome\",\"id\":\"9\",\"peers\":[]}", "unapproved"), binary: false);
+            if (!streamer.Regions.IsViewing(peer)) throw new Exception("A device posing as the relay had a viewer dropped");
+            // The relay's own word, which has no sender.
+            OffSocket("{\"type\":\"peer-left\",\"id\":\"" + peer + "\"}", binary: false);
+            if (streamer.Regions.IsViewing(peer)) throw new Exception("The relay's own peer-left was not heard");
+            Console.WriteLine("PASS: only an encrypted message is a device's, and only the relay says who is in the session");
         }
         finally
         {
