@@ -47,7 +47,10 @@ class ShadowPhoneCaptureConnection {
         val recipients = mutableListOf<Collection<String>?>()
     }
     @Implementation fun getState() = if (connected) "connected" else "disconnected"
-    @Implementation fun sendJson(message: JSONObject) { info.add(message) }
+    // Only the picture's size is counted here; lock-state has LockStateTest.
+    @Implementation fun sendJson(message: JSONObject) {
+        if (message.optString("type") == "screen-info") info.add(message)
+    }
     @Implementation fun sendBinary(channel: Byte, bytes: ByteArray, to: Collection<String>?): Boolean {
         assertEquals(Crypto.CH_VIDEO, channel)
         frames.add(bytes)

@@ -195,8 +195,10 @@ a paste there is expected to come from the PC.
 
 A phone that has gone to sleep is woken by input, as touching it would wake
 it: by every message in the table except the `move`s of a `touch`, `lock`,
-`volume`, `rotate` and `get-phone-state`. `start-view` wakes it too. Its lock
-screen stays in place.
+`volume`, `rotate` and `get-phone-state`. `start-view` wakes it too, when it
+comes from a device that was not already viewing; a viewer that sends it again
+neither wakes the phone nor is announced on it again. Its lock screen stays in
+place.
 
 The phone answers `volume`, `rotate` and `get-phone-state`, to the device that sent them, with:
 
@@ -209,6 +211,35 @@ before these messages never send `phone-state`, so a viewer that asks and
 hears nothing offers none of it. The phone sends it only when asked; it is not
 pushed when the volume changes on the phone or when the phone lets go of a
 rotation, so a viewer asks again whenever it is about to show either.
+
+The phone tells each device that is viewing it whether its screen is on and
+whether it is locked, without being asked:
+
+| type          | fields | notes |
+|---------------|--------|-------|
+| `lock-state`  | `to`, `screenOn`, `locked`, `wakeFailed`? | `screenOn` (boolean) is false while the phone is asleep. `locked` (boolean) is true while its lock screen or its unlock screen is up, whether or not a pattern or PIN is set. `wakeFailed` is there only while the screen is off, after the phone tried to turn it on (for a `start-view` or for input) and it was still off a second later: `notifications` when the app's notifications are switched off on the phone, which is when a Samsung phone refuses, and `unknown` otherwise. |
+
+It is sent to each viewer by itself, never broadcast, and only while that
+viewer would be sent the picture: when its `start-view` is accepted, and
+whenever a field changes. A viewer that starts while the phone is asleep is
+told once it is known whether the phone woke: at once if it did, a second
+later if it didn't. The phone listens for its screen and its lock only while
+someone is viewing.
+
+A viewer uses it to explain a dark picture. With `screenOn` false it says the
+phone is asleep, or that it didn't wake and why. Android leaves the unlock
+screen, where the pattern or PIN is entered, out of every picture, so it
+arrives black; input still reaches it. A viewer that is shown a picture that
+is nearly all black while `locked` is true says that. The ordinary lock
+screen is in the picture and needs no words. What a phone lists in `can`
+changes with all this (see `rotate`), so a viewer asks for `phone-state`
+again when `lock-state` changes.
+
+Apps before this message never send it. A viewer then has only the picture to
+go by, and says of a nearly black one that the screen is off or the phone is
+on its unlock screen. Older viewers ignore `lock-state`. A viewer ignores
+fields it doesn't know, and a `wakeFailed` it doesn't know is still a wake
+that failed.
 
 **File system** (`path` uses the native separators of the target device)
 

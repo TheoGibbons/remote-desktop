@@ -28,16 +28,20 @@ object PhoneScreenCapture {
     fun onViewRequested(context: Context, peerId: String) {
         init(context)
         if (!Prefs(context).allowControl || !mayView(context, peerId)) return
-        viewers.add(peerId)
-        ScreenWaker.wake(context)
+        // Only a device that was not already viewing wakes the phone and is
+        // announced. A viewer may ask again, and that changes nothing here.
+        val started = viewers.add(peerId)
+        if (started) ScreenWaker.wake(context)
         main.post {
             if (!viewers.contains(peerId)) return@post
-            val setupHint = if (Build.VERSION.SDK_INT >= 30)
-                "Enable Screen view and control (Accessibility) in Permissions & Access"
-            else "Enable screen sharing in Permissions & Access to view this phone"
-            val viewer = ConnectionManager.peers.firstOrNull { it.id == peerId }?.name ?: "A paired device"
-            val message = if (isAvailable) "$viewer started viewing this phone" else setupHint
-            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            if (started) {
+                val setupHint = if (Build.VERSION.SDK_INT >= 30)
+                    "Enable Screen view and control (Accessibility) in Permissions & Access"
+                else "Enable screen sharing in Permissions & Access to view this phone"
+                val viewer = ConnectionManager.peers.firstOrNull { it.id == peerId }?.name ?: "A paired device"
+                val message = if (isAvailable) "$viewer started viewing this phone" else setupHint
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            }
             // An additional viewer needs dimensions even if the source is already streaming.
             ScreenCaptureService.resendScreenInfo()
             InputAccessibilityService.instance?.resendScreenInfo()
@@ -76,6 +80,8 @@ object PhoneScreenCapture {
             // A screen turned for a viewer goes back to the phone's own way with the last of them.
             if (viewers.isEmpty()) InputAccessibilityService.instance?.releaseRotation()
             val active = maySendFrames(context)
+            // Each viewer is told whether the screen is on and locked, while there is one.
+            LockState.watch(context, active)
             val smooth = ScreenCaptureService.isRunning
             // Stop the old source before starting the new one.
             if (smooth) {

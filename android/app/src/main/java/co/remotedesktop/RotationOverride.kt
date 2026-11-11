@@ -29,7 +29,7 @@ import android.view.WindowManager
  * screen is where someone unlocks the phone, and keeps the phone's own
  * orientation. It is not put back afterwards, and for the same reason it is
  * never taken up while the screen is off or the phone is locked
- * ([PhoneControls.screenInUse]).
+ * ([LockState.Reading.inUse]).
  */
 internal class RotationOverride(private val service: AccessibilityService) {
     companion object {

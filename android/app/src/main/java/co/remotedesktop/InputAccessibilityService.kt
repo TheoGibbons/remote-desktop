@@ -26,9 +26,10 @@ import org.json.JSONObject
  * typed `text` and `key` (see [PhoneKeyboard]). [GestureSequencer] keeps
  * them in order.
  *
- * Note: Android does not allow apps to unlock a secure lockscreen (PIN /
- * pattern / biometric). Taps work on the lockscreen surface itself, so a
- * device with no secure lock (swipe-to-unlock) can be unlocked remotely.
+ * The same gestures land on the lock screen and on the unlock screen behind
+ * it, so a pattern can be drawn and a PIN tapped from a viewer. Android
+ * leaves the unlock screen out of the picture, so that is done blind.
+ * Fingerprint and face can't be supplied this way.
  */
 class InputAccessibilityService : AccessibilityService() {
 

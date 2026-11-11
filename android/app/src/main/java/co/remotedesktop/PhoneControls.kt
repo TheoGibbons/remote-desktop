@@ -1,9 +1,7 @@
 package co.remotedesktop
 
-import android.app.KeyguardManager
 import android.content.Context
 import android.media.AudioManager
-import android.os.PowerManager
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -29,7 +27,7 @@ internal object PhoneControls {
                 // off, so that is asked again there.
                 val turning = InputAccessibilityService.instance?.rotate(
                     msg.optString("orientation"),
-                    allowed = { PhoneScreenCapture.isViewing(from) && screenInUse(context) },
+                    allowed = { PhoneScreenCapture.isViewing(from) && LockState.read(context).inUse },
                     then = answer,
                 )
                 if (turning == true) return
@@ -37,19 +35,6 @@ internal object PhoneControls {
             }
         }
         answer()
-    }
-
-    /**
-     * Whether the screen is on and past the lock screen, which is the only
-     * time it may be turned for a viewer. The lock screen is where someone
-     * unlocks the phone, and keeps the phone's own orientation; and a screen
-     * turned while it was off would come back on turned, with nothing left
-     * to tell the phone to let go.
-     */
-    fun screenInUse(context: Context): Boolean {
-        val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        val keyguard = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-        return power.isInteractive && !keyguard.isKeyguardLocked
     }
 
     /** This phone's `phone-state`, without its `to`. */
@@ -63,7 +48,7 @@ internal object PhoneControls {
             volumeFixed = audio.isVolumeFixed,
             rotation = InputAccessibilityService.rotation,
             // Not something the phone can do right now while it is asleep or locked.
-            actions = InputAccessibilityService.menuActions.filter { it != "rotate" || screenInUse(context) },
+            actions = InputAccessibilityService.menuActions.filter { it != "rotate" || LockState.read(context).inUse },
         )
     }
 
