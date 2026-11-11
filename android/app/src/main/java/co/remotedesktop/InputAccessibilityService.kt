@@ -42,6 +42,29 @@ class InputAccessibilityService : AccessibilityService() {
             get() = Build.VERSION.SDK_INT >= 33 && instance?.serviceInfo?.let {
                 it.flags and AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR != 0
             } == true
+
+        /** The rows of a viewer's menu, beyond navigation, that this phone can
+         *  act on right now, by the names `phone-state` lists them under.
+         *  Locking and taking a screenshot came with Android 9. */
+        val menuActions: List<String>
+            get() = when {
+                instance == null -> emptyList()
+                Build.VERSION.SDK_INT >= 28 -> listOf("quick-settings", "lock", "screenshot")
+                else -> listOf("quick-settings")
+            }
+
+        /**
+         * Whether a message is real input, which wakes a sleeping phone the
+         * way touching it would. `lock` is not: it would turn the screen on
+         * only to turn it off again. Pointer moves are frequent and always
+         * follow a down. Anything not named here does not wake the phone.
+         */
+        internal fun wakesPhone(msg: JSONObject): Boolean = when (msg.optString("type")) {
+            "touch" -> msg.optString("action") != "move"
+            "tap", "swipe", "pinch", "text", "key", "back", "homebtn", "recents", "notifications",
+            "quick-settings", "screenshot" -> true
+            else -> false
+        }
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -91,9 +114,8 @@ class InputAccessibilityService : AccessibilityService() {
     }
 
     fun handle(msg: JSONObject) {
-        // The phone may have gone back to sleep while being viewed. Pointer
-        // moves are skipped: they are frequent and always follow a down.
-        if (msg.optString("action") != "move") ScreenWaker.wake(this)
+        // The phone may have gone back to sleep while being viewed.
+        if (wakesPhone(msg)) ScreenWaker.wake(this)
         when (msg.optString("type")) {
             "tap" -> {
                 val (w, h) = screenSize()
@@ -136,6 +158,10 @@ class InputAccessibilityService : AccessibilityService() {
             "homebtn" -> performGlobalAction(GLOBAL_ACTION_HOME)
             "recents" -> performGlobalAction(GLOBAL_ACTION_RECENTS)
             "notifications" -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+            "quick-settings" -> performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+            // Saved by the phone like any screenshot, so a PC is offered it (see CaptureOffers).
+            "screenshot" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+            "lock" -> if (Build.VERSION.SDK_INT >= 28) performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
             "text", "key" -> main.post { type(msg) }
         }
     }

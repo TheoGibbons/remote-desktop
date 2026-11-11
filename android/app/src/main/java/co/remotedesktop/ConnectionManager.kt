@@ -525,8 +525,13 @@ object ConnectionManager {
             // A PC or phone controlling this phone — only with the user's consent
             // (Permissions & Access) AND from a device this phone has approved.
             // The session key alone must not grant control.
-            "tap", "swipe", "touch", "pinch", "back", "homebtn", "recents", "notifications", "text", "key" ->
+            "tap", "swipe", "touch", "pinch", "back", "homebtn", "recents", "notifications", "text", "key",
+            "quick-settings", "screenshot", "lock" ->
                 if (mayControl(from)) InputAccessibilityService.instance?.handle(msg)
+
+            // The rest of a viewer's menu. Not input: these never wake the phone.
+            "volume", "get-phone-state" ->
+                if (mayControl(from)) PhoneControls.handle(appContext, from, msg)
 
             "start-view" ->
                 if (mayControl(from)) PhoneScreenCapture.onViewRequested(appContext, from)
