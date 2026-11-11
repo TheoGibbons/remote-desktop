@@ -409,6 +409,34 @@ class PhoneViewerActivityTest {
         assertEquals(View.GONE, caption.visibility)
     }
 
+    /** A phone sends nothing while its screen stays as it is, so the last picture has to be the one judged. */
+    @Test
+    fun theLastPictureOfABurstIsLookedAtThoughItCameTooSoonAfterAnother() {
+        open()
+        frame(Crypto.CH_VIDEO, jpeg(0x3366CC))
+        // The screen goes black 400 ms later, and then nothing more comes.
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(400))
+        frame(Crypto.CH_VIDEO, jpeg())
+        assertEquals("Not looked at yet: the last look was under half a second ago", View.GONE, caption.visibility)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(LockCaption.BlackWatch.INTERVAL_MS))
+        assertEquals(View.VISIBLE, caption.visibility)
+
+        // And the other way: it lights up again just after a look.
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1_000))
+        frame(Crypto.CH_VIDEO, jpeg())
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(100))
+        frame(Crypto.CH_VIDEO, jpeg(0x3366CC))
+        assertEquals(View.VISIBLE, caption.visibility)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(LockCaption.BlackWatch.INTERVAL_MS))
+        assertEquals(View.GONE, caption.visibility)
+
+        // A phone that says it is unlocked is showing something dark, and is not asked about again.
+        frame(Crypto.CH_VIDEO, jpeg())
+        lockState("phone", screenOn = true, locked = false)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(2_000))
+        assertEquals(View.GONE, caption.visibility)
+    }
+
     @Test
     fun itClosesWhenThePhoneLeavesOrHangsUp() {
         open()

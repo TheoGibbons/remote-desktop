@@ -214,6 +214,14 @@ internal object LockCaption {
         private var lookedAt: Long? = null
         private var black = false
 
+        /** Whether [look] would look at a picture now, or pass it over and
+         *  answer with what it last saw. */
+        @Synchronized
+        fun isDue(state: State?, nowMs: Long): Boolean {
+            val last = lookedAt
+            return blackMatters(state) && (last == null || nowMs - last >= INTERVAL_MS)
+        }
+
         /** Whether the last picture looked at was black; false while it doesn't matter. */
         @Synchronized
         fun look(bitmap: Bitmap, state: State?, nowMs: Long): Boolean {

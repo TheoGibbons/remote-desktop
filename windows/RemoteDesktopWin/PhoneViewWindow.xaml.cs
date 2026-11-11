@@ -105,6 +105,10 @@ public partial class PhoneViewWindow : Window
     private readonly BlackWatch _blackWatch = new();
     private byte[] _pixels = [];        // the picture last looked at, kept to save allocating it again
     private bool _pictureBlack;         // whether the picture on show is nearly all black
+    // Pictures are looked at twice a second at most, so the last one of a
+    // burst may not have been, and a phone sends nothing more while its
+    // screen stays as it is. This looks at the picture on show when its turn comes.
+    private readonly DispatcherTimer _lookAgainTimer;
     private int _lockChanges;           // goes up each time the phone's screen or lock changes
 
     // The drag being made over the pattern grid, as fractions of the phone's
@@ -167,6 +171,10 @@ public partial class PhoneViewWindow : Window
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, FitToPicture);
         };
         Closed += (_, _) => CloseMenu();
+
+        _lookAgainTimer = new DispatcherTimer { Interval = BlackWatch.Interval };
+        _lookAgainTimer.Tick += (_, _) => LookAtPictureOnShow();
+        Closed += (_, _) => _lookAgainTimer.Stop();
 
         _statsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _statsTimer.Tick += (_, _) => RefreshStats();
@@ -552,6 +560,8 @@ public partial class PhoneViewWindow : Window
                 lock (_blackWatch) _blackWatch.Forget();
                 _pictureBlack = false;
                 _lockChanges++;
+                // The picture on show is of the time before; the next one is looked at.
+                _lookAgainTimer.Stop();
             }
             if (state.Entry is not PatternEntry) ClearTrail();
             ShowCaption();
@@ -842,7 +852,28 @@ public partial class PhoneViewWindow : Window
     internal void ShowPicture(DecodedPicture picture)
     {
         ScreenImage.Source = picture.Image;
+        // One that was passed over for coming too soon after the last look is
+        // looked at once that may be done, if no other has come by then.
+        _lookAgainTimer.Stop();
+        if (picture.Black == null && LockCaption.BlackMatters(_lock)) _lookAgainTimer.Start();
         if (picture.Black is not { } black || picture.AsOf != _lockChanges || black == _pictureBlack) return;
+        _pictureBlack = black;
+        ShowCaption();
+    }
+
+    /// <summary>The black test on the picture that is on show: the last one
+    /// to arrive, which the pace of the test may have passed over.</summary>
+    private void LookAtPictureOnShow()
+    {
+        _lookAgainTimer.Stop();
+        if (ScreenImage.Source is not BitmapSource shown) return;
+        if (LookAtPicture(shown) is not { } black)
+        {
+            // A moment too soon by the clock: once more, if black would still mean anything.
+            if (LockCaption.BlackMatters(_lock)) _lookAgainTimer.Start();
+            return;
+        }
+        if (black == _pictureBlack) return;
         _pictureBlack = black;
         ShowCaption();
     }

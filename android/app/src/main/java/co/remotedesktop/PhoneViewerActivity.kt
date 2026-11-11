@@ -56,6 +56,23 @@ class PhoneViewerActivity : AppCompatActivity() {
     /** Goes up each time the other phone's screen or lock changes (main thread). */
     @Volatile private var lockChanges = 0
     private val blackWatch = LockCaption.BlackWatch()
+    /** The picture on show, for [lookAgain]. Main thread. */
+    private var shownFrame: android.graphics.Bitmap? = null
+
+    /**
+     * Pictures are looked at for blackness twice a second at most, so the
+     * last one of a burst may not have been. A phone sends nothing more
+     * while its screen stays as it is, so nothing would come to be looked at
+     * in its place: the last picture is looked at when its turn comes.
+     */
+    private val lookAgain = Runnable {
+        val bitmap = shownFrame ?: return@Runnable
+        val black = blackWatch.look(bitmap, lockState, SystemClock.uptimeMillis())
+        if (black != pictureBlack) {
+            pictureBlack = black
+            updateCaption()
+        }
+    }
     private var imePrev = ""
     private var imeGuard = false
 
@@ -99,8 +116,11 @@ class PhoneViewerActivity : AppCompatActivity() {
             // is on its way to the screen. What was seen in the picture was
             // seen before that, and is not carried over.
             val asOf = lockChanges
-            val black = blackWatch.look(bitmap, lockState, SystemClock.uptimeMillis())
-            runOnUiThread { if (viewing) showFrame(bitmap, black.takeIf { asOf == lockChanges }) }
+            val now = SystemClock.uptimeMillis()
+            // Passed over if another was looked at under half a second ago.
+            val looked = blackWatch.isDue(lockState, now)
+            val black = blackWatch.look(bitmap, lockState, now)
+            runOnUiThread { if (viewing) showFrame(bitmap, black.takeIf { asOf == lockChanges }, looked) }
         }
     }
 
@@ -147,6 +167,8 @@ class PhoneViewerActivity : AppCompatActivity() {
                         lockChanges++
                         blackWatch.forget()
                         pictureBlack = false
+                        // The picture on show is of the time before; the next one is looked at.
+                        handler.removeCallbacks(lookAgain)
                     }
                     updateCaption()
                 }
@@ -247,6 +269,7 @@ class PhoneViewerActivity : AppCompatActivity() {
         screen.liftFinger()
         handler.removeCallbacks(noFrameHint)
         handler.removeCallbacks(ackDue)
+        handler.removeCallbacks(lookAgain)
         ConnectionManager.binaryListeners.remove(binaryListener)
         ConnectionManager.networkJsonListeners.remove(streamListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
@@ -278,9 +301,14 @@ class PhoneViewerActivity : AppCompatActivity() {
     }
 
     /** [black] is whether the picture is nearly all black; null when that
-     *  was worked out before the other phone's lock last changed. */
-    private fun showFrame(bitmap: android.graphics.Bitmap, black: Boolean?) {
+     *  was worked out before the other phone's lock last changed. [looked]
+     *  is false for a picture that was passed over, and [black] is then of
+     *  the one before it. */
+    private fun showFrame(bitmap: android.graphics.Bitmap, black: Boolean?, looked: Boolean) {
         screen.setFrame(bitmap)
+        shownFrame = bitmap
+        handler.removeCallbacks(lookAgain)
+        if (!looked && LockCaption.blackMatters(lockState)) handler.postDelayed(lookAgain, LockCaption.BlackWatch.INTERVAL_MS)
         if (black != null && black != pictureBlack) {
             pictureBlack = black
             updateCaption()
