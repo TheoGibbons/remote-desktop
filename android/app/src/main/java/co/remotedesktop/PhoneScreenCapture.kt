@@ -170,7 +170,7 @@ object PhoneScreenCapture {
     private const val TYPE_1 = "type 1"
     private const val PAUSED = "paused"
 
-    /** The soonest the newest picture is looked at again after a try to send it again found the queue full. */
+    /** The soonest the newest picture is looked at again after a try to send it again found no room. */
     private const val RESEND_CHECK_MS = 100L
 
     /**
@@ -205,28 +205,30 @@ object PhoneScreenCapture {
      * @return whether the picture went out; false also when the queue was too full to take it.
      */
     fun send(context: Context, jpeg: ByteArray, width: Int, height: Int, capturedAt: Long, capture: String): Boolean =
-        send(context, jpeg, width, height, capturedAt, capture, repeatOf = 0L)
+        send(context, jpeg, width, height, capturedAt, capture, repeatOf = null)
 
-    /** [repeatOf] is the stream whose last picture this is, sent again; 0 for a new picture. */
+    /** [repeatOf] is the picture this is, when it is one being sent again; null for a new picture. */
     private fun send(context: Context, jpeg: ByteArray, width: Int, height: Int, capturedAt: Long, capture: String,
-                     repeatOf: Long): Boolean {
+                     repeatOf: Sent?): Boolean {
         if (!maySendFrames(context)) return false
         val to = recipients()
         synchronized(streamLock) {
-            // The stream a picture was to be sent again in is over: nobody is waiting for it.
-            if (repeatOf != 0L && stream != repeatOf) return false
+            // A picture is sent again only while it is still the last one that went. Its stream
+            // may be over, and then nobody is waiting for it. Or a newer picture went in the
+            // instant before this, and the older one sent after it would be what the viewer is left with.
+            if (repeatOf != null && last !== repeatOf) return false
             val word = settle(to, capture) ?: return false
-            if (repeatOf != 0L && stream != repeatOf) return false
+            if (repeatOf != null && last !== repeatOf) return false
             size = width to height
             for (viewer in to) tell(viewer, word, always = false)
             val now = SystemClock.uptimeMillis()
             val sent = if (stream == 0L) ConnectionManager.sendBinary(Crypto.CH_VIDEO, jpeg, to) else {
                 val header = PhoneFrame.Header(stream, nextSeq, keyframe = true, format = PhoneFrame.JPEG,
-                    repeat = repeatOf != 0L, width = width, height = height, captureMs = capturedAt and 0xFFFFFFFFL)
+                    repeat = repeatOf != null, width = width, height = height, captureMs = capturedAt and 0xFFFFFFFFL)
                 // A picture the queue refused was never sent, and takes no number.
                 ConnectionManager.sendBinary(Crypto.CH_PHONE, PhoneFrame.build(header, jpeg), to).also {
                     if (!it) return@also
-                    inFlight.sent(nextSeq, now, to, repeat = repeatOf != 0L)
+                    inFlight.sent(nextSeq, now, to, repeat = repeatOf != null)
                     last = Sent(stream, jpeg, width, height, capturedAt, capture)
                     nextSeq++
                 }
@@ -267,20 +269,25 @@ object PhoneScreenCapture {
      * sent after it: the relay may have dropped it for a viewer that was
      * backed up, and on a screen that has stopped changing nothing else
      * would ever replace it. It goes again, marked as a repeat.
+     *
+     * Only while there is room, though, as for any picture. A viewer that is
+     * merely behind has not lost anything, and a second copy of an old
+     * picture would be one more for it to work through before the next new
+     * one. While there is no room this looks again shortly.
      */
     private val resend = Runnable {
         val context = appContext ?: return@Runnable
         val picture = synchronized(streamLock) {
             val kept = last?.takeIf { stream != 0L && it.stream == stream } ?: return@Runnable
             val now = SystemClock.uptimeMillis()
-            if (!inFlight.resendDue(now)) {
+            if (!inFlight.resendDue(now) || !ConnectionManager.hasRoomForVideo() || !inFlight.hasRoom(now)) {
                 scheduleResend(now)
                 return@Runnable
             }
             kept
         }
         send(context, picture.jpeg, picture.width, picture.height, picture.capturedAt, picture.capture,
-            repeatOf = picture.stream)
+            repeatOf = picture)
     }
 
     /** The stream is over: its id is dead, and nothing of it is waited for or sent again. */

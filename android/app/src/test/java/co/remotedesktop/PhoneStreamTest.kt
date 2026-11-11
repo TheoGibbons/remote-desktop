@@ -79,6 +79,10 @@ class PhoneStreamTest {
         (ScreenWaker::class.java.getDeclaredField("checking").apply { isAccessible = true }.get(ScreenWaker) as AtomicBoolean).set(false)
         lockField("listening").set(LockState, false)
         (lockField("told").get(LockState) as MutableMap<*, *>).clear()
+        // The count of pictures in the last second outlives a test, and each test's clock starts
+        // over: pictures an earlier test sent late in its run would look as if they were yet to come.
+        (PhoneScreenCapture::class.java.getDeclaredField("sentAt").apply { isAccessible = true }
+            .get(PhoneScreenCapture) as MutableCollection<*>).clear()
         // Ids a test can name: a1, a2, a3...
         previousIds = PhoneScreenCapture.newStreamId
         PhoneScreenCapture.newStreamId = { ++ids }
@@ -513,16 +517,92 @@ class PhoneStreamTest {
         later(30_000)
         assertEquals(6, socket.frames.size)
 
-        // An acknowledgement of an older frame is not one of the newest.
+        // An acknowledgement of an older frame is not one of the newest. This viewer has been
+        // answering, so for two seconds it is taken to be behind, and then to have lost the picture.
         assertTrue(picture())
         ack("pc", id(1), 5)
-        later(1_000)
+        later(2_000)
+        assertEquals(7, socket.frames.size)
+        later(100)
         assertEquals(8, socket.frames.size)
         assertTrue(header(socket.frames.last()).repeat)
         // The viewer goes: nothing is sent again into a stream that is over.
         receive("pc", JSONObject().put("type", "stop-view"))
         later(60_000)
         assertEquals(8, socket.frames.size)
+    }
+
+    @Test
+    fun onASlowLinkAStillPictureIsNotSentTwice() {
+        startView("pc")
+        socket.clear()
+        // Before the viewer has said anything a second is all there is to go by, so the first picture goes twice.
+        assertTrue(picture())
+        later(1_000)
+        assertEquals(2, socket.frames.size)
+        // Each took a second and a half to be acknowledged: that is this link's usual time.
+        later(500); ack("pc", id(1), 0)
+        later(1_000); ack("pc", id(1), 1)
+        later(20_000)
+        assertEquals(2, socket.frames.size)
+
+        // The screen changes once and is still again. The picture is on its way for as long as the others were.
+        assertTrue(picture())
+        later(1_500)
+        assertEquals("Late by nobody's measure: not sent again", 3, socket.frames.size)
+        ack("pc", id(1), 2)
+        later(20_000)
+        assertEquals(3, socket.frames.size)
+
+        // One that is lost goes again once it is later than usual, and not at one second.
+        assertTrue(picture())
+        later(1_599)
+        assertEquals(4, socket.frames.size)
+        later(1)
+        assertEquals(5, socket.frames.size)
+        assertTrue(header(socket.frames.last()).repeat)
+        ack("pc", id(1), 4)
+        later(60_000)
+        assertEquals(5, socket.frames.size)
+    }
+
+    @Test
+    fun aPictureIsNotSentAgainToAViewerThatIsOnlyBehind() {
+        startView("pc")
+        socket.clear()
+        assertTrue(picture())
+        later(100); ack("pc", id(1), 0)
+        // The viewer falls behind: a picture goes unacknowledged, and there is no room for the next.
+        later(5_000)
+        assertTrue(picture())
+        later(1_000)
+        assertFalse(PhoneScreenCapture.hasRoom())
+        assertEquals("No room for a new picture, so none for an old one either", 2, socket.frames.size)
+        // A newer screen goes as soon as there is room, and the older picture is not sent after it.
+        later(1_001)
+        assertTrue(PhoneScreenCapture.hasRoom())
+        assertTrue(picture(capturedAt = 4321))
+        assertEquals(3, socket.frames.size)
+        assertFalse(header(socket.frames.last()).repeat)
+        later(50); ack("pc", id(1), 2)
+        later(20_000)
+        assertEquals(3, socket.frames.size)
+
+        // On a still screen nothing newer comes. The old picture goes again once the viewer has
+        // been silent for two seconds, which is when it stops being taken for one that is behind.
+        assertTrue(picture())
+        later(2_000)
+        assertEquals(4, socket.frames.size)
+        later(100)
+        assertEquals(5, socket.frames.size)
+        assertTrue(header(socket.frames.last()).repeat)
+        // The same with the phone's own queue: nothing is sent again into a queue that is not draining.
+        socket.queued = ConnectionManager.VIDEO_QUEUE_LIMIT + 1
+        later(60_000)
+        assertEquals(5, socket.frames.size)
+        socket.queued = 0
+        later(100)
+        assertEquals(6, socket.frames.size)
     }
 
     @Test

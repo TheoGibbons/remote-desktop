@@ -526,9 +526,15 @@ screen as it is then.
 
 If the newest frame is still unacknowledged by some viewer one second after it
 went, and nothing has been sent since, the phone sends the same picture again
-with the repeat flag, then after 2, 4 and 8 seconds more, and then leaves it:
-the relay drops frames for a viewer that is backed up, and on a screen that
-has stopped changing nothing else would replace a lost one.
+with the repeat flag, then after twice, four times and eight times as long,
+and then leaves it: the relay drops frames for a viewer that is backed up, and
+on a screen that has stopped changing nothing else would replace a lost one.
+A picture that is only late is not sent again. A viewer whose acknowledgements
+usually take longer than a second is given its usual time and 100 ms more in
+place of the second, up to eight seconds. And a picture goes again only while
+there is room for a picture at all: a viewer that has been acknowledging is
+taken to be behind, not to have lost the picture, until it has left it
+unacknowledged for two seconds.
 
 **A still screen.** A phone sends a picture when its screen has changed, not
 on a clock. A viewer is also sent one, whatever it shows, when it sends

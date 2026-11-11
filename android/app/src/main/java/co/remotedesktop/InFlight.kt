@@ -24,8 +24,12 @@ package co.remotedesktop
  * - If the newest frame is still unacknowledged a second after it went, and
  *   nothing has gone since, it is **sent again** ([resendDue]): the relay
  *   drops pictures for a viewer that is backed up, and on a screen that then
- *   stops changing nobody would notice that the last one was lost. Further
- *   tries wait 2, 4 and 8 seconds, and then no more.
+ *   stops changing nobody would notice that the last one was lost. A viewer
+ *   whose acknowledgements usually take longer than that is given its usual
+ *   time and a little more instead, up to eight seconds: its picture is
+ *   late, not lost. Further tries wait twice, four times and eight times as
+ *   long, and then no more. The caller sends it again only while there is
+ *   room, like any picture.
  *
  * Plain, so a JVM test can drive it. The caller holds one lock around every call.
  */
@@ -103,8 +107,15 @@ internal class InFlight(
     /** How long until the newest frame should be sent again if it stays
      *  unacknowledged, or null when it is not owed or has been tried enough. */
     fun resendIn(nowMs: Long): Long? {
-        if (newest < 0 || resends >= resendTries || viewers.values.none { it.acked < newest }) return null
-        return (newestAt + (resendAfterMs shl resends) - nowMs).coerceAtLeast(0)
+        if (newest < 0 || resends >= resendTries) return null
+        val owing = viewers.values.filter { it.acked < newest }
+        if (owing.isEmpty()) return null
+        // On a link where a picture takes more than a second to be acknowledged, a second
+        // proves nothing, and a second copy would be one more picture for the link to carry.
+        // Not without limit: a viewer back from a long stall has one very long time as its usual one.
+        val usual = owing.maxOf { usual(it, nowMs) ?: 0L }
+        val wait = (usual + slackMs).coerceIn(resendAfterMs, resendAfterMs shl (resendTries - 1))
+        return (newestAt + (wait shl resends) - nowMs).coerceAtLeast(0)
     }
 
     /** Whether the newest frame should be sent again now. */

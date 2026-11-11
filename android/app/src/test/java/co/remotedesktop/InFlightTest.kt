@@ -139,21 +139,67 @@ class InFlightTest {
         flight.sent(6, 61_000, pc)
         assertEquals(1_000L, flight.resendIn(61_000))
         // An acknowledgement of an earlier frame is not one of the newest.
-        flight.acked("pc", 5, 61_100)
-        assertTrue(flight.resendDue(62_000))
-        flight.acked("pc", 6, 62_050)
+        flight.sent(7, 61_050, pc)
+        flight.acked("pc", 6, 61_100)
+        assertFalse(flight.resendDue(62_049))
+        assertTrue(flight.resendDue(62_050))
+        flight.acked("pc", 7, 62_100)
         assertNull(flight.resendIn(62_100))
 
         // With two viewers it is owed while either has not acknowledged it.
-        flight.sent(7, 70_000, both)
-        flight.acked("pc", 7, 70_050)
+        flight.sent(8, 70_000, both)
+        flight.acked("pc", 8, 70_050)
         assertTrue(flight.resendDue(71_000))
-        flight.acked("phone", 7, 71_010)
+        flight.acked("phone", 8, 71_010)
         assertNull(flight.resendIn(71_020))
 
         flight.reset()
         assertNull(flight.resendIn(80_000))
         assertTrue(flight.hasRoom(80_000))
         assertNull(flight.ackedBy("pc"))
+    }
+
+    @Test
+    fun onASlowLinkAFrameIsGivenItsUsualTimeBeforeItIsSentAgain() {
+        val flight = InFlight()
+        // A picture takes a second and a half to be acknowledged here, every time.
+        flight.sent(0, 0, pc); flight.acked("pc", 0, 1_500)
+        flight.sent(1, 10_000, pc)
+        assertEquals(1_500 + InFlight.SLACK_MS, flight.resendIn(10_000))
+        assertFalse("A second proves nothing on this link", flight.resendDue(11_000))
+        assertFalse(flight.resendDue(11_599))
+        // It arrives when it usually does, and was never owed again.
+        flight.acked("pc", 1, 11_500)
+        assertNull(flight.resendIn(11_600))
+
+        // One that really is lost goes again after that time, and the tries after it double from there.
+        flight.sent(2, 20_000, pc)
+        assertFalse(flight.resendDue(21_599))
+        assertTrue(flight.resendDue(21_600))
+        flight.sent(3, 21_600, pc, repeat = true)
+        assertEquals(3_200L, flight.resendIn(21_600))
+        flight.acked("pc", 3, 23_100)
+
+        // The slowest viewer that still owes the frame sets the wait, and a near one does not shorten it.
+        val two = InFlight()
+        two.sent(0, 0, both)
+        two.acked("pc", 0, 40); two.acked("phone", 0, 1_500)
+        two.sent(1, 10_000, both)
+        two.acked("pc", 1, 10_040)
+        assertFalse(two.resendDue(11_000))
+        assertTrue(two.resendDue(11_600))
+        // Once only the near one owes it, its own second counts.
+        two.sent(2, 20_000, both)
+        two.acked("phone", 2, 20_900)
+        assertFalse(two.resendDue(20_999))
+        assertTrue(two.resendDue(21_000))
+
+        // A viewer back from a long stall has one very long time to its name. The wait stops at eight seconds.
+        val stalled = InFlight()
+        stalled.sent(0, 0, pc); stalled.acked("pc", 0, 45_000)
+        stalled.sent(1, 50_000, pc)
+        assertEquals(8_000L, stalled.resendIn(50_000))
+        stalled.sent(2, 58_000, pc, repeat = true)
+        assertEquals(16_000L, stalled.resendIn(58_000))
     }
 }

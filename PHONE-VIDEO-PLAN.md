@@ -294,7 +294,7 @@ Viewers acknowledge from step 0.2 on (built): for each type `5` frame of the cur
 Phone: a new plain class, `InFlight`. Built as listed, with these made definite:
 - "Usual" is kept for each viewer, not one for all: a far viewer is not late by a near one's measure.
 - A viewer is quiet when a frame sent to it has gone unacknowledged for 2 s. On a still screen nothing is owed, so nobody goes quiet.
-- The picture sent again is the last JPEG, kept by `PhoneScreenCapture`, with its own sequence number, the first one's capture time and the repeat flag. After four tries (1, 2, 4 and 8 s apart) it is left.
+- The picture sent again is the last JPEG, kept by `PhoneScreenCapture`, with its own sequence number, the first one's capture time and the repeat flag. After four tries (1, 2, 4 and 8 s apart) it is left. A viewer whose acknowledgements usually take longer than a second gets its usual time plus 100 ms in place of the second (8 s at most), and nothing is sent again while there is no room for a picture: a viewer that has been answering is behind, not missing a picture, until it has been silent for 2 s.
 - A screenshot is passed over for lack of room before it is compressed.
 - It notes when each frame was handed to the socket.
 - When an acknowledgement arrives, it notes how long that frame took. The shortest such time in the last 60 s is "usual".
