@@ -36,7 +36,8 @@ import java.io.ByteArrayOutputStream
  * Threads: the service's own calls and [updateStreaming] run on the main
  * thread. Pictures arrive, wait their turn and are encoded on the capture
  * thread, which is also where the stream is given a new shape when the screen
- * turns ([followScreen]); the pacer and the bitmap belong to it. The image
+ * turns ([followScreen]) and where mirroring is stopped while nobody views
+ * ([mirror]); the pacer and the bitmap belong to it. The image
  * reader is swapped there and closed on the main thread when sharing stops,
  * so [CaptureTarget] makes the two take turns.
  */
@@ -45,6 +46,9 @@ class ScreenCaptureService : Service() {
     companion object {
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_RESULT_DATA = "resultData"
+
+        /** How long nobody has to have been viewing before the screen stops being mirrored. */
+        private const val IDLE_MS = 5_000L
         private const val CHANNEL_ID = "capture"
         private const val NOTIF_ID = 1
 
@@ -98,6 +102,13 @@ class ScreenCaptureService : Service() {
     }
     private val jpegQuality = 55
 
+    // Capture thread. While nobody is viewing, Android would go on drawing
+    // every change of the screen into the reader, each picture to be thrown
+    // away. So the mirror is let go of, but not at once: pictures pause for a
+    // moment whenever any device joins the session.
+    private val idle = Runnable { if (!streaming) mirror(false) }
+    private val resume = Runnable { mirror(true) }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -128,6 +139,8 @@ class ScreenCaptureService : Service() {
         }, handler)
 
         setupCapture()
+        // Nobody may be viewing at all yet.
+        handler.postDelayed(idle, IDLE_MS)
         // Every version says when the display changes; a turn is one of the changes.
         (getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).registerDisplayListener(displayListener, handler)
         instance = this
@@ -151,7 +164,28 @@ class ScreenCaptureService : Service() {
         if (streaming == on) return
         streaming = on
         streamGeneration++
-        if (on) sendScreenInfo()
+        val handler = captureHandler
+        if (on) {
+            sendScreenInfo()
+            // Attaching makes Android draw the screen once straight away, so a
+            // viewer has a picture without waiting for something to change.
+            handler?.removeCallbacks(idle)
+            handler?.post(resume)
+        } else {
+            handler?.removeCallbacks(idle)
+            handler?.postDelayed(idle, IDLE_MS)
+        }
+    }
+
+    /** Starts or stops Android drawing the screen into the reader. Capture thread only. */
+    private fun mirror(on: Boolean) {
+        val display = virtualDisplay ?: return
+        try {
+            if (target.draw(on) { reader -> display.surface = reader?.surface } && !on) pacer.clear()
+        } catch (e: RuntimeException) {
+            // E.g. the projection stopped at that moment.
+            Log.w("ScreenCaptureService", "Could not ${if (on) "start" else "stop"} mirroring", e)
+        }
     }
 
     private fun screenSize(): Triple<Int, Int, Int> {
@@ -194,7 +228,8 @@ class ScreenCaptureService : Service() {
             target.replace(w, h,
                 attach = { reader ->
                     display.resize(w, h, dpi)
-                    display.surface = reader.surface
+                    // Not while nobody views: it is attached when someone does.
+                    if (target.drawing) display.surface = reader.surface
                 },
                 // A picture still waiting its turn is the old shape, and the old reader's.
                 retire = { pacer.clear() })

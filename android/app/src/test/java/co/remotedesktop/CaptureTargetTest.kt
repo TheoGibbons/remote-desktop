@@ -31,6 +31,39 @@ class CaptureTargetTest {
     }
 
     @Test
+    fun drawingStopsWhileNobodyViewsAndATurnMeanwhileDoesNotStartIt() {
+        val pointed = mutableListOf<String?>()
+        // Nothing is open yet.
+        assertFalse(target.draw(false) { fail("nothing to stop") })
+        target.open(1080, 2340)
+        assertTrue("It is drawn into from the start", target.drawing)
+        assertFalse(target.draw(true) { fail("already drawing") })
+
+        assertTrue(target.draw(false) { pointed += it })
+        assertFalse(target.drawing)
+        assertFalse(target.draw(false) { fail("already stopped") })
+        // The phone turns while nobody views: the target is swapped, and the caller can see not to start it.
+        assertTrue(target.replace(2340, 1080, attach = { assertFalse(target.drawing) }))
+        assertFalse(target.drawing)
+        // A viewer comes: the new target is the one drawn into.
+        assertTrue(target.draw(true) { pointed += it })
+        assertEquals(listOf(null, "2340x1080#1"), pointed)
+        assertTrue(target.drawing)
+
+        // One that cannot be pointed stays as it was, and the failure is the caller's.
+        try {
+            target.draw(false) { throw IllegalStateException("the projection stopped") }
+            fail("the failure is the caller's to report")
+        } catch (_: IllegalStateException) {
+        }
+        assertTrue(target.drawing)
+
+        target.close()
+        assertFalse(target.draw(false) { fail("sharing has stopped") })
+        assertEquals(emptyList<String>(), open)
+    }
+
+    @Test
     fun theSameSizeAgainChangesNothing() {
         target.open(1080, 2340)
         assertFalse(target.replace(1080, 2340, attach = { fail("nothing to attach") }))

@@ -7,6 +7,10 @@ package co.remotedesktop
  * main thread. The two take turns here, so a turn that lands as sharing stops
  * makes nothing, and nothing that was made is ever left open.
  *
+ * The screen need not be drawn into it all the time: [draw] stops that while
+ * nobody is viewing and starts it again when someone is, and a turn in
+ * between swaps the target without starting it.
+ *
  * Generic over the target so a JVM test can drive it.
  */
 internal class CaptureTarget<T : Any>(
@@ -16,6 +20,26 @@ internal class CaptureTarget<T : Any>(
     private var current: T? = null
     private var size = 0 to 0
     private var closed = false
+
+    /** Whether the screen is being drawn into the target. It is, from [open] on, until [draw] says not. */
+    var drawing = true
+        @Synchronized get
+        private set
+
+    /**
+     * Stops the screen being drawn into the target, or starts it again.
+     * [point] is handed the target to draw into, or null for none.
+     *
+     * Returns false, having done nothing, when it is already so, nothing has
+     * been opened, or sharing has stopped.
+     */
+    @Synchronized fun draw(on: Boolean, point: (T?) -> Unit): Boolean {
+        val target = current
+        if (closed || target == null || drawing == on) return false
+        point(if (on) target else null)
+        drawing = on
+        return true
+    }
 
     /** Makes the first target, or null once sharing has stopped. */
     @Synchronized fun open(width: Int, height: Int): T? {
@@ -29,8 +53,9 @@ internal class CaptureTarget<T : Any>(
 
     /**
      * Swaps in a target of a new size. [attach] points the picture at the new
-     * one; if it throws, the new one is closed, the old one stays in use and
-     * the exception goes on to the caller. [retire] runs once the new one is
+     * one, or only gives the picture its new size while nothing is being
+     * drawn ([drawing]); if it throws, the new one is closed, the old one
+     * stays in use and the exception goes on to the caller. [retire] runs once the new one is
      * attached, just before the old one is closed.
      *
      * Returns false, having done nothing, when the size is the one in use,
