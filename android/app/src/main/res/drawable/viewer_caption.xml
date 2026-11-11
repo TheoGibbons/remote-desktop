@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Behind the words a viewer puts over a phone's picture, so they can be
+     read on any picture. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#D9000000" />
+    <corners android:radius="8dp" />
+</shape>

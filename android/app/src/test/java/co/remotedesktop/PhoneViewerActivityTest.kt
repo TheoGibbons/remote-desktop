@@ -103,13 +103,26 @@ class PhoneViewerActivityTest {
         idle()
     }
 
-    /** A 360 x 800 picture of a phone screen. */
-    private fun jpeg(): ByteArray = ByteArrayOutputStream().also {
-        ImageIO.write(BufferedImage(360, 800, BufferedImage.TYPE_INT_RGB), "jpg", it)
+    /** A 360 x 800 picture of a phone screen: black, or all one colour. */
+    private fun jpeg(rgb: Int = 0): ByteArray = ByteArrayOutputStream().also {
+        val image = BufferedImage(360, 800, BufferedImage.TYPE_INT_RGB)
+        if (rgb != 0) image.createGraphics().apply { color = java.awt.Color(rgb); fillRect(0, 0, 360, 800); dispose() }
+        ImageIO.write(image, "jpg", it)
     }.toByteArray()
 
     private val screen get() = activity.findViewById<PhoneScreenView>(R.id.phoneScreen)
     private val notice get() = activity.findViewById<TextView>(R.id.phoneViewerNotice)
+    private val caption get() = activity.findViewById<TextView>(R.id.phoneViewerCaption)
+
+    private fun lockState(from: String, screenOn: Boolean, locked: Boolean, wakeFailed: String? = null) =
+        deliver(JSONObject().put("type", "lock-state").put("from", from).put("screenOn", screenOn).put("locked", locked)
+            .apply { wakeFailed?.let { put("wakeFailed", it) } })
+
+    /** The next picture, once the last one has been on show long enough to be looked at again. */
+    private fun laterFrame(rgb: Int = 0) {
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(LockCaption.BlackWatch.INTERVAL_MS))
+        frame(Crypto.CH_VIDEO, jpeg(rgb))
+    }
 
     private fun sent(vararg types: String) = socket.messages.filter { it.getString("type") in types }
 
@@ -250,6 +263,53 @@ class PhoneViewerActivityTest {
         assertTrue(notice.text.toString().startsWith("Nothing from Pixel yet. On Pixel, check that View and control"))
         frame(Crypto.CH_VIDEO)
         assertEquals(View.GONE, notice.visibility)
+    }
+
+    @Test
+    fun itSaysWhenThePhoneIsAsleepOrOnItsUnlockScreen() {
+        open()
+        frame(Crypto.CH_VIDEO, jpeg(0x3366CC))
+        assertEquals(View.GONE, caption.visibility)
+        assertFalse("Touches must still reach the screen", caption.isClickable)
+
+        lockState("phone", screenOn = false, locked = true)
+        assertEquals(View.VISIBLE, caption.visibility)
+        assertEquals("Pixel is asleep. Tap to wake it.", caption.text.toString())
+        lockState("phone", screenOn = false, locked = true, wakeFailed = "notifications")
+        assertEquals("Pixel didn't wake. Allow notifications for Remote Desktop on Pixel.", caption.text.toString())
+        lockState("phone", screenOn = false, locked = true, wakeFailed = "unknown")
+        assertEquals("Pixel didn't wake. Tap to try again.", caption.text.toString())
+
+        // Awake on its lock screen, which is in the picture: nothing to add.
+        lockState("phone", screenOn = true, locked = true)
+        laterFrame(0x3366CC)
+        assertEquals(View.GONE, caption.visibility)
+        // Then its unlock screen, which Android leaves black.
+        laterFrame()
+        assertEquals(View.VISIBLE, caption.visibility)
+        assertEquals("Android hides the unlock screen of Pixel from the picture. Taps and drags still reach it.",
+            caption.text.toString())
+        // Unlocked, and showing something black of its own.
+        lockState("phone", screenOn = true, locked = false)
+        laterFrame()
+        assertEquals(View.GONE, caption.visibility)
+
+        // What another device says about itself is not about this phone.
+        lockState("pc", screenOn = false, locked = true)
+        assertEquals(View.GONE, caption.visibility)
+    }
+
+    @Test
+    fun aPhoneThatNeverSaysHowItStandsIsExplainedByItsBlackPicture() {
+        open()
+        frame(Crypto.CH_VIDEO, jpeg(0x3366CC))
+        assertEquals(View.GONE, caption.visibility)
+        laterFrame()
+        assertEquals(View.VISIBLE, caption.visibility)
+        assertEquals("The screen of Pixel is off, or it is on its unlock screen. Taps and drags still reach an unlock screen.",
+            caption.text.toString())
+        laterFrame(0x3366CC)
+        assertEquals(View.GONE, caption.visibility)
     }
 
     @Test

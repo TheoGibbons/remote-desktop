@@ -4,6 +4,7 @@ import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -34,6 +35,7 @@ class PhoneViewerActivity : AppCompatActivity() {
     private var peerName = ""
     private lateinit var screen: PhoneScreenView
     private lateinit var notice: TextView
+    private lateinit var caption: TextView
     private lateinit var reconnectNotice: View
     private lateinit var reconnectReason: TextView
     private lateinit var ime: EditText
@@ -44,6 +46,11 @@ class PhoneViewerActivity : AppCompatActivity() {
     private var nothingYet = false
     /** Whether the other phone can type, from its screen-info; null until it says. */
     private var typing: Boolean? = null
+    /** What the other phone last said in lock-state: null until it does, and
+     *  for good with an app too old to say. */
+    @Volatile private var lockState: LockCaption.State? = null
+    private var pictureBlack = false
+    private val blackWatch = LockCaption.BlackWatch()
     private var imePrev = ""
     private var imeGuard = false
 
@@ -57,7 +64,8 @@ class PhoneViewerActivity : AppCompatActivity() {
         // Only type 1; an older relay may also pass on a PC's patches or video.
         if (viewing && data.size > 1 && data[0] == Crypto.CH_VIDEO) {
             BitmapFactory.decodeByteArray(data, 1, data.size - 1)?.let { bitmap ->
-                runOnUiThread { if (viewing) showFrame(bitmap) }
+                val black = blackWatch.look(bitmap, lockState, SystemClock.uptimeMillis())
+                runOnUiThread { if (viewing) showFrame(bitmap, black) }
             }
         }
     }
@@ -76,6 +84,15 @@ class PhoneViewerActivity : AppCompatActivity() {
             }
             // Phones broadcast it, so only this one's counts.
             "screen-info" -> if (fromPeer) typing = msg.optBoolean("typing", false)
+            "lock-state" -> if (fromPeer) LockCaption.parse(msg)?.let { state ->
+                if (state != lockState) {
+                    lockState = state
+                    // The picture on show was taken before this.
+                    blackWatch.forget()
+                    pictureBlack = false
+                    updateCaption()
+                }
+            }
         }
     }
 
@@ -106,6 +123,7 @@ class PhoneViewerActivity : AppCompatActivity() {
         }
         screen = findViewById<PhoneScreenView>(R.id.phoneScreen).apply { onInput = ::sendInput }
         notice = findViewById(R.id.phoneViewerNotice)
+        caption = findViewById(R.id.phoneViewerCaption)
         reconnectNotice = findViewById(R.id.phoneViewerReconnect)
         reconnectReason = findViewById(R.id.phoneViewerReconnectReason)
         mapOf(R.id.phoneNavBack to "back", R.id.phoneNavHome to "homebtn",
@@ -180,8 +198,12 @@ class PhoneViewerActivity : AppCompatActivity() {
         updateNotice()
     }
 
-    private fun showFrame(bitmap: android.graphics.Bitmap) {
+    private fun showFrame(bitmap: android.graphics.Bitmap, black: Boolean) {
         screen.setFrame(bitmap)
+        if (black != pictureBlack) {
+            pictureBlack = black
+            updateCaption()
+        }
         handler.removeCallbacks(noFrameHint)
         if (nothingYet) {
             nothingYet = false
@@ -198,6 +220,14 @@ class PhoneViewerActivity : AppCompatActivity() {
         }
         notice.text = text
         notice.visibility = if (text == null) View.GONE else View.VISIBLE
+    }
+
+    /** Says over the picture that the other phone is asleep, that it didn't
+     *  wake, or that it is on the unlock screen Android leaves out of the picture. */
+    private fun updateCaption() {
+        val text = LockCaption.text(lockState, pictureBlack)?.let { getString(it, peerName) }
+        caption.text = text
+        caption.visibility = if (text == null) View.GONE else View.VISIBLE
     }
 
     /** Shown while this phone is off the relay. The other phone approves the

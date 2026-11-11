@@ -72,6 +72,24 @@
             android:textSize="16sp"
             android:visibility="gone" />
 
+        <!-- Says that the phone is asleep or on its unlock screen (LockCaption).
+             At the top, clear of where a pattern is drawn. Not clickable, so
+             touches still reach the screen beneath. -->
+        <TextView
+            android:id="@+id/phoneViewerCaption"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_margin="12dp"
+            android:accessibilityLiveRegion="polite"
+            android:background="@drawable/viewer_caption"
+            android:gravity="center"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="10dp"
+            android:textColor="@android:color/white"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
         <LinearLayout
             android:id="@+id/phoneViewerReconnect"
             android:layout_width="match_parent"

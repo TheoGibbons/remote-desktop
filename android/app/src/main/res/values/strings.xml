@@ -121,6 +121,11 @@
     <string name="phone_viewer_no_typing">%1$s needs Android 13 or later to type into it</string>
     <string name="phone_viewer_disconnected">%1$s disconnected</string>
     <string name="phone_viewer_not_online">That phone is no longer online</string>
+    <string name="phone_viewer_asleep">%1$s is asleep. Tap to wake it.</string>
+    <string name="phone_viewer_wake_failed_notifications">%1$s didn\'t wake. Allow notifications for Remote Desktop on %1$s.</string>
+    <string name="phone_viewer_wake_failed">%1$s didn\'t wake. Tap to try again.</string>
+    <string name="phone_viewer_unlock_hidden">Android hides the unlock screen of %1$s from the picture. Taps and drags still reach it.</string>
+    <string name="phone_viewer_black">The screen of %1$s is off, or it is on its unlock screen. Taps and drags still reach an unlock screen.</string>
     <string name="nav_back">Back</string>
     <string name="nav_home">Home</string>
     <string name="nav_recents">Recent apps</string>
