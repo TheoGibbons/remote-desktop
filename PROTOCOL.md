@@ -679,13 +679,18 @@ no keyframe, it takes it that this phone will not send one, and falls back to
 JPEG as below. Requests that bring nothing at all are not counted: then the
 connection is the trouble.
 
-**Falling back to JPEG.** If the PC's decoder fails twice while a phone is
-being viewed (an error, or a keyframe that gives no picture, which is how
-Windows shows that it cannot decode a stream), the PC gives H.264 up: it sends
-`start-view` again with `codecs: ["jpeg"]`, and offers only that, to every
-phone, until the app is restarted. The phone then changes format as it would
-for any viewer that does not list `"h264"`: a new stream, `codec: "jpeg"`.
-Video frames that still arrive are acknowledged and not drawn.
+**Falling back to JPEG.** The PC gives H.264 up for a phone when its decoder
+has failed twice while that phone was being viewed (an error, or a keyframe
+that has given no picture a second after it arrived, which is how Windows
+shows that it cannot decode a stream), and when five requests for a keyframe
+have gone unanswered as above. It sends `start-view` again with
+`codecs: ["jpeg"]`, tells the person at the PC, and offers that phone only
+JPEG until a window is opened on it ten minutes or more later, when H.264 is
+offered again. Other phones are not affected. The phone changes format as it
+would for any viewer that does not list `"h264"`: a new stream,
+`codec: "jpeg"`. Video frames that still arrive are acknowledged and not
+drawn. A picture that is only slow to come out of the PC's decoder is waited
+for and is not a failure.
 
 ## Viewport streaming
 

@@ -54,6 +54,7 @@ internal static unsafe class H264Tests
             CheckTheHandler(small);
             CheckDisposeWhileDecoding(small);
             CheckThreads(small);
+            CheckALatePictureIsNotAFailure(small);
             CheckOneDecoderAfterAnother(small, turned);
         }
         _say = true;
@@ -308,8 +309,10 @@ internal static unsafe class H264Tests
         int w = bitmap.Width, h = bitmap.Height, size = PatchSize(w, h);
         using var g = Graphics.FromImage(bitmap);
         g.Clear(Color.FromArgb(90, 100, 110));
-        // Something that moves, so that later frames are not empty.
-        g.FillRectangle(Brushes.DimGray, (frame * 6) % Math.Max(1, w - size), h / 2 + size, size, 8);
+        // Something that moves, so that later frames are not empty, and so
+        // that a picture says which frame it is: a white bar, six pixels
+        // further along for each.
+        g.FillRectangle(Brushes.White, (frame * 6) % Math.Max(1, w - size), h / 2 + size, size, 8);
         for (int i = 0; i < Patches.Length; i++)
         {
             using var brush = new SolidBrush(Color.FromArgb(Patches[i].r, Patches[i].g, Patches[i].b));
@@ -350,7 +353,7 @@ internal static unsafe class H264Tests
             {
                 using (decoder)
                 {
-                    decoder.Decode(clip.Units[0], 0, (in Nv12Picture _) => { });
+                    Whole(decoder, clip.Units[0], 0, (in Nv12Picture _) => { });
                     clip.ReadAs = decoder.Format.Matrix;
                 }
             }
@@ -370,7 +373,7 @@ internal static unsafe class H264Tests
     private static (H264Decoded result, List<Shot> shots) Decode(H264Decoder decoder, byte[] unit, long tag)
     {
         var shots = new List<Shot>();
-        var result = decoder.Decode(unit, tag, (in Nv12Picture p) => shots.Add(ToShot(p)));
+        var result = Whole(decoder, unit, tag, (in Nv12Picture p) => shots.Add(ToShot(p)));
         return (result, shots);
     }
 
@@ -383,7 +386,34 @@ internal static unsafe class H264Tests
     }
 
     private static H264Decoder NewDecoder()
-        => H264Decoder.TryCreate(out string why) ?? throw new Exception("setup: no decoder: " + why);
+        => Impatient(H264Decoder.TryCreate(out string why) ?? throw new Exception("setup: no decoder: " + why));
+
+    /// <summary>A keyframe's picture is given a second in the app before it
+    /// is called a failure. The checks that feed a decoder rubbish would
+    /// each sit that second out, so here it is shorter.</summary>
+    private static H264Decoder Impatient(H264Decoder decoder)
+    {
+        decoder.LatePictureLimitMs = 150;
+        return decoder;
+    }
+
+    /// <summary>
+    /// One access unit through the decoder, to the end: a picture that is
+    /// owed is asked for again until it has come or been given up, as the
+    /// feed's thread does between frames.
+    /// </summary>
+    internal static H264Decoded Whole(H264Decoder decoder, byte[] unit, long tag, H264PictureHandler onPicture)
+    {
+        var result = decoder.Decode(unit, tag, onPicture);
+        var waited = Stopwatch.StartNew();
+        while (result == H264Decoded.Pending)
+        {
+            if (waited.ElapsedMilliseconds < 2) Thread.SpinWait(500);
+            else Thread.Sleep(1);
+            result = decoder.Poll(onPicture);
+        }
+        return result;
+    }
 
     /// <summary>The picture is the pattern: the right size, every patch where it was drawn and the colour it was drawn.</summary>
     private static void CheckIsThePattern(Shot shot, int w, int h, string what)
@@ -395,6 +425,22 @@ internal static unsafe class H264Tests
             $"{what}: the padded picture is the next whole 16-pixel blocks, got {p.CodedWidth} x {p.CodedHeight}");
         Check(p.Stride >= p.CodedWidth, $"{what}: a row is at least as long as the padded width");
         CheckPatches(shot.Bgra, w, h, p.Matrix, what);
+    }
+
+    /// <summary>
+    /// Which frame of a clip a picture shows, read off the white bar that
+    /// <see cref="Draw"/> moves along for each: so that a picture can be told
+    /// from the one before it by what is in it, not by the number it carries.
+    /// </summary>
+    internal static int FrameShownIn(byte[] bgra, int w, int h)
+    {
+        int size = PatchSize(w, h), row = h / 2 + size + 4;
+        for (int x = 0; x < w; x++)
+        {
+            int at = (row * w + x) * 4;
+            if (bgra[at] > 180 && bgra[at + 1] > 180 && bgra[at + 2] > 180) return (int)Math.Round(x / 6.0);
+        }
+        return -1;
     }
 
     /// <summary>Every patch of the pattern is where it was drawn, in the colour it was drawn, in a picture of w x h as BGRA.</summary>
@@ -468,6 +514,7 @@ internal static unsafe class H264Tests
                     Check(result == H264Decoded.Picture, $"{what}: a picture comes out ({result} {decoder.LastFailure})");
                     Check(shots.Count == 1, $"{what}: one picture for one access unit, got {shots.Count}");
                     Check(shots[0].Info.Tag == 1000 + i, $"{what}: the picture carries the number its access unit was given");
+                    Check(FrameShownIn(shots[0].Bgra, w, h) == i, $"{what}: and it is that frame's picture, not its neighbour's (it shows frame {FrameShownIn(shots[0].Bgra, w, h)})");
                     CheckIsThePattern(shots[0], w, h, what);
                 }
                 Check(decoder.SizeAnnouncements == 1, $"{clip}: the decoder announces the size once, at the first picture");
@@ -681,8 +728,14 @@ internal static unsafe class H264Tests
         // take a tall phone's: it reports no error, it just gives nothing.
         using var decoder = H264Decoder.TryCreate(1920, 1088, out string why);
         Check(decoder != null, "setup: a decoder limited to 1920 x 1088: " + why);
+        Impatient(decoder!);
+        var clock = Stopwatch.StartNew();
+        Check(decoder!.Decode(clip.Units[0], 0, (in Nv12Picture _) => { }) == H264Decoded.Pending,
+            "A keyframe with no picture at once is waited for, not failed on the spot");
+        decoder.Reset();
         var (result, shots) = Decode(decoder!, clip.Units[0], 1);
         Check(result == H264Decoded.Failed && shots.Count == 0, $"A keyframe that gives no picture is a failure, not silence ({result})");
+        Check(clock.ElapsedMilliseconds >= 150, $"Once it has been waited for as long as a late picture might take ({clock.ElapsedMilliseconds} ms)");
         Check(decoder!.LastFailure.Contains("keyframe"), $"And the reason is kept: \"{decoder.LastFailure}\"");
         Check(Decode(decoder, clip.Units[1], 2).result == H264Decoded.NeedsKeyframe, "After a failure the decoder wants a keyframe");
         Check(Decode(decoder, clip.Units[0], 3).result == H264Decoded.Failed, "And fails again on the next, so the viewer can count to two and give up");
@@ -692,6 +745,7 @@ internal static unsafe class H264Tests
         Check(H264Decoder.MaxPixels >= 1088 * 2640 && H264Decoder.MaxPixels <= 2400 * 2400, "The limit leaves room for any phone's screen and not for much more");
         using var small = H264Decoder.TryCreate(4096, 4096, out why, maxPixels: 600_000);
         Check(small != null, "setup: a decoder limited to 600,000 pixels: " + why);
+        Impatient(small!);
         (result, shots) = Decode(small!, clip.Units[0], 1);
         Check(result == H264Decoded.Failed && shots.Count == 0, $"A picture with more pixels than the limit is a failure ({result})");
         Check(small!.LastFailure.Contains("larger than a phone's screen") && small.LastFailure.Contains("1088 x 2400"), $"And the reason names the size: \"{small.LastFailure}\"");
@@ -728,19 +782,19 @@ internal static unsafe class H264Tests
     {
         using var decoder = NewDecoder();
         int thread = 0;
-        decoder.Decode(clip.Units[0], 1, (in Nv12Picture _) => thread = Environment.CurrentManagedThreadId);
+        Whole(decoder, clip.Units[0], 1, (in Nv12Picture _) => thread = Environment.CurrentManagedThreadId);
         Check(thread == Environment.CurrentManagedThreadId, "The handler runs on the thread that asked for the decoding");
 
         // A handler that throws: its exception comes out, and it is not the decoder's failure.
         bool came = false;
-        try { decoder.Decode(clip.Units[1], 2, (in Nv12Picture _) => throw new HandlerTrouble()); }
+        try { Whole(decoder, clip.Units[1], 2, (in Nv12Picture _) => throw new HandlerTrouble()); }
         catch (HandlerTrouble) { came = true; }
         Check(came, "An exception thrown in the handler comes out of Decode");
         Check(Decode(decoder, clip.Units[2], 3).result == H264Decoded.Picture, "And the decoder carries on with the next frame");
 
         // One call at a time: a call from inside the handler is a second call.
         bool refusedDecode = false, refusedReset = false;
-        decoder.Decode(clip.Units[3], 4, (in Nv12Picture _) =>
+        Whole(decoder, clip.Units[3], 4, (in Nv12Picture _) =>
         {
             try { decoder.Decode(clip.Units[4], 5, (in Nv12Picture _) => { }); } catch (InvalidOperationException) { refusedDecode = true; }
             try { decoder.Reset(); } catch (InvalidOperationException) { refusedReset = true; }
@@ -750,7 +804,7 @@ internal static unsafe class H264Tests
 
         // Dispose from inside the handler: the picture stays good to the end of the handler.
         byte[]? kept = null;
-        var last = decoder.Decode(clip.Units[5], 7, (in Nv12Picture p) =>
+        var last = Whole(decoder, clip.Units[5], 7, (in Nv12Picture p) =>
         {
             decoder.Dispose();
             kept = ToShot(p).Bgra;
@@ -773,7 +827,7 @@ internal static unsafe class H264Tests
         {
             try
             {
-                result = decoder.Decode(clip.Units[0], 1, (in Nv12Picture p) =>
+                result = Whole(decoder, clip.Units[0], 1, (in Nv12Picture p) =>
                 {
                     before = ToShot(p);
                     inside.Set();
@@ -849,14 +903,87 @@ internal static unsafe class H264Tests
         Pass("the decoder does not care which thread makes it, uses it or lets it go");
     }
 
+    private static void CheckALatePictureIsNotAFailure(Clip clip)
+    {
+        // The decoder is made to be late, as it sometimes is by itself.
+        var shots = new List<Shot>();
+        H264PictureHandler keep = (in Nv12Picture p) => shots.Add(ToShot(p));
+        using var decoder = NewDecoder();
+        Check(decoder.Poll(keep) == H264Decoded.NoPicture && !decoder.Owes, "With nothing owed there is nothing to ask again for");
+        decoder.TestHoldBackCalls = 1;
+        Check(decoder.Decode(clip.Units[0], 10, keep) == H264Decoded.Pending && shots.Count == 0 && decoder.Owes,
+            "A keyframe whose picture is not there yet is owed one, and is no failure");
+        Check(decoder.Poll(keep) == H264Decoded.Picture && shots.Count == 1 && shots[0].Info.Tag == 10 && !decoder.Owes,
+            "Asked again a moment later, the picture is there, with its own number");
+        CheckIsThePattern(shots[0], clip.Width, clip.Height, "a keyframe's picture that came late");
+
+        // An ordinary frame's picture that is late comes out with the next frame, each with its own number.
+        shots.Clear();
+        decoder.TestHoldBackCalls = 1;
+        Check(decoder.Decode(clip.Units[1], 11, keep) == H264Decoded.Pending && shots.Count == 0, "An ordinary frame's picture can be owed too");
+        Check(decoder.Decode(clip.Units[2], 12, keep) == H264Decoded.Picture && shots.Count == 2, $"The next frame brings both out ({shots.Count})");
+        Check(shots[0].Info.Tag == 11 && shots[1].Info.Tag == 12 && !decoder.Owes, "In order, each carrying the number of its own frame");
+
+        // An ordinary frame that never becomes a picture is let go after a while, and is nobody's failure.
+        shots.Clear();
+        decoder.TestHoldBackCalls = int.MaxValue;
+        var clock = Stopwatch.StartNew();
+        var result = decoder.Decode(clip.Units[3], 13, keep);
+        Check(result == H264Decoded.Pending, "setup: a frame whose picture does not come");
+        while (result == H264Decoded.Pending && clock.ElapsedMilliseconds < 5000) { Thread.Sleep(5); result = decoder.Poll(keep); }
+        Check(result == H264Decoded.NoPicture && !decoder.Owes && clock.ElapsedMilliseconds >= 150,
+            $"An ordinary frame's picture that never comes is given up without a failure ({result} after {clock.ElapsedMilliseconds} ms)");
+        decoder.TestHoldBackCalls = 0;
+        Check(Decode(decoder, clip.Units[0], 14).result == H264Decoded.Picture, "And the decoder goes on");
+
+        // A keyframe's that never comes is a failure, but only after the wait.
+        decoder.Reset();
+        decoder.TestHoldBackCalls = int.MaxValue;
+        clock.Restart();
+        result = decoder.Decode(clip.Units[0], 15, keep);
+        Check(result == H264Decoded.Pending, "setup: a keyframe whose picture does not come");
+        while (result == H264Decoded.Pending && clock.ElapsedMilliseconds < 5000) { Thread.Sleep(5); result = decoder.Poll(keep); }
+        Check(result == H264Decoded.Failed && clock.ElapsedMilliseconds >= 150 && decoder.LastFailure.Contains("keyframe"),
+            $"A keyframe's picture that never comes is a failure once it has been waited for ({result} after {clock.ElapsedMilliseconds} ms)");
+        Check(new H264DecoderLimit().InTheApp == 1000, "In the app that wait is a second");
+
+        // A stream whose access units are laid out so that the decoder loses
+        // the number: the parameter sets in front of the delimiter. Pictures
+        // still come out in order, and each is taken for the oldest owed.
+        using var lost = NewDecoder();
+        byte[] sets = H264Decoder.ParameterSets(clip.Units[0]) ?? throw new Exception("setup: parameter sets");
+        byte[] odd = sets.Concat(WithoutUnits(clip.Units[0], 7, 8)).ToArray();
+        shots.Clear();
+        Check(Whole(lost, odd, 21, keep) == H264Decoded.Picture && shots.Count == 1 && shots[0].Info.Tag == 21,
+            $"A picture whose number the decoder lost is taken for the frame that is owed one ({shots.Count} pictures, numbered {(shots.Count > 0 ? shots[0].Info.Tag : -1)})");
+        Check(Whole(lost, clip.Units[1], 22, keep) == H264Decoded.Picture && shots.Count == 2 && shots[1].Info.Tag == 22 && !lost.Owes,
+            "And the frames after it are not taken for a keyframe that never came");
+        Pass("a picture that comes late is waited for and is no failure; only a keyframe's that never comes is");
+    }
+
+    /// <summary>What a decoder made the way the app makes it waits.</summary>
+    private readonly struct H264DecoderLimit
+    {
+        public H264DecoderLimit() { }
+        public int InTheApp
+        {
+            get
+            {
+                using var decoder = H264Decoder.TryCreate();
+                return decoder?.LatePictureLimitMs ?? -1;
+            }
+        }
+    }
+
     private static void CheckOneDecoderAfterAnother(Clip clip, Clip turned)
     {
         // A window closed and another opened at once. The second decoder's
         // first picture has been seen to come a few milliseconds after its
-        // keyframe went in, where the first's came at once; and so has the
-        // first picture after a change of size. Neither may be taken for a
-        // keyframe that gave no picture. It shows when the processor is
-        // busy, so for this one check every core is kept busy.
+        // keyframe went in, where the first's came at once; so has the first
+        // picture after a change of size, and now and then an ordinary
+        // frame's. None of that may be taken for a keyframe that gave no
+        // picture, or lose a picture. It shows when the processor is busy,
+        // so for this one check every core is kept busy.
         bool stop = false;
         var busy = Enumerable.Range(0, Environment.ProcessorCount).Select(_ => new Thread(() =>
         {
@@ -868,18 +995,19 @@ internal static unsafe class H264Tests
             for (int round = 0; round < 12; round++)
             {
                 using var decoder = NewDecoder();
+                decoder.LatePictureLimitMs = 1000;   // as in the app
                 var (result, shots) = Decode(decoder, clip.Units[0], round);
                 Check(result == H264Decoded.Picture && shots.Count == 1,
                     $"A decoder made straight after another was let go gives its first keyframe's picture (round {round}: {result} {decoder.LastFailure})");
                 (result, shots) = Decode(decoder, turned.Units[0], round);
                 Check(result == H264Decoded.Picture && shots.Count == 1 && shots[0].Info.Width == turned.Width,
                     $"And the first picture at another size (round {round}: {result} {decoder.LastFailure})");
-                // The frames that follow come at once even so.
+                // And each frame after gives its own picture, late or not.
                 for (int i = 1; i < turned.Units.Count; i++)
                 {
                     (result, shots) = Decode(decoder, turned.Units[i], i);
                     Check(result == H264Decoded.Picture && shots.Count == 1 && shots[0].Info.Tag == i,
-                        $"An ordinary frame's picture comes with its frame, busy or not (round {round}, frame {i}: {result}, {shots.Count})");
+                        $"Every frame gives its own picture, and none another's, however busy the processor (round {round}, frame {i}: {result}, {shots.Count})");
                 }
             }
         }
@@ -888,7 +1016,7 @@ internal static unsafe class H264Tests
             Volatile.Write(ref stop, true);
             foreach (var thread in busy) thread.Join();
         }
-        Pass("a decoder's first picture, and the first after a change of size, is waited for when it comes a moment late");
+        Pass("with the processor busy and decoders made one after another, every frame still gives its picture");
     }
 
     // ---------------- helpers ----------------

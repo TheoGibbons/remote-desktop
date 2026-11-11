@@ -9,16 +9,22 @@ internal enum H264Decoded
 {
     /// <summary>At least one picture was handed to the caller.</summary>
     Picture,
-    /// <summary>Taken, and nothing came out yet. Not a fault.</summary>
+    /// <summary>Taken, and it held no picture: parameter sets on their own, say. Not a fault.</summary>
     NoPicture,
+    /// <summary>
+    /// Taken, and its picture has not come out yet. It will, with the next
+    /// frame or when <see cref="H264Decoder.Poll"/> is called a little later.
+    /// Not a fault: under load the decoder can be some milliseconds behind.
+    /// </summary>
+    Pending,
     /// <summary>
     /// Not looked at: the decoder is at a fresh start (new, reset, or after a
     /// failure) and this was not a keyframe with its parameter sets.
     /// </summary>
     NeedsKeyframe,
     /// <summary>
-    /// The decoder reported an error, or was given a keyframe and produced no
-    /// picture. It has been reset and wants a keyframe. <see
+    /// The decoder reported an error, or was given a keyframe and had produced
+    /// no picture a second later. It has been reset and wants a keyframe. <see
     /// cref="H264Decoder.LastFailure"/> says what happened.
     /// </summary>
     Failed,
@@ -69,15 +75,21 @@ internal delegate void H264PictureHandler(in Nv12Picture picture);
 /// sequence numbers: call <see cref="Reset"/> and ask the phone for a
 /// keyframe.
 ///
-/// <b>A picture can be a moment late.</b> As a rule the picture is there as
-/// soon as its access unit has gone in. Not always at a change of size, the
-/// first frame included: the decoder announces the size, the output type is
-/// chosen again, and for a millisecond or ten it then has nothing to give,
-/// most often when another decoder has just been let go. So after a size
-/// announcement, and after any keyframe, this class asks again for up to
-/// <see cref="LatePictureMs"/> before it believes there is no picture.
-/// Without that, a window opened straight after another was closed would
-/// count its first keyframe as a failure of the decoder.
+/// <b>A picture can be late.</b> As a rule the picture is there as soon as
+/// its access unit has gone in. Not always: with the processor busy it can
+/// take some milliseconds more, most often the first picture after the
+/// decoder announces a size, and most often when another decoder has just
+/// been let go. Lateness is not a failure. <see cref="Decode"/> looks again
+/// for a few milliseconds and then answers <see cref="H264Decoded.Pending"/>;
+/// the picture comes out of the next <see cref="Decode"/>, or of <see
+/// cref="Poll"/>, which the caller's thread calls between frames (<see
+/// cref="Owes"/> says when there is reason to). Only a keyframe whose picture
+/// has still not come after <see cref="LatePictureLimitMs"/> is called a
+/// failure: that is how a decoder that cannot decode the stream shows itself.
+/// While a keyframe's picture is owed the caller feeds nothing more (<see
+/// cref="OwesKeyframe"/>): a keyframe the decoder cannot use gives no
+/// picture while left alone, but would go on to make pictures out of the
+/// frames behind it.
 ///
 /// Nothing is allocated on the managed heap per picture.
 /// </summary>
@@ -116,12 +128,35 @@ internal sealed unsafe class H264Decoder : IDisposable
     internal const int MaxCodedSize = 4096;
 
     /// <summary>
-    /// How long a picture is waited for where one must come: after a size
-    /// announcement, and after a keyframe. Up to 10 ms has been seen. A
-    /// keyframe the decoder really cannot decode costs this long once, before
-    /// it is called a failure.
+    /// How long <see cref="Decode"/> itself looks again for a picture that
+    /// did not come at once, before it answers Pending. Short, and without
+    /// sleeping: the caller's thread has acknowledgements to send.
     /// </summary>
-    internal const int LatePictureMs = 150;
+    internal const int LookAgainMs = 3;
+
+    /// <summary>
+    /// How long a keyframe's picture may be owed before that is a failure,
+    /// and how long an ordinary frame's is waited for before it is let go.
+    /// Lateness of up to 10 ms has been seen; a second is far beyond any
+    /// lateness and still soon enough to fall back. Tests shorten it.
+    /// </summary>
+    internal int LatePictureLimitMs { get; set; } = 1000;
+
+    /// <summary>For tests: this many calls of <see cref="Decode"/> and <see
+    /// cref="Poll"/> find nothing to take out, as if the decoder were late.</summary>
+    internal int TestHoldBackCalls { get; set; }
+
+    /// <summary>A picture is owed: one went in and has not come out. Read it on the decoding thread.</summary>
+    public bool Owes => _owedTags.Count > 0;
+
+    /// <summary>
+    /// The picture owed is a keyframe's. Until it has come, or been given up,
+    /// nothing more should be fed: call <see cref="Poll"/>. A keyframe the
+    /// decoder can make nothing of gives no picture while it is left alone,
+    /// but fed the frames behind it, it goes on to make pictures out of
+    /// nothing. Read it on the decoding thread.
+    /// </summary>
+    public bool OwesKeyframe => _keyframeOwedSince != 0;
 
     /// <summary>
     /// The most pixels a picture may have: 1440 x 3200, either way round. A
@@ -147,7 +182,10 @@ internal sealed unsafe class H264Decoder : IDisposable
     private IMFMediaBuffer? _buffer;
     private OutputFormat _format;
     private bool _needsKeyframe = true;
-    private bool _announced;            // the decoder announced a size during the call in progress
+    // The frames that went in holding a picture that has not come out, oldest first.
+    private readonly Queue<(long Tag, bool Keyframe)> _owedTags = new();
+    private long _owedSince;            // since when a picture has been owed
+    private long _keyframeOwedSince;    // when a keyframe went in whose picture has not come; 0 for none
 
     // Who is inside, and whether to tear down. Only these four are shared
     // between threads, and only under the gate.
@@ -340,30 +378,120 @@ internal sealed unsafe class H264Decoder : IDisposable
             Units units = Scan(accessUnit);
             bool keyframe = (units & Units.Keyframe) == Units.Keyframe;
             if (_needsKeyframe && !keyframe) return H264Decoded.NeedsKeyframe;
+            bool holdsPicture = (units & Units.Slice) != 0;
+            bool held = TestHoldBackCalls > 0;
+            if (held) TestHoldBackCalls--;
+            if (holdsPicture)
+            {
+                long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                if (_owedTags.Count == 0) _owedSince = now;
+                // More than this owed and something is badly wrong; the oldest are forgotten.
+                while (_owedTags.Count >= 64) _owedTags.Dequeue();
+                _owedTags.Enqueue((tag, keyframe));
+                if (keyframe) _keyframeOwedSince = now;
+            }
 
             int pictures;
             try
             {
-                pictures = Feed(accessUnit, tag, keyframe, onPicture);
+                pictures = Feed(accessUnit, tag, held, onPicture);
             }
             catch (DecoderError e)
             {
                 return Fail(e.Message);
             }
-
-            if (keyframe)
-            {
-                // Silence is how the decoder says it cannot decode this
-                // stream at all: a size over its limit, for one.
-                if (pictures == 0) return Fail("a keyframe gave no picture");
-                _needsKeyframe = false;
-            }
-            return pictures > 0 ? H264Decoded.Picture : H264Decoded.NoPicture;
+            // The frames behind a keyframe are decoded from here on, whether
+            // or not its own picture is out yet.
+            if (keyframe) _needsKeyframe = false;
+            return Settle(pictures);
         }
         finally
         {
             Leave();
         }
+    }
+
+    /// <summary>
+    /// Looks whether a picture that was owed has come out, and hands it to
+    /// <paramref name="onPicture"/> if so. For the time between frames, on
+    /// the decoding thread: on a screen that has stopped changing there is
+    /// no next frame to bring a late picture out.
+    /// </summary>
+    /// <returns>Picture; Pending while it is still owed; NoPicture when
+    /// nothing is owed (any more); Failed when it was a keyframe's and has
+    /// been owed too long.</returns>
+    public H264Decoded Poll(H264PictureHandler onPicture)
+    {
+        if (!Enter()) return H264Decoded.Disposed;
+        try
+        {
+            if (_owedTags.Count == 0) return H264Decoded.NoPicture;
+            bool held = TestHoldBackCalls > 0;
+            if (held) TestHoldBackCalls--;
+            int pictures;
+            try
+            {
+                pictures = held ? 0 : Drain(onPicture);
+            }
+            catch (DecoderError e)
+            {
+                return Fail(e.Message);
+            }
+            return Settle(pictures);
+        }
+        finally
+        {
+            Leave();
+        }
+    }
+
+    /// <summary>What to answer after a call, by what came out and what is still owed, and for how long.</summary>
+    private H264Decoded Settle(int pictures)
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool keyframeOwed = false;
+        foreach (var owed in _owedTags) keyframeOwed |= owed.Keyframe;
+        if (!keyframeOwed) _keyframeOwedSince = 0;
+        if (pictures > 0)
+        {
+            // The decoder is plainly decoding; whatever is still owed is owed from now.
+            _owedSince = now;
+            return H264Decoded.Picture;
+        }
+        if (_owedTags.Count == 0) return H264Decoded.NoPicture;
+        if (keyframeOwed)
+        {
+            // Silence is how the decoder says it cannot decode this stream
+            // at all: a size over its limit, for one.
+            if (System.Diagnostics.Stopwatch.GetElapsedTime(_keyframeOwedSince, now).TotalMilliseconds >= LatePictureLimitMs)
+                return Fail("a keyframe gave no picture");
+        }
+        else if (System.Diagnostics.Stopwatch.GetElapsedTime(_owedSince, now).TotalMilliseconds >= LatePictureLimitMs)
+        {
+            // An ordinary frame that never became a picture. One picture is
+            // lost, the next frame draws over it, and nothing is wrong.
+            _owedTags.Clear();
+            return H264Decoded.NoPicture;
+        }
+        return H264Decoded.Pending;
+    }
+
+    /// <summary>
+    /// A picture has come out, carrying this number. Returns the number of
+    /// the frame it is taken to be of, and stops waiting for that frame's
+    /// picture and for those of the frames before it, which will give none
+    /// now: pictures come out in the order their frames went in.
+    /// </summary>
+    private long CameOut(long tag)
+    {
+        bool awaited = false;
+        foreach (var owed in _owedTags) awaited |= owed.Tag == tag;
+        // A number that is not owed. The decoder loses the number when an
+        // access unit is not laid out as it expects (a delimiter that is not
+        // first, for one): then it is the oldest that is owed.
+        if (!awaited) return _owedTags.Count > 0 ? _owedTags.Dequeue().Tag : tag;
+        while (_owedTags.Count > 0 && _owedTags.Dequeue().Tag != tag) { }
+        return tag;
     }
 
     /// <summary>
@@ -377,6 +505,8 @@ internal sealed unsafe class H264Decoder : IDisposable
         try
         {
             _needsKeyframe = true;
+            _owedTags.Clear();
+            _keyframeOwedSince = 0;
             try { _mft.ProcessMessage(TMessageType.MessageCommandFlush, UIntPtr.Zero); }
             catch (SharpGenException) { }
         }
@@ -439,6 +569,8 @@ internal sealed unsafe class H264Decoder : IDisposable
     {
         LastFailure = what;
         _needsKeyframe = true;
+        _owedTags.Clear();
+        _keyframeOwedSince = 0;
         try { _mft.ProcessMessage(TMessageType.MessageCommandFlush, UIntPtr.Zero); }
         catch (SharpGenException) { }
         return H264Decoded.Failed;
@@ -451,9 +583,8 @@ internal sealed unsafe class H264Decoder : IDisposable
     }
 
     /// <summary>Hands the access unit to the decoder and passes on every picture that comes out. Returns how many.</summary>
-    private int Feed(ReadOnlySpan<byte> accessUnit, long tag, bool keyframe, H264PictureHandler onPicture)
+    private int Feed(ReadOnlySpan<byte> accessUnit, long tag, bool held, H264PictureHandler onPicture)
     {
-        _announced = false;
         // A new buffer for every access unit. The decoder keeps the sample
         // after ProcessInput returns and reads it during ProcessOutput, so
         // one buffer written over for the next frame would corrupt this one.
@@ -486,20 +617,18 @@ internal sealed unsafe class H264Decoder : IDisposable
         {
             throw new DecoderError("ProcessInput", e.ResultCode.Code);
         }
+        if (held) return pictures;
         pictures += Drain(onPicture);
 
-        // A picture that must come and has not yet: see the note at the top.
-        if (pictures == 0 && (keyframe || _announced))
+        // Not there at once, where one is owed: see the note at the top. It
+        // is mostly there within a millisecond, so look closely for a few,
+        // without sleeping, and leave the rest to the next call.
+        if (pictures == 0 && _owedTags.Count > 0)
         {
             long started = System.Diagnostics.Stopwatch.GetTimestamp();
-            while (pictures == 0)
+            while (pictures == 0 && System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds < LookAgainMs)
             {
-                double waited = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
-                if (waited >= LatePictureMs) break;
-                // It is usually there within a millisecond: look closely at
-                // first, then leave the processor to the decoder's threads.
-                if (waited < 2) Thread.SpinWait(200);
-                else Thread.Sleep(1);
+                Thread.SpinWait(200);
                 pictures = Drain(onPicture);
             }
         }
@@ -541,7 +670,6 @@ internal sealed unsafe class H264Decoder : IDisposable
                 // again. Nothing is lost; the picture comes on the next ask.
                 if (++changes > 4) throw new DecoderError("ProcessOutput (the size kept changing)", StreamChange);
                 SizeAnnouncements++;
-                _announced = true;
                 try { ChooseOutputType(); }
                 catch (SharpGenException e) { throw new DecoderError("choosing the output type", e.ResultCode.Code); }
                 continue;
@@ -549,7 +677,7 @@ internal sealed unsafe class H264Decoder : IDisposable
             if (result.Failure) throw new DecoderError("ProcessOutput", result.Code);
 
             var f = _format;
-            long tag = _sample!.SampleTime;
+            long tag = CameOut(_sample!.SampleTime);
             _buffer.Lock(out IntPtr data, out _, out int length);
             try
             {
@@ -700,6 +828,31 @@ internal sealed unsafe class H264Decoder : IDisposable
             search = next + 3;
         }
         return sets.AsSpan(0, written).ToArray();
+    }
+
+    /// <summary>
+    /// An access unit with parameter sets put into it: at the front, or
+    /// behind its delimiter if it starts with one, since a delimiter that is
+    /// not first makes the decoder take what follows for another access unit.
+    /// </summary>
+    internal static byte[] WithParameterSets(ReadOnlySpan<byte> accessUnit, ReadOnlySpan<byte> sets)
+    {
+        int at = 0;
+        int header = accessUnit.Length > 3 && accessUnit[0] == 0 && accessUnit[1] == 0
+            ? (accessUnit[2] == 1 ? 3 : accessUnit[2] == 0 && accessUnit[3] == 1 ? 4 : -1) : -1;
+        if (header > 0 && header < accessUnit.Length && (accessUnit[header] & 0x1F) == 9)
+        {
+            // The delimiter ends where the next start code begins.
+            ReadOnlySpan<byte> startCode = stackalloc byte[] { 0, 0, 1 };
+            int next = accessUnit.Slice(header).IndexOf(startCode);
+            at = next < 0 ? accessUnit.Length : header + next;
+            if (next > 0 && accessUnit[at - 1] == 0) at--;
+        }
+        var whole = new byte[accessUnit.Length + sets.Length];
+        accessUnit.Slice(0, at).CopyTo(whole);
+        sets.CopyTo(whole.AsSpan(at));
+        accessUnit.Slice(at).CopyTo(whole.AsSpan(at + sets.Length));
+        return whole;
     }
 
     /// <summary>

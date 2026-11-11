@@ -186,7 +186,10 @@ public partial class MainWindow : Window
         Action<Action> drawLater = draw => Dispatcher.BeginInvoke(DispatcherPriority.Background, draw);
         _phoneFeed = new PhoneFeed(DecodePhonePicture, _ws.SendJson,
             () => System.Diagnostics.Stopwatch.GetTimestamp() * 1000 / System.Diagnostics.Stopwatch.Frequency,
-            drawVideo: PhoneVideoDecoded);
+            drawVideo: PhoneVideoDecoded,
+            // Said once, where the person at the PC will see it. The Stats readout has the reason.
+            gaveUp: (phoneId, _) => Dispatcher.BeginInvoke(() =>
+                Toast.Show($"This PC could not show {PeerName(phoneId)}'s video, so its screen is shown as pictures instead.")));
         Closed += (_, _) => _phoneFeed.Dispose();
         _pcPatches = new FrameMailbox(MaxWaitingPatches, patch => _pcView?.OnPatch(patch), drawLater);
 

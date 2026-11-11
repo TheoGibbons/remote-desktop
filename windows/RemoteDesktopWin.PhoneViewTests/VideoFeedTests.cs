@@ -40,6 +40,7 @@ internal static class VideoFeedTests
             CheckFeedGivesUpOnAPhoneThatSendsNoKeyframe(clip);
             CheckFeedFallingBehind(clip, again);
             CheckFeedDecoderFailure(clip);
+            CheckFeedWaitsForALatePicture(clip);
             CheckFeedWithoutADecoder(clip);
             CheckFeedTurnedPhoneAndNewStreams(clip, turned);
             CheckFeedWhileAFrameIsDecoded(clip);
@@ -175,6 +176,16 @@ internal static class VideoFeedTests
         Check(H264Decoder.ParameterSets(new byte[] { 0, 0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x65, 3 }) == null, "An SPS without a PPS is not a pair to keep");
         Check(H264Decoder.ParameterSets(new byte[] { 0, 0, 1, 0x41, 3 }) == null && H264Decoder.ParameterSets(ReadOnlySpan<byte>.Empty) == null,
             "An ordinary frame has none");
+        // Put back in front of a picture that came without: behind the delimiter, if there is one.
+        byte[] kept = { 0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2 };
+        Check(H264Decoder.WithParameterSets(new byte[] { 0, 0, 0, 1, 0x65, 7 }, kept).AsSpan().SequenceEqual(new byte[] { 0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 7 }),
+            "Parameter sets go in front of a picture that has none");
+        Check(H264Decoder.WithParameterSets(new byte[] { 0, 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x65, 7 }, kept).AsSpan()
+                .SequenceEqual(new byte[] { 0, 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 7 }),
+            "And behind the delimiter of one that starts with a delimiter, which has to stay first");
+        Check(H264Decoder.WithParameterSets(new byte[] { 0, 0, 1, 0x09, 0xF0, 0, 0, 1, 0x65, 7 }, kept).AsSpan()
+                .SequenceEqual(new byte[] { 0, 0, 1, 0x09, 0xF0, 0, 0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 0, 0, 1, 0x65, 7 }),
+            "With short start codes too");
         Console.WriteLine("PASS: a keyframe is known by what the frame holds, not by the bit in its header");
     }
 
@@ -367,11 +378,17 @@ internal static class VideoFeedTests
         public readonly List<PhonePicture> Jpegs = [];
         public readonly List<(PhoneFrameHeader Header, int Width, int Height, byte[] Bgra)> Shown = [];
         public readonly List<string> Sent = [];
+        public readonly List<(string Phone, string Why)> GaveUp = [];
         public readonly PhoneFeed Feed;
+        /// <summary>The decoder the feed last made, for a check to make late.</summary>
+        public H264Decoder? Decoder;
+        /// <summary>How many calls each new decoder is to be late for.</summary>
+        public int HoldBack;
 
         public VideoRig(bool canDecode = true)
         {
             Feed = new PhoneFeed(Jpegs.Add, msg => Sent.Add(msg.ToJsonString()), () => Now, ownThread: false,
+                gaveUp: (phone, why) => GaveUp.Add((phone, why)),
                 drawVideo: picture =>
                 {
                     Shown.Add((picture.Header, picture.Width, picture.Height, picture.Bgra.AsSpan(0, picture.Stride * picture.Height).ToArray()));
@@ -380,6 +397,13 @@ internal static class VideoFeedTests
                     if (Feed.Video.Take() is { } taken) Feed.Video.Return(taken);
                 },
                 canDecodeH264: canDecode);
+            Feed.DecoderMade = decoder =>
+            {
+                // A second is what the app allows a keyframe's picture; the checks that break keyframes need not sit it out.
+                decoder.LatePictureLimitMs = 150;
+                decoder.TestHoldBackCalls = HoldBack;
+                Decoder = decoder;
+            };
         }
 
         public void Info(string from, string? stream, string codec = "h264", bool paused = false)
@@ -400,8 +424,30 @@ internal static class VideoFeedTests
         public void Jpeg(ulong stream, uint seq, params byte[] picture) =>
             Feed.OnFrame([Crypto.ChPhone, .. PhoneFrame.Build(new PhoneFrameHeader(stream, seq, true, PhoneFrame.Jpeg, false, false, 320, 240, 0), picture)]);
 
-        /// <summary>Everything the feed's thread would do by now. Returns how many video pictures it showed.</summary>
+        /// <summary>
+        /// Everything the feed's thread would do by now. Returns how many
+        /// video pictures it showed. A picture the decoder owes is waited
+        /// for, as the thread would between frames: the hand-set clock is
+        /// moved on a little for that and put back.
+        /// </summary>
         public int Pump()
+        {
+            int before = Shown.Count;
+            while (Feed.Pump()) { }
+            long saved = Now;
+            var real = System.Diagnostics.Stopwatch.StartNew();
+            while (Feed.VideoState.Owed && real.ElapsedMilliseconds < 3000)
+            {
+                Thread.Sleep(1);
+                Now += 2;
+                while (Feed.Pump()) { }
+            }
+            Now = saved;
+            return Shown.Count - before;
+        }
+
+        /// <summary>Only what is due at this moment: a picture that is owed stays owed.</summary>
+        public int PumpOnce()
         {
             int before = Shown.Count;
             while (Feed.Pump()) { }
@@ -439,6 +485,8 @@ internal static class VideoFeedTests
         {
             var shown = rig.Shown[i];
             Check(shown.Header.Seq == i && shown.Header.Stream == StreamA, $"Pictures come out in the order the frames went in ({i}: {shown.Header.Seq})");
+            Check(H264Tests.FrameShownIn(shown.Bgra, clip.Width, clip.Height) == i,
+                $"And each is its own frame's picture: the one numbered {i} shows frame {H264Tests.FrameShownIn(shown.Bgra, clip.Width, clip.Height)}");
             Check(shown.Width == clip.Width && shown.Height == clip.Height, "At the size of the stream");
             H264Tests.CheckPatches(shown.Bgra, clip.Width, clip.Height, clip.ReadAs, $"the feed's picture {i} of {clip}");
         }
@@ -546,6 +594,7 @@ internal static class VideoFeedTests
         split.Frame(StreamA, 2, clip.Units[1]);
         split.Frame(StreamA, 3, clip.Units[2]);
         Check(split.Pump() == 3 && split.Shown[0].Header.Seq == 1, "The keyframe that follows them without its own is shown, and the frames after it");
+        Check(split.Shown.Select(s => H264Tests.FrameShownIn(s.Bgra, clip.Width, clip.Height)).SequenceEqual([0, 1, 2]), "Each the picture of its own frame");
         H264Tests.CheckPatches(split.Shown[^1].Bgra, clip.Width, clip.Height, clip.ReadAs, "from a phone that sends its parameter sets apart");
         Check(split.Count("request-keyframe") == 0 && split.Feed.VideoState.Failures == 0, "Without a request and without a failure");
 
@@ -592,7 +641,8 @@ internal static class VideoFeedTests
         Check(rig.Now >= 6000 && rig.Now <= 6300, $"Six seconds after the first, not for ever: at {rig.Now}");
         Check(rig.Of("start-view").SequenceEqual(["""{"type":"start-view","to":"7","codecs":["jpeg"]}"""]), "The phone is asked for JPEG");
         Check(rig.Shown.Count == 2 && rig.Feed.VideoState.Failures == 0, "Nothing broken was shown meanwhile, and the decoder is not blamed");
-        Check(rig.Feed.StatsText().Contains("H.264 given up (the phone sent no keyframe when asked)"), "The readout says why:\n" + rig.Feed.StatsText());
+        Check(rig.Feed.StatsText().Contains("H.264 given up for this phone (the phone sent no keyframe when asked)"), "The readout says why:\n" + rig.Feed.StatsText());
+        Check(rig.GaveUp.SequenceEqual([("7", "the phone sent no keyframe when asked")]), "And the person at the PC is told, once");
         Pass("a phone that never sends the keyframe it is asked for is asked for JPEG instead, after five requests");
     }
 
@@ -650,6 +700,7 @@ internal static class VideoFeedTests
         rig.Frame(StreamA, 1, BrokenKeyframe(clip));
         rig.Frame(StreamA, 2, clip.Units[2]);
         rig.Frame(StreamA, 3, clip.Units[3]);
+        // The frames behind it would decode to something, built on nothing: that must not be shown.
         Check(rig.Pump() == 0, "A keyframe the decoder makes nothing of gives no picture, and nor do the frames behind it");
         Check(rig.Feed.VideoState is { Failures: 1, Waiting: true, GivenUp: false, Queued: 0 }, "It is counted as one failure");
         Check(rig.Count("request-keyframe") == 1 && rig.Count("start-view") == 0, "And answered with a request for a keyframe");
@@ -657,11 +708,16 @@ internal static class VideoFeedTests
         rig.Frame(StreamA, 4, clip.Units[0]);
         Check(rig.Pump() == 1, "A good keyframe, and the picture is back");
 
-        // The second failure.
+        // The second failure, this time with nothing behind it: on a screen
+        // that has stopped changing. It is waited for like a late picture,
+        // and then it is a failure.
         rig.Now = 3000;
         rig.Frame(StreamA, 5, BrokenKeyframe(clip));
+        Check(rig.PumpOnce() == 0 && rig.Feed.VideoState is { GivenUp: false, Failures: 1, Owed: true },
+            "A keyframe with no picture yet is not failed on the spot: its picture may be late");
         rig.Pump();
         Check(rig.Feed.VideoState is { GivenUp: true, Offered: false }, "A second failure, and H.264 is given up");
+        Check(rig.GaveUp.SequenceEqual([("7", "a keyframe gave no picture")]), "The person at the PC is told, once");
         Check(rig.Of("start-view").SequenceEqual(["""{"type":"start-view","to":"7","codecs":["jpeg"]}"""]),
             "The phone is told by a start-view that offers JPEG only: " + string.Join(" ", rig.Of("start-view")));
         int asked = rig.Count("request-keyframe");
@@ -673,7 +729,8 @@ internal static class VideoFeedTests
         rig.Now = 6000;
         rig.Pump();
         Check(rig.Count("request-keyframe") == asked, "And no more keyframes are asked for");
-        Check(rig.Feed.StatsText().Contains("H.264 given up (a keyframe gave no picture). JPEG until the app is restarted."), "The readout says so:\n" + rig.Feed.StatsText());
+        Check(rig.Feed.StatsText().Contains("H.264 given up for this phone (a keyframe gave no picture). Tried again when its window is opened ten minutes later or more."),
+            "The readout says so:\n" + rig.Feed.StatsText());
 
         // The phone answers with a JPEG stream, which is drawn.
         rig.Info("7", IdB, codec: "jpeg");
@@ -681,10 +738,73 @@ internal static class VideoFeedTests
         rig.Pump();
         Check(rig.Jpegs.Count == 1, "The JPEGs that follow are drawn");
 
-        // And it stays given up: for this phone's next window, and for another phone.
+        // It is this phone's video that is given up, and not for ever.
+        Check(!rig.Feed.View("7", offered: true), "While the window stays open, asking again does not bring video back");
         rig.Feed.Stop("7");
-        Check(!rig.Feed.View("7", offered: true) && !rig.Feed.View("9", offered: true), "It stays given up for as long as the app runs, for every phone");
-        Pass("a decoder that fails twice is given up, and the phone is asked for JPEG");
+        rig.Now = 6000 + 60_000;
+        Check(!rig.Feed.View("7", offered: true), "Nor does a window opened on the phone a minute later");
+        rig.Feed.Stop("7");
+        Check(rig.Feed.View("9", offered: true), "Another phone is offered video all the while");
+        rig.Feed.Stop("9");
+        rig.Now = 3000 + PhoneFeed.GiveUpWearsOffMs - 1;
+        Check(!rig.Feed.View("7", offered: true), "Not quite ten minutes after, still not");
+        rig.Feed.Stop("7");
+        rig.Now = 3000 + PhoneFeed.GiveUpWearsOffMs + 200;
+        Check(rig.Feed.View("7", offered: true), "A window opened ten minutes after it was given up offers video again");
+        rig.Info("7", IdA);
+        rig.Frame(StreamA, 0, clip.Units[0]);
+        Check(rig.Pump() == 1 && rig.GaveUp.Count == 1, "And shows it");
+        Pass("a decoder that fails twice is given up for that phone, the phone is asked for JPEG, and video is tried again later");
+    }
+
+    private static void CheckFeedWaitsForALatePicture(Clip clip)
+    {
+        // The decoder is made to be late with its first picture, as it sometimes is by itself.
+        var rig = new VideoRig { HoldBack = 1 };
+        rig.Feed.View("7", offered: true);
+        rig.Info("7", IdA);
+        rig.Now = 1000;
+        rig.Frame(StreamA, 0, clip.Units[0]);
+        Check(rig.PumpOnce() == 0 && rig.Feed.VideoState is { Owed: true, Failures: 0, Waiting: false },
+            "A keyframe whose picture is not out yet is owed one: no failure, and nothing asked");
+        Check(rig.Count("request-keyframe") == 0, "No keyframe is asked for on account of lateness");
+        rig.Now = 1001;
+        Check(rig.PumpOnce() == 0, "It is not asked for again before a moment has passed");
+        rig.Now = 1002;
+        Check(rig.PumpOnce() == 1 && rig.Shown[0].Header.Seq == 0 && !rig.Feed.VideoState.Owed,
+            "Asked again a moment later, with no new frame, the picture is shown: a still screen does not hide it");
+        H264Tests.CheckPatches(rig.Shown[0].Bgra, clip.Width, clip.Height, clip.ReadAs, "a keyframe's picture that came late");
+
+        // An ordinary frame's picture is late, and the next frame arrives before it is asked for again.
+        rig.Decoder!.TestHoldBackCalls = 1;
+        rig.Frame(StreamA, 1, clip.Units[1]);
+        Check(rig.PumpOnce() == 0 && rig.Feed.VideoState.Owed, "setup: frame 1's picture is owed");
+        rig.Frame(StreamA, 2, clip.Units[2]);
+        Check(rig.PumpOnce() == 1, "The next frame brings both pictures out, and the newer is shown");
+        var shown = rig.Shown[^1];
+        Check(shown.Header.Seq == 2 && H264Tests.FrameShownIn(shown.Bgra, clip.Width, clip.Height) == 2,
+            $"Under its own frame's number: numbered {shown.Header.Seq}, showing frame {H264Tests.FrameShownIn(shown.Bgra, clip.Width, clip.Height)}");
+
+        // Late again, and this time it is asked for before the next frame comes: it is frame 3's picture, under frame 3's number.
+        rig.Decoder.TestHoldBackCalls = 1;
+        rig.Frame(StreamA, 3, clip.Units[3]);
+        Check(rig.PumpOnce() == 0, "setup: frame 3's picture is owed");
+        rig.Now = 1010;
+        Check(rig.PumpOnce() == 1, "It comes when asked for again");
+        shown = rig.Shown[^1];
+        Check(shown.Header.Seq == 3 && H264Tests.FrameShownIn(shown.Bgra, clip.Width, clip.Height) == 3,
+            $"A picture that comes late carries the header of the frame it was decoded from: numbered {shown.Header.Seq}, showing frame {H264Tests.FrameShownIn(shown.Bgra, clip.Width, clip.Height)}");
+        Check(rig.Feed.VideoState is { Failures: 0, GivenUp: false } && rig.Count("request-keyframe") == 0 && rig.GaveUp.Count == 0,
+            "None of the lateness counted as a failure");
+
+        // The window closes while a picture is owed: it is not asked for again.
+        rig.Decoder.TestHoldBackCalls = 1;
+        rig.Frame(StreamA, 4, clip.Units[4]);
+        rig.PumpOnce();
+        rig.Feed.Stop("7");
+        rig.Now = 2000;
+        Check(rig.PumpOnce() == 0 && !rig.Feed.VideoState.Owed, "A picture owed to a window that has closed is forgotten");
+        Pass("a picture the decoder gives late is shown when it comes, under its own frame's number, and is no failure");
     }
 
     private static void CheckFeedWithoutADecoder(Clip clip)
