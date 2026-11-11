@@ -39,7 +39,7 @@ Why this order:
   - The wake (`ScreenWaker`) is already on `main` and goes out with the next release. On a Samsung with notifications off it does nothing and nobody is told. Unlock Phase 1 is what explains it.
   - Unlock is three small steps. Video is five or more releases.
   - Unlock needs nothing from video. Video Phase 1 gains from it: "Unlock the phone first" becomes something the person at the PC can do.
-- **Unlock Phases 2 and 3 get a release with nothing else in it.** Phase 2 lets the Accessibility service read window content. Nobody knows yet whether Android switches the service off when an update adds that. If it does, the phone can't be viewed until someone re-enables it by hand, so that release should carry one risk only, and go out when the phones are within reach. The Google Play accessibility declaration must be reworded before it.
+- **Unlock Phases 2 and 3 get a release with nothing else in it.** Phase 2 lets the Accessibility service read window content. Nobody knew whether Android switches the service off when an update adds that. On the S26, with the debug build, it does not (2026-11-11, check 5 in the unlock plan): the service stayed on and had the new ability at once. That was one phone, one Android version and a debug-signed app updated over adb. If another phone does switch it off, that phone can't be viewed until someone re-enables it by hand, so that release should still carry one risk only, and go out when the phones are within reach. The Google Play accessibility declaration must be reworded before it.
 
 Any release ships every commit on `main`, so each step must leave both apps working with the other side one step behind. The compatibility tables in the three plans cover that.
 

@@ -63,7 +63,7 @@ This matches the video plan's C4 (Theo unlocked blind with the released apps) an
 - Whether the nine dots sit on an even 3×3 grid inside the square. It needs the real pattern drawn against a drawn grid.
 - PIN and password lock screens, and any phone that isn't the S26. The S20 (Android 13) is untried.
 - Whether the short test stroke counted as a failed attempt. No timer appeared, but I can't rule it out.
-- Whether Android switches the Accessibility service off when an update adds the window-content capability. Both probes were fresh installs enabled over adb.
+- Whether Android switches the Accessibility service off when an update adds the window-content capability. Both probes were fresh installs enabled over adb. (Answered on 2026-11-11 for the S26 and a debug build: it does not. See check 5 under "Checks that need a real phone".)
 - Whether Google Play accepts the capability.
 - Smooth sharing (MediaProjection) on the lock screen. Only Accessibility capture was tested.
 - Typing into a password lock field through the service's input method.
@@ -195,7 +195,16 @@ Step 0 of `PHONE-PLANS-ORDER.md` gives the debug build a permanent `.debug` app 
 2. Phase 2 on the S26: draw the real pattern on the drawn grid. This settles whether the dots are on an even grid; adjust the inset if not.
 3. Switch the S26 to a PIN, then a password: read the node list, confirm the keys are found, unlock by clicking and by typing.
 4. Wrong pattern five times: the lockout message and countdown appear in the viewer.
-5. Updating an installed app to the Phase 2 build: does Android switch the Accessibility service off?
+5. Updating an installed app to the Phase 2 build: does Android switch the Accessibility service off? **Run on the S26 on 2026-11-11: no.** The debug app (`co.remotedesktop.debug`) was installed from the build before Phase 2, with its service switched on and bound, and was updated in place with `adb install -r` to a build whose only difference was the new capability and `flagReportViewIds`.
+
+   | | Before | 3 s, 15 s and 75 s after the update |
+   |---|---|---|
+   | `settings get secure enabled_accessibility_services` | lists the debug app's service | the same: still listed |
+   | The service in `dumpsys accessibility` | bound, `capabilities=160` (gestures, screenshots), `fetchFlags=0` | bound again (the app's process was restarted by the update), `capabilities=161` (the same plus window content), `fetchFlags=256` (view ids) |
+   | Inside the app | | `serviceInfo` says it can retrieve window content, and `rootInActiveWindow` returns the window in front, not null |
+   | The session | viewing works | the phone rejoined by itself within seconds, and a viewer opened afterwards got its picture |
+
+   Nothing was shown on the phone and nothing had to be re-enabled. What this does not cover: the app was signed with the debug key and updated over adb, not by Google Play or by opening a downloaded APK, though switching a service off is the system's doing and not the installer's; the S26 runs Android 17, and the S20 (Android 13) or another maker's phone may differ; and it was one run. So the release that carries this should still go out when the phones are within reach. The readings are in the scratch folder of the run (`step-6\gate-*.txt`); the "before" build is kept there as `before.apk`, so the run can be repeated.
 6. The S20 (Android 13), on a release.
 7. Phone viewing a phone: the overlay lines up on a different screen shape.
 

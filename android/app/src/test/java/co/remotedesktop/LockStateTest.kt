@@ -5,9 +5,12 @@ import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Base64
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import okhttp3.Request
 import okhttp3.WebSocket
 import okio.ByteString
@@ -37,6 +40,7 @@ class LockStateTest {
     private val previous = mutableMapOf<String, Any?>()
     private val instanceField = InputAccessibilityService::class.java.getDeclaredField("instance")
         .apply { isAccessible = true }
+    private lateinit var service: InputAccessibilityService
 
     private fun connectionField(name: String) = ConnectionManager::class.java.getDeclaredField(name)
         .apply { isAccessible = true }
@@ -75,13 +79,18 @@ class LockStateTest {
         previous["capture"] = captureContext.get(PhoneScreenCapture)
         captureContext.set(PhoneScreenCapture, null)
         PhoneScreenCapture.init(context)
-        instanceField.set(null, Robolectric.buildService(InputAccessibilityService::class.java).create().get())
+        service = Robolectric.buildService(InputAccessibilityService::class.java).create().get()
+        instanceField.set(null, service)
         // Left behind by a test that ended with a wake still to be looked at,
         // or with a viewer: the queue they waited in is gone with that test.
         (ScreenWaker::class.java.getDeclaredField("checking").apply { isAccessible = true }.get(ScreenWaker) as AtomicBoolean).set(false)
         lockField("listening").set(LockState, false)
         lockField("wakeFailed").set(LockState, null)
         (lockField("told").get(LockState) as MutableMap<*, *>).clear()
+        lockField("lockScreenService").set(LockState, null)
+        lockField("lockScreen").set(LockState, LockScreenReader.Found.NOTHING)
+        lockField("lockScreenStale").set(LockState, false)
+        lockField("rereadPending").set(LockState, false)
         ShadowPowerManager.clearWakeLocks()
     }
 
@@ -365,6 +374,194 @@ class LockStateTest {
         assertTrue(LockState.Reading(screenOn = true, locked = false).inUse)
         assertFalse(LockState.Reading(screenOn = true, locked = true).inUse)
         assertFalse(LockState.Reading(screenOn = false, locked = false).inUse)
+    }
+
+    // ---------- the unlock screen ----------
+
+    private val ui = "com.android.systemui"
+
+    private fun view(pkg: String, id: String?, bounds: Rect, text: String? = null, clickable: Boolean = false,
+                     vararg children: AccessibilityNodeInfo): AccessibilityNodeInfo =
+        AccessibilityNodeInfo.obtain().also { node ->
+            node.packageName = pkg
+            node.viewIdResourceName = id?.let { "$pkg:id/$it" }
+            node.setBoundsInScreen(bounds)
+            node.text = text
+            node.isClickable = clickable
+            node.isVisibleToUser = true
+            children.forEach { shadowOf(node).addChild(it) }
+        }
+
+    /** The pattern screen, on Robolectric's 320 x 470 phone. */
+    private fun patternScreen(message: String = "Draw your pattern", pkg: String = ui) = view(pkg, "keyguard_host_view", Rect(0, 0, 320, 470),
+        children = arrayOf(
+            view(pkg, "sec_bouncer_message_area", Rect(20, 100, 300, 130), text = message),
+            view(pkg, "lockPatternView", Rect(40, 188, 280, 428), clickable = true),
+        ))
+
+    /** The lock screen before the swipe: a clock and a notification. */
+    private fun lockScreen() = view(ui, "notification_panel", Rect(0, 0, 320, 470),
+        children = arrayOf(view(ui, "clock_view", Rect(80, 60, 240, 120), text = "12:30"),
+            view(ui, "notification_row", Rect(10, 200, 310, 260), text = "Dinner at 7?", clickable = true)))
+
+    /** What is in front changes, and Android tells the service, as it would. */
+    private fun inFront(root: AccessibilityNodeInfo?, from: String = ui) {
+        shadowOf(service as android.accessibilityservice.AccessibilityService).setRootInActiveWindow(root)
+        service.onAccessibilityEvent(AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED).apply { packageName = from })
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+    }
+
+    private fun area(state: JSONObject) = state.getJSONObject("entry").getJSONArray("area").let { a -> List(a.length()) { a.getDouble(it) } }
+
+    @Test
+    fun aViewerIsToldWhereThePatternIsDrawnOnceTheUnlockScreenIsUp() {
+        screen(on = true, locked = true, Intent.ACTION_SCREEN_ON)
+        shadowOf(service as android.accessibilityservice.AccessibilityService).setRootInActiveWindow(lockScreen())
+        receive("pc", "start-view")
+        // On the lock screen there is nothing to enter, and nothing is said of what it shows.
+        lockStates().single().let {
+            assertTrue(it.getBoolean("locked"))
+            assertFalse(it.has("entry"))
+            assertFalse(it.has("message"))
+        }
+        assertTrue(service.listeningToLockScreen)
+
+        // The swipe: the unlock screen comes up.
+        inFront(patternScreen())
+        lockStates().last().let {
+            assertEquals("pattern", it.getJSONObject("entry").getString("kind"))
+            // 40/320, 188/470, 240/320, 240/470.
+            assertEquals(listOf(0.125, 0.4, 0.75, 0.5106), area(it))
+            assertEquals("Draw your pattern", it.getString("message"))
+        }
+        assertEquals(2, lockStates().size)
+
+        // A wrong try: only the message changes, and the viewer is told.
+        inFront(patternScreen("Incorrect pattern drawn"))
+        assertEquals("Incorrect pattern drawn", lockStates().last().getString("message"))
+        assertEquals(3, lockStates().size)
+        // Something changes that is none of this: nothing new to tell.
+        inFront(patternScreen("Incorrect pattern drawn"))
+        assertEquals(3, lockStates().size)
+
+        // Back: the lock screen again.
+        inFront(lockScreen())
+        assertFalse(lockStates().last().has("entry"))
+        assertFalse(lockStates().last().has("message"))
+        assertEquals(4, lockStates().size)
+    }
+
+    /** The same texts are read by RemoteDesktopWin.PhoneViewTests (CheckLockEntry) and by
+     *  LockCaptionTest. Change them together. */
+    @Test
+    fun theUnlockScreenIsDescribedAsTheViewersReadIt() {
+        val reading = LockState.Reading(screenOn = true, locked = true)
+        fun built(found: LockScreenReader.Found) = JSONObject(LockState.message(reading, null, found).put("to", "pc").toString())
+        fun assertSame(shared: String, built: JSONObject) = assertEquals(JSONObject(shared).toString(), built.toString())
+
+        assertSame("""{"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"pattern","area":[0.1454,0.5141,0.7083,0.3269]},"message":"For your security, draw your pattern.","to":"pc"}""",
+            built(LockScreenReader.Found(LockScreenReader.Entry.Pattern(LockScreenReader.Area(0.1454, 0.5141, 0.7083, 0.3269)),
+                "For your security, draw your pattern.")))
+        assertSame("""{"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"pin","keys":[{"label":"1","rect":[0.1389,0.375,0.2037,0.0917]},{"label":"0","rect":[0.3981,0.7,0.2037,0.0917]},{"label":"delete","rect":[0.1389,0.7,0.2037,0.0917]},{"label":"ok","rect":[0.6574,0.7,0.2037,0.0917]}]},"message":"Enter PIN","to":"pc"}""",
+            built(LockScreenReader.Found(LockScreenReader.Entry.Pin(listOf(
+                LockScreenReader.Key("1", LockScreenReader.Area(0.1389, 0.375, 0.2037, 0.0917)),
+                LockScreenReader.Key("0", LockScreenReader.Area(0.3981, 0.7, 0.2037, 0.0917)),
+                LockScreenReader.Key("delete", LockScreenReader.Area(0.1389, 0.7, 0.2037, 0.0917)),
+                LockScreenReader.Key("ok", LockScreenReader.Area(0.6574, 0.7, 0.2037, 0.0917)),
+            )), "Enter PIN")))
+        assertSame("""{"type":"lock-state","screenOn":true,"locked":true,"entry":{"kind":"password"},"to":"pc"}""",
+            built(LockScreenReader.Found(LockScreenReader.Entry.Password, null)))
+
+        // Neither is said of a phone that is unlocked or asleep, whatever was read a moment before.
+        val found = LockScreenReader.Found(LockScreenReader.Entry.Password, "Enter password")
+        for (other in listOf(LockState.Reading(true, false), LockState.Reading(false, true), LockState.Reading(false, false))) {
+            val msg = LockState.message(other, null, found)
+            assertFalse(msg.has("entry"))
+            assertFalse(msg.has("message"))
+        }
+    }
+
+    @Test
+    fun nothingIsReadUnlessThePhoneIsLockedWithItsScreenOnAndSomeoneIsViewing() {
+        val shadow = shadowOf(service as android.accessibilityservice.AccessibilityService)
+        // The grid is right there in every case below; whether it is looked at is the question.
+        shadow.setRootInActiveWindow(patternScreen())
+
+        // Locked, screen on, nobody viewing.
+        screen(on = true, locked = true, Intent.ACTION_SCREEN_ON)
+        inFront(patternScreen())
+        assertFalse(service.listeningToLockScreen)
+        assertEquals(LockScreenReader.Found.NOTHING, lockField("lockScreen").get(LockState))
+
+        // Viewed, but unlocked: the system's own windows (the notification shade, say) are not read.
+        screen(on = true, locked = false, Intent.ACTION_USER_PRESENT)
+        receive("pc", "start-view")
+        inFront(patternScreen())
+        assertFalse(service.listeningToLockScreen)
+        assertFalse(lockStates().last().has("entry"))
+        assertEquals(LockScreenReader.Found.NOTHING, lockField("lockScreen").get(LockState))
+
+        // Viewed and locked, but asleep.
+        screen(on = false, locked = true, Intent.ACTION_SCREEN_OFF)
+        inFront(patternScreen())
+        assertFalse(service.listeningToLockScreen)
+        assertFalse(lockStates().last().has("entry"))
+
+        // All three: it is read, at once, without waiting for a change.
+        screen(on = true, locked = true, Intent.ACTION_SCREEN_ON)
+        assertTrue(service.listeningToLockScreen)
+        assertEquals("pattern", lockStates().last().getJSONObject("entry").getString("kind"))
+
+        // Unlocked: reading stops, and what was read is gone.
+        screen(on = true, locked = false, Intent.ACTION_USER_PRESENT)
+        assertFalse(service.listeningToLockScreen)
+        assertFalse(lockStates().last().has("entry"))
+        assertEquals(LockScreenReader.Found.NOTHING, lockField("lockScreen").get(LockState))
+
+        // Locked again and read again; then the viewer stops.
+        screen(on = true, locked = true, Intent.ACTION_SCREEN_ON)
+        assertTrue(service.listeningToLockScreen)
+        receive("pc", "stop-view")
+        assertFalse(service.listeningToLockScreen)
+        assertEquals(LockScreenReader.Found.NOTHING, lockField("lockScreen").get(LockState))
+        val told = lockStates().size
+        inFront(patternScreen("Incorrect pattern drawn"))
+        assertEquals(told, lockStates().size)
+    }
+
+    @Test
+    fun onlyTheSystemsOwnWindowIsWalked() {
+        screen(on = true, locked = true, Intent.ACTION_SCREEN_ON)
+        receive("pc", "start-view")
+        // An app shown over the lock screen (a call, the camera) with a view of the same name.
+        inFront(patternScreen(pkg = "com.example.dialer"))
+        assertFalse(lockStates().last().has("entry"))
+        assertFalse(lockStates().last().has("message"))
+        // And a change in some other app is not a reason to look at all.
+        shadowOf(service as android.accessibilityservice.AccessibilityService).setRootInActiveWindow(patternScreen())
+        service.onAccessibilityEvent(AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED).apply { packageName = "com.example.dialer" })
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+        assertFalse(lockStates().last().has("entry"))
+        // Nothing in front at all.
+        inFront(null)
+        assertFalse(lockStates().last().has("entry"))
+    }
+
+    @Test
+    fun aLockScreenThatKeepsChangingIsReadOnceForManyChanges() {
+        screen(on = true, locked = true, Intent.ACTION_SCREEN_ON)
+        receive("pc", "start-view")
+        val shadow = shadowOf(service as android.accessibilityservice.AccessibilityService)
+        fun changed() = service.onAccessibilityEvent(AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED).apply { packageName = ui })
+        shadow.setRootInActiveWindow(patternScreen("Try again in 30 seconds"))
+        changed()
+        shadow.setRootInActiveWindow(patternScreen("Try again in 29 seconds"))
+        changed()
+        changed()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(200))
+        // One message, with where it had got to.
+        assertEquals(2, lockStates().size)
+        assertEquals("Try again in 29 seconds", lockStates().last().getString("message"))
     }
 
     private class RecordingSocket : WebSocket {

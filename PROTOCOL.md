@@ -217,7 +217,7 @@ whether it is locked, without being asked:
 
 | type          | fields | notes |
 |---------------|--------|-------|
-| `lock-state`  | `to`, `screenOn`, `locked`, `wakeFailed`? | `screenOn` (boolean) is false while the phone is asleep. `locked` (boolean) is true while its lock screen or its unlock screen is up, whether or not a pattern or PIN is set. `wakeFailed` is there only while the screen is off, after the phone tried to turn it on (for a `start-view` or for input) and it was still off a second later: `notifications` when the app's notifications are switched off on the phone, which is when a Samsung phone refuses, and `unknown` otherwise. |
+| `lock-state`  | `to`, `screenOn`, `locked`, `wakeFailed`?, `entry`?, `message`? | `screenOn` (boolean) is false while the phone is asleep. `locked` (boolean) is true while its lock screen or its unlock screen is up, whether or not a pattern or PIN is set. `wakeFailed` is there only while the screen is off, after the phone tried to turn it on (for a `start-view` or for input) and it was still off a second later: `notifications` when the app's notifications are switched off on the phone, which is when a Samsung phone refuses, and `unknown` otherwise. `entry` and `message` are there only while the phone is locked with its screen on, and are described below. |
 
 It is sent to each viewer by itself, never broadcast, and only while that
 viewer would be sent the picture: when its `start-view` is accepted, and
@@ -230,16 +230,47 @@ A viewer uses it to explain a dark picture. With `screenOn` false it says the
 phone is asleep, or that it didn't wake and why. Android leaves the unlock
 screen, where the pattern or PIN is entered, out of every picture, so it
 arrives black; input still reaches it. A viewer that is shown a picture that
-is nearly all black while `locked` is true says that. The ordinary lock
-screen is in the picture and needs no words. What a phone lists in `can`
-changes with all this (see `rotate`), so a viewer asks for `phone-state`
-again when `lock-state` changes.
+is nearly all black while `locked` is true says that, unless the phone has
+sent an `entry` to draw. The ordinary lock screen is in the picture and needs
+no words. What a phone lists in `can` changes with its screen and its lock
+(see `rotate`), so a viewer asks for `phone-state` again when `screenOn` or
+`locked` changes.
+
+`entry` says where the pattern, PIN or password is entered, once the unlock
+screen is up and the phone could make it out. A viewer draws that itself over
+the black picture, since Android won't put it in one:
+
+| `entry` | meaning |
+|---------|---------|
+| `{ "kind": "pattern", "area": [x, y, w, h] }` | The pattern grid, as one rectangle. Android does not report the dots: they sit at the centres of an even three by three split of it. |
+| `{ "kind": "pin", "keys": [{ "label": "1", "rect": [x, y, w, h] }, ...] }` | The keys of a PIN pad. The labels are the ten digits `0` to `9`, always all of them, and `delete` and `ok` where the phone has those keys. |
+| `{ "kind": "password" }` | A password field. There is nothing to draw. |
+
+Rectangles are fractions of the screen, from its top left corner, the way
+`tap` gives a point. `message` is the lock screen's own message line, such as
+"Incorrect pattern drawn" or "Try again in 30 seconds"; it is how the phone
+answers a wrong try, and a viewer shows it with what it draws.
+
+Unlocking needs no message of its own. A pattern is drawn with `touch`, as it
+is on any screen. A PIN's keys are tapped with `tap`; a viewer with a
+keyboard turns typed digits into a `tap` at the middle of that key's `rect`,
+and Backspace and Enter into taps on `delete` and `ok`, and never sends them
+as `text` while a `pin` entry is current. A password is typed with `text` and
+`key`. Nothing entered is kept on either side, and the phone remembers no
+positions: they are read afresh each time.
+
+The phone reads its lock screen for this only while all three hold: it is
+locked, its screen is on, and a device is viewing. It reads the layout of the
+system's own lock screen window and nothing else, and sends no more of it than
+`entry` and `message`. An unlock screen it can't make out gives no `entry`.
 
 Apps before this message never send it. A viewer then has only the picture to
 go by, and says of a nearly black one that the screen is off or the phone is
-on its unlock screen. Older viewers ignore `lock-state`. A viewer ignores
-fields it doesn't know, and a `wakeFailed` it doesn't know is still a wake
-that failed.
+on its unlock screen. Apps that send it without `entry` leave a viewer to say
+that the unlock screen is hidden. Older viewers ignore `lock-state`, or the
+`entry` in it. A viewer ignores fields it doesn't know, an `entry` whose
+`kind` it doesn't know or that makes no sense, and keys whose `label` it
+doesn't know; and a `wakeFailed` it doesn't know is still a wake that failed.
 
 **File system** (`path` uses the native separators of the target device)
 

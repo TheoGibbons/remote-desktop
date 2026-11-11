@@ -3,8 +3,8 @@
     android:description="@string/accessibility_description"
     android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagInputMethodEditor"
+    android:accessibilityFlags="flagInputMethodEditor|flagReportViewIds"
     android:canPerformGestures="true"
     android:canTakeScreenshot="true"
-    android:canRetrieveWindowContent="false"
+    android:canRetrieveWindowContent="true"
     android:notificationTimeout="100" />

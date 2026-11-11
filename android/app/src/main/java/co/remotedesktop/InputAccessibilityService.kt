@@ -86,6 +86,37 @@ class InputAccessibilityService : AccessibilityService() {
 
     val canCaptureScreen: Boolean get() = screenCapture != null
 
+    /** Whether changes inside the lock screen are being asked for. */
+    var listeningToLockScreen = false
+        private set
+
+    /**
+     * Asks Android for the changes inside the lock screen's windows, and for
+     * nothing from any other app, while the lock screen is being read for a
+     * viewer; and goes back to what the service is set up with when it is
+     * not. Main thread.
+     */
+    fun listenToLockScreen(on: Boolean) {
+        listeningToLockScreen = on
+        try {
+            val info = serviceInfo ?: return
+            info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                (if (on) AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED else 0)
+            info.packageNames = if (on) arrayOf(LockScreenReader.LOCK_SCREEN_PACKAGE) else null
+            serviceInfo = info
+        } catch (_: RuntimeException) {
+            // The service is going. Android forgets what it asked for with it.
+        }
+    }
+
+    /** Where the pattern or PIN is entered, if the unlock screen is in front
+     *  (see [LockScreenReader]). Only [LockState] asks, and only while the
+     *  phone is locked and being viewed. Main thread. */
+    internal fun readLockScreen(): LockScreenReader.Found {
+        val (w, h) = screenSize()
+        return LockScreenReader.read(this, w, h)
+    }
+
     fun setScreenStreaming(on: Boolean) {
         if (Build.VERSION.SDK_INT >= 30) screenCapture?.setStreaming(on)
     }
@@ -117,7 +148,14 @@ class InputAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    /**
+     * The only events asked for are windows changing, and they are used for
+     * one thing: noticing that the lock screen changed while [LockState] is
+     * reading it for a viewer. Everything else is dropped unread.
+     */
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.packageName?.toString() == LockScreenReader.LOCK_SCREEN_PACKAGE) LockState.lockScreenChanged(this)
+    }
     override fun onInterrupt() {}
 
     private fun screenSize(): Pair<Int, Int> {
