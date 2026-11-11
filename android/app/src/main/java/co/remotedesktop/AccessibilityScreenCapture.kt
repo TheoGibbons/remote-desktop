@@ -329,10 +329,17 @@ internal class AccessibilityScreenCapture(
         }
     }
 
+    /** The size of the last screenshot, which is the screen's own. Worker thread only. */
+    private var screenSize: Pair<Int, Int>? = null
+
     private fun sendUnavailable(token: Long) {
         val metrics = service.resources.displayMetrics
-        val bitmap = Bitmap.createBitmap(metrics.widthPixels.coerceAtLeast(1),
-            metrics.heightPixels.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+        // The size screenshots come at, where one has been seen. What the service is told of
+        // its display can leave out the navigation bar, and a picture of another shape would
+        // have the viewer's window change shape, and the video encoder be made anew, for
+        // as long as the screen is off.
+        val (width, height) = screenSize ?: (metrics.widthPixels to metrics.heightPixels)
+        val bitmap = Bitmap.createBitmap(width.coerceAtLeast(1), height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
         try {
             val canvas = Canvas(bitmap)
             canvas.drawColor(Color.BLACK)
@@ -374,6 +381,7 @@ internal class AccessibilityScreenCapture(
      */
     private fun send(bitmap: Bitmap, token: Long, capturedAt: Long, shot: BitmapPicture?): Boolean {
         if (!isCurrent(token)) return false
+        screenSize = bitmap.width to bitmap.height
         val (width, height) = StreamSize.of(bitmap.width, bitmap.height)
         if (videoFor(width to height)) return sendVideo(bitmap, token, capturedAt, width to height, shot)
         sendJpeg(bitmap, token, capturedAt, width, height)

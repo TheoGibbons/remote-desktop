@@ -299,6 +299,29 @@ class PhoneScreenCaptureTest {
         assertEquals(7, ShadowPhoneCaptureConnection.frames.size)
     }
 
+    /** What the service is told of its display can leave out the navigation bar. */
+    @Test fun thePictureForAScreenThatCannotBeCapturedIsTheSizeScreenshotsAre() {
+        val service = Robolectric.buildService(CaptureTestService::class.java).create().get()
+        val stream = AccessibilityScreenCapture(service).also { capture = it }
+        PhoneScreenCapture.onViewRequested(context, "pc")
+        main.idle()
+        stream.setStreaming(true)
+        main.idle()
+        frame(stream, 1440, 2560, colour = 0xFF336699.toInt())
+        assertEquals(1, ShadowPhoneCaptureConnection.info.size)
+
+        // The phone goes to sleep: Android gives no screenshot.
+        service.callback.onFailure(AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
+        assertEquals(2, ShadowPhoneCaptureConnection.frames.size)
+        ShadowPhoneCaptureConnection.frames.last().let { words ->
+            val picture = BitmapFactory.decodeByteArray(words, 0, words.size)
+            assertEquals(1080 to 1920, picture.width to picture.height)
+            picture.recycle()
+        }
+        // The same shape as before, so the viewer is not told a new one.
+        assertEquals(1, ShadowPhoneCaptureConnection.info.size)
+    }
+
     private fun token(stream: AccessibilityScreenCapture) = AccessibilityScreenCapture::class.java
         .getDeclaredField("generation").apply { isAccessible = true }.getLong(stream)
 
