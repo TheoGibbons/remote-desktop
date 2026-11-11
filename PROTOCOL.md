@@ -252,12 +252,16 @@ Rectangles are fractions of the screen, from its top left corner, the way
 answers a wrong try, and a viewer shows it with what it draws.
 
 Unlocking needs no message of its own. A pattern is drawn with `touch`, as it
-is on any screen. A PIN's keys are tapped with `tap`; a viewer with a
-keyboard turns typed digits into a `tap` at the middle of that key's `rect`,
-and Backspace and Enter into taps on `delete` and `ok`, and never sends them
-as `text` while a `pin` entry is current. A password is typed with `text` and
-`key`. Nothing entered is kept on either side, and the phone remembers no
-positions: they are read afresh each time.
+is on any screen. A PIN's keys are tapped with `tap`. A viewer with a
+keyboard turns each typed digit into a `tap` at the middle of that key's
+`rect`, and Backspace and Enter into taps on `delete` and `ok` where the pad
+has them. Those taps carry `onlyIfLocked: true`: the viewer's idea of where
+the keys are is as old as the last `lock-state`, and the phone drops such a
+tap if it has unlocked meanwhile. While a `pin` entry is current a viewer
+sends nothing that is typed as `text`: digits become taps and anything else
+typed with them is dropped. A password is typed with `text` and `key`.
+Nothing entered is kept on either side, and the phone remembers no positions:
+they are read afresh each time.
 
 The phone reads its lock screen for this only while all three hold: it is
 locked, its screen is on, and a device is viewing. It reads the layout of the
@@ -265,6 +269,13 @@ system's own lock screen window and nothing else: where each view is and what
 it is called, the words of the message line, and what something that can be
 pressed says if that is a digit or names a key. It sends no more of it than
 `entry` and `message`. An unlock screen it can't make out gives no `entry`.
+
+An `entry` is sent once the phone has read the grid or the pad in the same
+place twice, a quarter of a second apart: the unlock screen slides in, and
+its keys are not at once where they will be. It is withdrawn when the phone
+has read its lock screen from end to end and found none, when an app is in
+front of the lock screen, and when the phone unlocks or sleeps; not when a
+read merely failed. `message` follows the lock screen within about a second.
 
 Apps before this message never send it. A viewer then has only the picture to
 go by, and says of a nearly black one that the screen is off or the phone is
