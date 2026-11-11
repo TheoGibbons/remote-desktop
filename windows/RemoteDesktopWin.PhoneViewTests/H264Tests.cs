@@ -38,12 +38,7 @@ internal static unsafe class H264Tests
             Console.WriteLine($"SKIP: no H.264 decoder here ({why}), so the decoder's checks did not run");
             return;
         }
-        var kinds = new List<bool>();
-        foreach (bool hardware in new[] { true, false })
-        {
-            using var probe = H264Encoder.TryCreate(320, 240, 1_000_000, 30, hardware);
-            if (probe != null) kinds.Add(hardware);
-        }
+        var kinds = Encoders();
         if (kinds.Count == 0)
         {
             Console.WriteLine("SKIP: no H.264 encoder here to make a stream with, so the decoder's checks did not run");
@@ -70,8 +65,21 @@ internal static unsafe class H264Tests
             CheckTheHandler(small);
             CheckDisposeWhileDecoding(small);
             CheckThreads(small);
+            CheckOneDecoderAfterAnother(small, turned);
         }
         _say = true;
+    }
+
+    /// <summary>Which encoders this PC has: true for the graphics card's, false for Windows' software one.</summary>
+    internal static List<bool> Encoders()
+    {
+        var kinds = new List<bool>();
+        foreach (bool hardware in new[] { true, false })
+        {
+            using var probe = H264Encoder.TryCreate(320, 240, 1_000_000, 30, hardware);
+            if (probe != null) kinds.Add(hardware);
+        }
+        return kinds;
     }
 
     // A check that runs once for each encoder says PASS once, at the last.
@@ -295,12 +303,14 @@ internal static unsafe class H264Tests
     }
 
     /// <summary>A stream made on the spot: its access units, in order, the first a keyframe.</summary>
-    private sealed class Clip
+    internal sealed class Clip
     {
         public int Width, Height;
         public bool Hardware;
         public string Encoder = "";
         public List<byte[]> Units = new();
+        /// <summary>The standard a decoder reads this stream's colours by: the one it names, or the guess for its size.</summary>
+        public Nv12Matrix ReadAs;
 
         public static string EncoderName(bool hardware) => hardware ? "the graphics card's encoder" : "Windows' software encoder";
 
@@ -320,6 +330,14 @@ internal static unsafe class H264Tests
             if (clip.Units.Count < frames) return null;
             Check((H264Decoder.Scan(clip.Units[0]) & H264Decoder.Units.Keyframe) == H264Decoder.Units.Keyframe,
                 $"setup: the first access unit from {clip.Encoder} is a keyframe with its parameter sets");
+            if (H264Decoder.TryCreate() is { } decoder)
+            {
+                using (decoder)
+                {
+                    decoder.Decode(clip.Units[0], 0, (in Nv12Picture _) => { });
+                    clip.ReadAs = decoder.Format.Matrix;
+                }
+            }
             return clip;
         }
 
@@ -360,17 +378,23 @@ internal static unsafe class H264Tests
         Check(p.CodedWidth >= w && p.CodedWidth < w + 16 && p.CodedWidth % 16 == 0 && p.CodedHeight >= h && p.CodedHeight < h + 16 && p.CodedHeight % 16 == 0,
             $"{what}: the padded picture is the next whole 16-pixel blocks, got {p.CodedWidth} x {p.CodedHeight}");
         Check(p.Stride >= p.CodedWidth, $"{what}: a row is at least as long as the padded width");
+        CheckPatches(shot.Bgra, w, h, p.Matrix, what);
+    }
+
+    /// <summary>Every patch of the pattern is where it was drawn, in the colour it was drawn, in a picture of w x h as BGRA.</summary>
+    internal static void CheckPatches(byte[] bgra, int w, int h, Nv12Matrix readAs, string what)
+    {
         int size = PatchSize(w, h);
         for (int i = 0; i < Patches.Length; i++)
         {
             var (x, y) = PatchAt(i, w, h);
             int at = ((y + size / 2) * w + x + size / 2) * 4;
-            int r = shot.Bgra[at + 2], g = shot.Bgra[at + 1], b = shot.Bgra[at];
-            var want = Expected(Patches[i].r, Patches[i].g, Patches[i].b, p.Matrix);
+            int r = bgra[at + 2], g = bgra[at + 1], b = bgra[at];
+            var want = Expected(Patches[i].r, Patches[i].g, Patches[i].b, readAs);
             int off = Math.Max(Math.Abs(r - want.r), Math.Max(Math.Abs(g - want.g), Math.Abs(b - want.b)));
             _worstColour = Math.Max(_worstColour, off);
             Check(off <= ColourTolerance,
-                $"{what}: the patch at the {Patches[i].name} ({Patches[i].r}, {Patches[i].g}, {Patches[i].b}) came back as ({r}, {g}, {b}), read as {p.Matrix}");
+                $"{what}: the patch at the {Patches[i].name} ({Patches[i].r}, {Patches[i].g}, {Patches[i].b}) came back as ({r}, {g}, {b}), read as {readAs}");
         }
     }
 
@@ -799,10 +823,52 @@ internal static unsafe class H264Tests
         Pass("the decoder does not care which thread makes it, uses it or lets it go");
     }
 
+    private static void CheckOneDecoderAfterAnother(Clip clip, Clip turned)
+    {
+        // A window closed and another opened at once. The second decoder's
+        // first picture has been seen to come a few milliseconds after its
+        // keyframe went in, where the first's came at once; and so has the
+        // first picture after a change of size. Neither may be taken for a
+        // keyframe that gave no picture. It shows when the processor is
+        // busy, so for this one check every core is kept busy.
+        bool stop = false;
+        var busy = Enumerable.Range(0, Environment.ProcessorCount).Select(_ => new Thread(() =>
+        {
+            while (!Volatile.Read(ref stop)) Thread.SpinWait(1000);
+        }) { IsBackground = true }).ToList();
+        foreach (var thread in busy) thread.Start();
+        try
+        {
+            for (int round = 0; round < 12; round++)
+            {
+                using var decoder = NewDecoder();
+                var (result, shots) = Decode(decoder, clip.Units[0], round);
+                Check(result == H264Decoded.Picture && shots.Count == 1,
+                    $"A decoder made straight after another was let go gives its first keyframe's picture (round {round}: {result} {decoder.LastFailure})");
+                (result, shots) = Decode(decoder, turned.Units[0], round);
+                Check(result == H264Decoded.Picture && shots.Count == 1 && shots[0].Info.Width == turned.Width,
+                    $"And the first picture at another size (round {round}: {result} {decoder.LastFailure})");
+                // The frames that follow come at once even so.
+                for (int i = 1; i < turned.Units.Count; i++)
+                {
+                    (result, shots) = Decode(decoder, turned.Units[i], i);
+                    Check(result == H264Decoded.Picture && shots.Count == 1 && shots[0].Info.Tag == i,
+                        $"An ordinary frame's picture comes with its frame, busy or not (round {round}, frame {i}: {result}, {shots.Count})");
+                }
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref stop, true);
+            foreach (var thread in busy) thread.Join();
+        }
+        Pass("a decoder's first picture, and the first after a change of size, is waited for when it comes a moment late");
+    }
+
     // ---------------- helpers ----------------
 
     /// <summary>An access unit with every NAL unit of the given types taken out.</summary>
-    private static byte[] WithoutUnits(byte[] unit, params int[] types)
+    internal static byte[] WithoutUnits(byte[] unit, params int[] types)
     {
         // Where each unit begins (its start code's first zero) and where its header byte is.
         var units = new List<(int start, int header)>();

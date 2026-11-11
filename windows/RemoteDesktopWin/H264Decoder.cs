@@ -69,6 +69,16 @@ internal delegate void H264PictureHandler(in Nv12Picture picture);
 /// sequence numbers: call <see cref="Reset"/> and ask the phone for a
 /// keyframe.
 ///
+/// <b>A picture can be a moment late.</b> As a rule the picture is there as
+/// soon as its access unit has gone in. Not always at a change of size, the
+/// first frame included: the decoder announces the size, the output type is
+/// chosen again, and for a millisecond or ten it then has nothing to give,
+/// most often when another decoder has just been let go. So after a size
+/// announcement, and after any keyframe, this class asks again for up to
+/// <see cref="LatePictureMs"/> before it believes there is no picture.
+/// Without that, a window opened straight after another was closed would
+/// count its first keyframe as a failure of the decoder.
+///
 /// Nothing is allocated on the managed heap per picture.
 /// </summary>
 internal sealed unsafe class H264Decoder : IDisposable
@@ -105,6 +115,14 @@ internal sealed unsafe class H264Decoder : IDisposable
     /// </summary>
     internal const int MaxCodedSize = 4096;
 
+    /// <summary>
+    /// How long a picture is waited for where one must come: after a size
+    /// announcement, and after a keyframe. Up to 10 ms has been seen. A
+    /// keyframe the decoder really cannot decode costs this long once, before
+    /// it is called a failure.
+    /// </summary>
+    internal const int LatePictureMs = 150;
+
     /// <summary>What an access unit holds, as far as the decoder's rules care.</summary>
     [Flags]
     internal enum Units { None = 0, Sps = 1, Pps = 2, Idr = 4, Slice = 8, Keyframe = Sps | Pps | Idr }
@@ -119,6 +137,7 @@ internal sealed unsafe class H264Decoder : IDisposable
     private IMFMediaBuffer? _buffer;
     private OutputFormat _format;
     private bool _needsKeyframe = true;
+    private bool _announced;            // the decoder announced a size during the call in progress
 
     // Who is inside, and whether to tear down. Only these four are shared
     // between threads, and only under the gate.
@@ -250,7 +269,7 @@ internal sealed unsafe class H264Decoder : IDisposable
             int pictures;
             try
             {
-                pictures = Feed(accessUnit, tag, onPicture);
+                pictures = Feed(accessUnit, tag, keyframe, onPicture);
             }
             catch (DecoderError e)
             {
@@ -356,8 +375,9 @@ internal sealed unsafe class H264Decoder : IDisposable
     }
 
     /// <summary>Hands the access unit to the decoder and passes on every picture that comes out. Returns how many.</summary>
-    private int Feed(ReadOnlySpan<byte> accessUnit, long tag, H264PictureHandler onPicture)
+    private int Feed(ReadOnlySpan<byte> accessUnit, long tag, bool keyframe, H264PictureHandler onPicture)
     {
+        _announced = false;
         // A new buffer for every access unit. The decoder keeps the sample
         // after ProcessInput returns and reads it during ProcessOutput, so
         // one buffer written over for the next frame would corrupt this one.
@@ -390,7 +410,24 @@ internal sealed unsafe class H264Decoder : IDisposable
         {
             throw new DecoderError("ProcessInput", e.ResultCode.Code);
         }
-        return pictures + Drain(onPicture);
+        pictures += Drain(onPicture);
+
+        // A picture that must come and has not yet: see the note at the top.
+        if (pictures == 0 && (keyframe || _announced))
+        {
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
+            while (pictures == 0)
+            {
+                double waited = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                if (waited >= LatePictureMs) break;
+                // It is usually there within a millisecond: look closely at
+                // first, then leave the processor to the decoder's threads.
+                if (waited < 2) Thread.SpinWait(200);
+                else Thread.Sleep(1);
+                pictures = Drain(onPicture);
+            }
+        }
+        return pictures;
     }
 
     /// <summary>Asks for output until the decoder wants more input.</summary>
@@ -428,6 +465,7 @@ internal sealed unsafe class H264Decoder : IDisposable
                 // again. Nothing is lost; the picture comes on the next ask.
                 if (++changes > 4) throw new DecoderError("ProcessOutput (the size kept changing)", StreamChange);
                 SizeAnnouncements++;
+                _announced = true;
                 try { ChooseOutputType(); }
                 catch (SharpGenException e) { throw new DecoderError("choosing the output type", e.ResultCode.Code); }
                 continue;
