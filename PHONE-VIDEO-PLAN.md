@@ -1,6 +1,6 @@
 # Faster phone viewing from the PC
 
-Written 2026-11-10 against v1.0.53 (`30009c4`), then checked against the code by an independent review and revised the same day (the review log is the last section). Built so far: step 0.1, and step 0.2 on 2026-11-11, whose text below now describes what was built. Everything else is still a plan.
+Written 2026-11-10 against v1.0.53 (`30009c4`), then checked against the code by an independent review and revised the same day (the review log is the last section). Built so far: all of Phase 0 (step 0.1 first, the rest on 2026-11-11), whose text below now describes what was built. What Phase 0 still lacks is on a phone and by hand: see the end of that phase and section 11. Everything after Phase 0 is still a plan.
 
 Theo answered the open questions on 2026-11-10; section 12 records the answers, and they changed the order of work (section 3) and added Phase U, which has since become a plan of its own.
 
@@ -261,34 +261,41 @@ PC:
 
 Phone, as a viewer of another phone (`PhoneViewerActivity`): offer `codecs: ["jpeg"]` to a phone this one has approved, draw type `5` JPEG with the announced id, draw type `1` only while none is announced, and acknowledge. `ConnectionManager` has listeners that run on the network thread (`networkJsonListeners`), and the activity reads the announced id there, in order with the frames. Without this, a phone watching alongside a PC would put both back on type `1`.
 
-**0.3 The readout.**
+**0.3 The readout.** Built: `PhoneStats.cs`, with `PhoneFeed` pinging and timing the answers.
 A *Stats* row in the `⋯` menu toggles a small overlay, and so does F8. No F-key is forwarded to the phone, so F8 is free. It shows: capture mode, format, size, pictures a second, kbit/s, delay (latest, average and worst over the last second), round trip, the phone's queue, and gaps. Shift+F8 copies the last 60 seconds as text, so numbers can be pasted into a message or into section 11.
 
 How the delay is worked out:
 - The PC uses a steady clock (`Stopwatch`), and notes times on the socket thread, not in a UI handler.
-- Every 2 s while the overlay is open it sends `diagnostic-ping` and notes when. The pong's `hostTimeMs` minus that send time is the difference between the two clocks plus the ping's travel time.
+- Every 2 s while the overlay is open it sends `diagnostic-ping` and notes when. The feed's own thread sends it, and the socket thread times the pong, so a busy window delays neither. The pong's `hostTimeMs` minus that send time is the difference between the two clocks plus the ping's travel time.
 - The clock difference is taken as the smallest such value in the last minute, minus half the smallest round trip in the last minute. Only the ping's own trip enters this, and pings travel towards the phone, the direction video does not load. Halving a round trip measured through the phone's busy send queue would understate the delay by half that queue.
 - Delay = (PC clock when the picture is drawn + clock difference) − `captureMs`, in 32-bit wrapping arithmetic.
 - It is shown with "±" half the smallest round trip.
+- A repeat (flag bit 4) is left out. A phone that sends type `1` has no capture time, and the readout says so.
+- "Drawn" is when the window's thread assigns the picture, which is a frame or so before it is on the glass.
 
 **0.4 Record the baseline** in section 11, before changing anything else: both phones, both modes. Also record:
 - `tcp_wmem` on the S26 (the S20's is in 2.3);
 - one run with the phone's upload limited to about 2 Mbit/s (a router setting or a phone hotspot), comparing the readout's delay with the phone's reported queue. A long delay beside a small queue confirms the system buffer is where pictures wait.
 
-**0.5 Small fixes.** Measure each one before and after.
+**0.5 Small fixes.** Built. None was measured before and after: there was no phone at hand while they were built, and the baseline (0.4) was taken with all of them in. Measuring one alone means building the app without it.
 - **Turn Nagle off on the phone.** Give the `OkHttpClient` a `SocketFactory` that sets `tcpNoDelay` on each socket it creates. OkHttp creates the raw socket through the factory and layers TLS over it.
 - **Decode JPEGs off the PC's UI thread.** Built with step 0.2: the feed's own thread decodes (newest only, as `FrameMailbox(1)` did), freezes the bitmap and runs the unlock plan's black-picture test, and the UI thread only assigns the picture. Still to do here: measure it. A flat test picture of 1080 × 2340 took 5 ms; a real screen will take longer.
-- **Don't send a screenshot that hasn't changed.** Accessibility viewing sends every screenshot, about 100 KB two and a half times a second, even on a still screen. On a slow upload a changed picture then waits behind unchanged ones. Compare each screenshot with the last one sent (`Bitmap.sameAs`) and skip it if equal, except when a viewer has just joined or the size changed.
-- **For viewers on older apps**, which can't acknowledge, lower the skip threshold from 300 KB to about 64 KB. It costs nothing, but helps little on a slow upload, because the system buffer in front of it is far larger.
+- **Don't send a screenshot that hasn't changed.** Accessibility viewing sends every screenshot, about 100 KB two and a half times a second, even on a still screen. On a slow upload a changed picture then waits behind unchanged ones. Compare each screenshot with the last one sent (`Bitmap.sameAs`) and skip it if equal, except when a viewer has just joined or the size changed. As built, one also goes when pictures start again after a pause, and viewers that cannot acknowledge are still sent an unchanged screen every 3 s: nothing else would replace a picture the relay dropped for them, which the next screenshot used to do 400 ms later. The bitmap that was sent is kept to compare with, not copied.
+- **For viewers on older apps**, which can't acknowledge, lower the skip threshold from 300 KB to about 64 KB. It costs nothing, but helps little on a slow upload, because the system buffer in front of it is far larger. As built the 64 KB limit is the queue rule for everyone: with acknowledgements, "the app's own queue is nearly empty" (0.7) is the same test.
+- **Seen while building this, and fixed with it:** both viewers looked at a picture for blackness at most twice a second, and one that came sooner stood as whatever the one before was. That mended itself 400 ms later while every screenshot was sent. With a still screen sending nothing, the unlock screen's last, black picture could go unjudged for good. A picture that was passed over is now looked at when its turn comes.
 
 **0.6 Repair the capture service.**
 - **Follow the phone when it turns.** Already built by the time this step is reached: it is in PHONE-MENU-PLAN.md, Phase 3 (display listener, `onCapturedContentResize` on API 34+, `VirtualDisplay.resize`, a new `ImageReader`, a new `screen-info`). Here, only confirm with the readout that a turned phone fills the window in smooth sharing, and make sure the size change goes out through the new shared `send` of step 0.2.
-- **Stop mirroring when nobody is viewing.** Today the virtual display keeps drawing into the `ImageReader` whether or not anyone views, and each picture is thrown away. Call `setSurface(null)` once streaming has been off for about 5 s, not at once, because of the short pauses described above. Attach it again when streaming starts. Attaching also makes Android draw one picture straight away, so a new viewer sees the screen without waiting for it to change.
+- **Stop mirroring when nobody is viewing.** Built, in `ScreenCaptureService` with the on/off state in `CaptureTarget`; not tried on a phone. Before, the virtual display kept drawing into the `ImageReader` whether or not anyone viewed, and each picture was thrown away. Call `setSurface(null)` once streaming has been off for about 5 s, not at once, because of the short pauses described above. Attach it again when streaming starts. Attaching also makes Android draw one picture straight away, so a new viewer sees the screen without waiting for it to change.
 
 **0.7 Hold back by what has arrived** (D3).
 Viewers acknowledge from step 0.2 on (built): for each type `5` frame of the current stream, `frame-ack` with the highest `seq` received, at most one per 30 ms, from the thread that received the frame; one held back by the 30 ms goes a moment later, when they are up. That part had to ship with 0.2, so that every viewer that offers `codecs` also acknowledges. The phone already checks and remembers each one (`PhoneScreenCapture.onFrameAck`). This step is the phone acting on it. If the baseline shows no queueing on the home network, it can wait and become the first step of Phase 2, which cannot do without it.
 
-Phone: a new plain class, `InFlight`.
+Phone: a new plain class, `InFlight`. Built as listed, with these made definite:
+- "Usual" is kept for each viewer, not one for all: a far viewer is not late by a near one's measure.
+- A viewer is quiet when a frame sent to it has gone unacknowledged for 2 s. On a still screen nothing is owed, so nobody goes quiet.
+- The picture sent again is the last JPEG, kept by `PhoneScreenCapture`, with its own sequence number, the first one's capture time and the repeat flag. After four tries (1, 2, 4 and 8 s apart) it is left.
+- A screenshot is passed over for lack of room before it is compressed.
 - It notes when each frame was handed to the socket.
 - When an acknowledgement arrives, it notes how long that frame took. The shortest such time in the last 60 s is "usual".
 - There is **room** when the app's own queue is nearly empty and no frame has been waiting for its acknowledgement longer than usual plus 100 ms. Before the first acknowledgement, two frames may be in flight.
@@ -298,7 +305,7 @@ Phone: a new plain class, `InFlight`.
 
 The 100 ms is a starting value; tune it with the readout. Known and unchanged: while a file is being downloaded from the phone, its chunks fill the same queue and the picture freezes.
 
-**0.8 Docs.** `PROTOCOL.md`: the frame table, `screen-info`, `frame-ack`, the phone's pong, the paragraph on the Android sender's queue (it says 300 KB) and the list of encryption channels. `android/README.md`: the debug build, and that Accessibility viewing no longer sends unchanged pictures. `windows/README.md`: F8.
+**0.8 Docs.** Written. `PROTOCOL.md`: the frame table, `screen-info`, `frame-ack`, the phone's pong, the paragraph on the Android sender's queue (it says 300 KB) and the list of encryption channels. `android/README.md`: the debug build, and that Accessibility viewing no longer sends unchanged pictures. `windows/README.md`: F8.
 
 **Tests.** Those that belong to step 0.2 are built: on the phone everything listed except `InFlight` and the unchanged screenshot (`PhoneFrameTest`, `PhoneStreamTest`, `PhoneScreenCaptureTest`, `PhoneViewerActivityTest`); on the PC everything except the delay arithmetic, which comes with the readout, plus the feed's own cases (newest only, the last frame of a burst acknowledged, a phone the PC has not approved, a pause); and the relay's.
 - Phone:
@@ -325,6 +332,13 @@ The 100 ms is a starting value; tune it with the readout. Known and unchanged: w
 - Relay: one case in `server/test.mjs` pinning that an addressed type `5` frame reaches only its recipients and falls under the video buffer limit. Built: a viewer that stops reading is sent 24 MiB of each kind, and about 0.7 MB of type `5` reaches it against 9 MB of type `2`.
 
 **Done when** the readout shows a believable delay for both modes on both phones, section 11 holds numbers from before and after, and old and new apps work together in both directions (section 9). If 0.7 is done in this phase, the limited-upload run also stays within about 0.3 s of the unlimited one.
+
+**Where that stands** (2026-11-11). Everything is built and tested without a phone. Section 11 holds what has been measured so far. Left for Theo's hand, because they need the real phones, the real internet or a throttled link:
+- figures through the production relay, from the S20 and the S26, in both modes (section 11 has rig figures only: the relay was on this PC);
+- the limited-upload run of 0.4, comparing the readout's delay with the phone's queue;
+- "before" figures: v1.0.53 has no readout, and a v1.0.53 phone shows rate and size only, so before and after can be compared for pictures a second and KB per picture, not for delay;
+- a v1.0.53 PC viewing an updated phone, and an updated PC viewing a v1.0.53 phone (unit tests, and v1.0.53's code read, say both work);
+- a phone viewing a phone, which needs two.
 
 ### Phase U. Unlocking the phone from the PC
 
@@ -687,9 +701,9 @@ PC decoder (Media Foundation):
 | Area | Files |
 |---|---|
 | Phone, changed | `Crypto.kt`, `ConnectionManager.kt`, `PhoneScreenCapture.kt`, `ScreenCaptureService.kt`, `AccessibilityScreenCapture.kt`, `InputAccessibilityService.kt`, `PhoneViewerActivity.kt`, `PermissionsActivity.kt`, `AndroidManifest.xml`, `strings.xml`, `app/build.gradle.kts` |
-| Phone, new | `PhoneFrame.kt`, `PhoneVideoStream.kt` (the viewer's side, for a phone viewing a phone), `InFlight.kt`, `PhoneVideoEncoder.kt` and its GL class, `BitrateSteps.kt`, `ScreenShareRequestActivity.kt` |
+| Phone, new | `PhoneFrame.kt`, `PhoneVideoStream.kt` (the viewer's side, for a phone viewing a phone), `NoDelaySocketFactory.kt`, `InFlight.kt`, `PhoneVideoEncoder.kt` and its GL class, `BitrateSteps.kt`, `ScreenShareRequestActivity.kt` |
 | PC, changed | `Crypto.cs`, `MainWindow.xaml.cs`, `PhoneViewWindow.xaml`, `PhoneViewWindow.xaml.cs`, `H264Encoder.cs` (shared Media Foundation start-up) |
-| PC, new | `PhoneFrame.cs`, `PhoneVideoStream.cs`, `PhoneFeed.cs`, `H264Decoder.cs`, `Nv12Converter.cs`, cases added to the menu plan's test project `RemoteDesktopWin.PhoneViewTests` |
+| PC, new | `PhoneFrame.cs`, `PhoneVideoStream.cs`, `PhoneFeed.cs`, `PhoneStats.cs`, `H264Decoder.cs`, `Nv12Converter.cs`, cases added to the menu plan's test project `RemoteDesktopWin.PhoneViewTests` |
 | Relay | `server/test.mjs`, and the channel `5` vector in `server/test-e2ee.mjs` |
 | Build and docs | `.github/workflows/release.yml`, `PROTOCOL.md`, `README.md`, `android/README.md`, `windows/README.md` |
 

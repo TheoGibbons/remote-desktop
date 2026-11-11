@@ -154,10 +154,10 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 | `screen-info` | `width`, `height`, `desktopWidth`?, `desktopHeight`?, `typing`?, `stream`?, `codec`?, `capture`?, `paused`? | `width`/`height` are the pixel size of the streamed image. `desktopWidth`/`desktopHeight` are the size of the whole desktop, which is the coordinate space `view-region` and screen-patch region rects are expressed in; absent from older hosts, where the streamed image *is* the whole desktop. A phone sets `typing: true` when it can type `text` and `key` into its text fields; older apps omit it. Sent when streaming starts and whenever the geometry changes. A phone sends it to each viewer by itself (older phone apps broadcast it), and tells a viewer that sent `codecs` how its pictures are coming in `stream`, `codec`, `capture` and `paused`: see [Phone frames](#phone-frames). |
 | `view-region` | `to`, `x`, `y`, `w`, `h`, `outW`, `outH`, `h264`? | Viewer tells the host which part of the desktop it can actually show (normalized 0..1) and how many pixels it is worth sending that region at. `h264: true` additionally advertises that the viewer can decode binary frame type `4`. See [Viewport streaming](#viewport-streaming). |
 | `request-keyframe` | `to` | Viewer asks the streaming host for a full frame (sent when a sequence gap is detected in dirty-rect patches, throttled to one per ~2 s). |
-| `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. A phone answers only a device that is viewing it; phone apps up to v1.0.53 never answer. |
+| `diagnostic-ping` | `to`, `nonce` | Authenticated viewer RTT probe. A trusted host echoes the nonce in `diagnostic-pong`. A phone answers only a device that is viewing it; phone apps up to v1.0.53 never answer. The PC's phone window sends one every two seconds while its Stats readout is open, and works out from the answers how old each picture is when it is drawn: the phone's `hostTimeMs` less the time the ping was sent is the difference between the two clocks plus the ping's trip, and the smallest such figure of the last minute, less half the shortest round trip, is taken as the difference. |
 | `diagnostic-pong` | `to`, `nonce`, `hostQueueBytes`, `targetFps`, `jpegQuality`, `maxWidth` | From a PC: RTT response plus the desktop sender's queued binary backlog. The three stream fields report what the host has **adapted to**, not what the user configured, so they move during a session. |
 | `diagnostic-pong` | `to`, `nonce`, `hostTimeMs`, `hostQueueBytes`, `codec`, `capture`, `fps` | From a phone. `hostTimeMs` is the phone's uptime clock in milliseconds, read as the ping is handled; `captureMs` in a type `5` frame is the low 32 bits of the same clock, so a viewer can work out how old a picture is. `hostQueueBytes` is what waits in the phone's own send queue, which is not all that waits (the system buffers more below it). `codec` (`jpeg`) and `capture` (`accessibility` or `screen-share`) are as in `screen-info`. `fps` is how many pictures the phone sent in the last second. |
-| `frame-ack` | `to`, `stream`, `seq` | Viewer to phone: the highest `seq` that has arrived of the type `5` stream `stream`. Sent as frames arrive, at most one per 30 ms; a frame that arrives sooner than that after the last one is acknowledged when the 30 ms are up, so the last frame of a burst is never left out. Every viewer that sends `codecs` sends these. A phone takes them only from a device that is viewing it, and only for the stream it is sending. |
+| `frame-ack` | `to`, `stream`, `seq` | Viewer to phone: the highest `seq` that has arrived of the type `5` stream `stream`. Sent as frames arrive, before they are decoded, at most one per 30 ms; a frame that arrives sooner than that after the last one is acknowledged when the 30 ms are up, so the last frame of a burst is never left out. Every viewer that sends `codecs` sends these, for every frame of the stream including one it does not draw. A phone takes them only from a device that is viewing it, and only for the stream it is sending. It holds the next picture back by them: see [Phone frames](#phone-frames). |
 
 **Input — controlling Windows** (coordinates normalized 0..1 over the stitched
 virtual desktop). The controller may be a phone or another PC — the host injects
@@ -460,7 +460,7 @@ is the same picture behind a header:
 | `flags` bit 0 | Keyframe: a picture that needs no earlier one. Always set for a JPEG. |
 | `flags` bits 1–2 | Format: `0` JPEG. `1` is kept for H.264; `2` and `3` are not used. A viewer does not draw a format it did not offer. |
 | `flags` bit 3 | Kept for a picture sent turned on its side. Not used. |
-| `flags` bit 4 | Repeat: the same screen as an earlier frame, sent again. Not used yet. |
+| `flags` bit 4 | Repeat: the picture of the frame before, sent again because no viewer said that one had arrived (see below). It has its own `seq` and the first one's `captureMs`. A viewer draws it like any frame and leaves it out of its delay figures. |
 | `flags` bits 5–7 | Not used; a viewer ignores them. |
 | `width`, `height` | The picture's size in pixels. The shorter side is at most 1080, so a phone on its side sends up to 2340 × 1080 or so. |
 | `captureMs` | The low 32 bits of the phone's uptime clock, in milliseconds, when the screen was captured, or when the picture reached the app if Android's own stamp on it is not on that clock. See `hostTimeMs` in `diagnostic-pong`. |
@@ -511,6 +511,30 @@ another's window.
 
 A phone never sends a picture with nobody to address it to; the relay would
 take that for a broadcast.
+
+**Holding back.** While a stream is running, every viewer acknowledges
+(`frame-ack`), and the phone sends the next picture only while none of them is
+behind. For each viewer it knows the usual time from sending a frame to
+hearing it acknowledged: the shortest in the last minute. There is room for
+another picture while no frame has waited for a viewer's acknowledgement more
+than 100 ms longer than is usual for that viewer; until a viewer has
+acknowledged anything, two frames may be on their way to it. The slowest
+viewer sets the pace. One that leaves a frame unacknowledged for two seconds
+stops counting until it acknowledges something again. A picture that has to
+wait is replaced by any newer one, so what goes when there is room is the
+screen as it is then.
+
+If the newest frame is still unacknowledged by some viewer one second after it
+went, and nothing has been sent since, the phone sends the same picture again
+with the repeat flag, then after 2, 4 and 8 seconds more, and then leaves it:
+the relay drops frames for a viewer that is backed up, and on a screen that
+has stopped changing nothing else would replace a lost one.
+
+**A still screen.** A phone sends a picture when its screen has changed, not
+on a clock. A viewer is also sent one, whatever it shows, when it sends
+`start-view`, when the picture's size changes and when pictures start again
+after a pause. While viewers are being sent type `1`, which cannot be
+acknowledged, an unchanged screen is still sent every three seconds.
 
 ## Viewport streaming
 
@@ -638,10 +662,15 @@ The frame-type byte is cleartext precisely so the relay can tell these apart
 without decrypting anything.
 
 **Android sender.** A phone has one queue (OkHttp's). It skips a picture (type
-`1` or `5`) while more than about 300 KB is queued, and holds back file chunks only above
-6 MB. A screen picture skipped that way, or for the 10 fps cap, is kept and
-replaced by any newer one, and the newest goes out once there is room, so the
-last change on screen always arrives.
+`1` or `5`) while more than 64 KB is queued, which is less than one picture: the
+one before must have left the app. It holds back file chunks only above 6 MB.
+That queue is not all that waits. The system buffers a megabyte or more below
+it, where the app cannot see, so for type `5` the phone also goes by what its
+viewers have acknowledged (see [Phone frames](#phone-frames)). A screen picture
+skipped for either reason, or for the 10 fps cap, is kept and replaced by any
+newer one, and the newest goes out once there is room, so the last change on
+screen always arrives. The phone's socket has Nagle's algorithm off, like the
+relay's and the PC's, so a small message is not held for the packet before it.
 
 ## End-to-end encryption
 

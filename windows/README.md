@@ -71,8 +71,11 @@ Run `dotnet run --project windows/RemoteDesktopWin.PhoneViewTests` for the phone
 viewer: when its title-bar menu opens and closes, how the window is sized round
 the phone's picture and follows a phone that turns, how its volume slider paces
 what it sends and which of the phone's answers it shows, which rows the menu
-offers for what a phone says about itself, and when it says a phone didn't
-rotate. They need no window, phone or relay.
+offers for what a phone says about itself, when it says a phone didn't
+rotate, what is said and drawn over a locked phone's picture, which of the
+frames that arrive are the phone's own and how they are acknowledged, and how
+the Stats readout works out how old a picture is. They need no window, phone
+or relay.
 
 ## Clipboard
 
@@ -210,7 +213,13 @@ unapproved device is present in the session, streaming and file serving pause.
     window is focused, your keyboard types
     into the phone's focused text box (Android 13 and later), with Enter,
     Backspace, arrows and Ctrl shortcuts; Esc is Back, and Ctrl+V pastes this
-    PC's clipboard.
+    PC's clipboard. **F8**, or **Stats** in the menu, shows in a corner of the
+    picture how the phone is capturing its screen, how many pictures a second
+    arrive and how big they are, how old a picture is when it is drawn (give
+    or take the figure after the ±), the round trip to the phone, and how many
+    pictures were lost on the way. **Shift+F8** copies the last minute of
+    those figures as text. A phone whose app is older shows no delay: it does
+    not say when its pictures were taken.
 - **Browse files** → a file explorer to download from / upload to the selected
   device (a PC or a phone), titled with its name. Each device gets its own
   window, so files can go to two phones at once, and each window's status line

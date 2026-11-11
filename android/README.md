@@ -80,8 +80,9 @@ Permissions**:
 | **File access** | PC can browse this phone's files | All-files access (Android 11+) |
 | **Notifications** | Waking this phone's screen for a viewer, and pairing requests while the app is in the background | Notification permission (asked at first launch on Android 13+) |
 
-Accessibility viewing sends a screenshot about every 400 ms (up to 2.5 FPS), only
-while an approved device is viewing. It needs no root, USB debugging, or new
+Accessibility viewing takes a screenshot about every 400 ms (up to 2.5 FPS), only
+while an approved device is viewing, and sends it if the screen has changed: a
+still screen sends nothing. It needs no root, USB debugging, or new
 screen-sharing approval after each reboot. The phone must first be unlocked and
 connected; manufacturer battery restrictions can affect reconnection. Protected
 content cannot be captured. Capture failures replace the previous picture with
@@ -89,7 +90,15 @@ content cannot be captured. Capture failures replace the previous picture with
 
 Enable **Smooth screen sharing** for the existing faster stream (up to 10 FPS).
 It takes over from Accessibility until stopped, then default viewing resumes
-automatically. It follows the screen when the phone turns. It is optional and does not count as a missing permission on
+automatically. It follows the screen when the phone turns. While nobody is
+viewing, the screen is not mirrored at all.
+
+Either way, a viewer on a current app says when each picture has arrived, and
+the phone sends the next one only when the viewers have caught up. On a slow
+connection that shows fewer pictures, each of them recent, where it used to
+show every picture seconds late. If the last picture of a change never
+arrives, the phone sends it again. A PC's phone window can show how far behind
+it is (F8). It is optional and does not count as a missing permission on
 Android 11+. Android 8–10 still require screen sharing for viewing and use
 Accessibility for input only.
 
