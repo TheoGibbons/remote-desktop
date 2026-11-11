@@ -123,6 +123,16 @@ internal sealed unsafe class H264Decoder : IDisposable
     /// </summary>
     internal const int LatePictureMs = 150;
 
+    /// <summary>
+    /// The most pixels a picture may have: 1440 x 3200, either way round. A
+    /// phone sends its screen with the shorter side at 1080 at most, so the
+    /// tallest there is comes to well under this. A picture is 4 bytes a
+    /// pixel three times over on its way to the screen, and without a limit
+    /// a stream that changed size with every keyframe could have the PC
+    /// making 64 MB arrays over and over. A larger picture is a failure.
+    /// </summary>
+    internal const int MaxPixels = 1440 * 3200;
+
     /// <summary>What an access unit holds, as far as the decoder's rules care.</summary>
     [Flags]
     internal enum Units { None = 0, Sps = 1, Pps = 2, Idr = 4, Slice = 8, Keyframe = Sps | Pps | Idr }
@@ -158,7 +168,13 @@ internal sealed unsafe class H264Decoder : IDisposable
     /// <summary>What went wrong the last time <see cref="Decode"/> answered Failed. Read it on the decoding thread.</summary>
     public string LastFailure { get; private set; } = "";
 
-    private H264Decoder(IMFTransform mft) => _mft = mft;
+    private readonly int _maxPixels;
+
+    private H264Decoder(IMFTransform mft, int maxPixels)
+    {
+        _mft = mft;
+        _maxPixels = maxPixels;
+    }
 
     /// <summary>
     /// Whether this Windows can decode H.264 at all, found out once by making
@@ -185,8 +201,10 @@ internal sealed unsafe class H264Decoder : IDisposable
     /// <summary>A decoder, or null with the reason in <paramref name="why"/>.</summary>
     public static H264Decoder? TryCreate(out string why) => TryCreate(MaxCodedSize, MaxCodedSize, out why);
 
-    /// <summary>For tests: a decoder that takes pictures only up to a given padded size.</summary>
-    internal static H264Decoder? TryCreate(int maxCodedWidth, int maxCodedHeight, out string why)
+    /// <summary>For tests: a decoder that takes pictures only up to a given
+    /// padded size (Windows' own limit, which fails in silence) or a given
+    /// number of pixels (this class's, which says so).</summary>
+    internal static H264Decoder? TryCreate(int maxCodedWidth, int maxCodedHeight, out string why, int maxPixels = MaxPixels)
     {
         why = "";
         IMFTransform? mft = null;
@@ -224,11 +242,11 @@ internal sealed unsafe class H264Decoder : IDisposable
                 mft.SetInputType(0, input, 0);
             }
 
-            var decoder = new H264Decoder(mft);
+            var decoder = new H264Decoder(mft, maxPixels);
             mft = null; // the decoder's to release from here on
             try
             {
-                decoder.ChooseOutputType();
+                decoder.ChooseOutputType(announced: false);
                 decoder._mft.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
                 decoder._mft.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
                 return decoder;
@@ -375,6 +393,7 @@ internal sealed unsafe class H264Decoder : IDisposable
     private sealed class DecoderError : Exception
     {
         public DecoderError(string step, int hr) : base($"{step} failed (0x{hr:X8})") { }
+        public DecoderError(string what) : base(what) { }
     }
 
     /// <summary>Hands the access unit to the decoder and passes on every picture that comes out. Returns how many.</summary>
@@ -508,7 +527,7 @@ internal sealed unsafe class H264Decoder : IDisposable
     /// Before the first picture this only repeats what the input type said;
     /// the true answer comes when the decoder announces a size.
     /// </summary>
-    private void ChooseOutputType()
+    private void ChooseOutputType(bool announced = true)
     {
         IMFMediaType? chosen = null;
         for (int i = 0; chosen == null; i++)
@@ -521,10 +540,14 @@ internal sealed unsafe class H264Decoder : IDisposable
 
         using (chosen)
         {
-            _mft.SetOutputType(0, chosen, 0);
-
             ulong size = chosen.GetUInt64(MtFrameSize);
             int codedWidth = (int)(size >> 32), codedHeight = (int)(uint)size;
+            // Before anything is made for it: no phone's screen is this large.
+            // (What the decoder offers before it has seen a stream is not a picture.)
+            if (announced && (long)codedWidth * codedHeight > _maxPixels)
+                throw new DecoderError($"a picture of {codedWidth} x {codedHeight} is larger than a phone's screen");
+
+            _mft.SetOutputType(0, chosen, 0);
 
             // The visible part. Without one the whole frame is picture.
             int x = 0, top = 0, width = codedWidth, height = codedHeight;

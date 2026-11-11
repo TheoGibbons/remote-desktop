@@ -646,7 +646,9 @@ decoder holds a picture back when one follows it, and the PC takes them out
 if they come. Colours are BT.709, limited range (16 to 235), and the stream
 says so; a viewer converts by what the stream says, and for a stream that
 says nothing assumes BT.601 up to 720 × 576 and BT.709 above. The shorter
-side is at most 1080, as for JPEG; the PC takes up to 4096 × 4096.
+side is at most 1080, as for JPEG. The PC takes pictures of up to 4,608,000
+pixels (1440 × 3200 either way round) with no side over 4096, and counts a
+larger one as a failure of its decoder (below).
 
 **Streams.** `screen-info` says `codec: "h264"`. A stream has one format from
 start to end: changing between JPEG and H.264 is a new stream with a new id.

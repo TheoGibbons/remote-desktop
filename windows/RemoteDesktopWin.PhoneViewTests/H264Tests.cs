@@ -670,6 +670,16 @@ internal static unsafe class H264Tests
         Check(decoder!.LastFailure.Contains("keyframe"), $"And the reason is kept: \"{decoder.LastFailure}\"");
         Check(Decode(decoder, clip.Units[1], 2).result == H264Decoded.NeedsKeyframe, "After a failure the decoder wants a keyframe");
         Check(Decode(decoder, clip.Units[0], 3).result == H264Decoded.Failed, "And fails again on the next, so the viewer can count to two and give up");
+
+        // This class's own limit, on the number of pixels: a stream whose
+        // size is absurd is refused before any memory is found for it.
+        Check(H264Decoder.MaxPixels >= 1088 * 2640 && H264Decoder.MaxPixels <= 2400 * 2400, "The limit leaves room for any phone's screen and not for much more");
+        using var small = H264Decoder.TryCreate(4096, 4096, out why, maxPixels: 600_000);
+        Check(small != null, "setup: a decoder limited to 600,000 pixels: " + why);
+        (result, shots) = Decode(small!, clip.Units[0], 1);
+        Check(result == H264Decoded.Failed && shots.Count == 0, $"A picture with more pixels than the limit is a failure ({result})");
+        Check(small!.LastFailure.Contains("larger than a phone's screen") && small.LastFailure.Contains("1088 x 2400"), $"And the reason names the size: \"{small.LastFailure}\"");
+        Check(small.Format.CodedHeight != 2400, "Nothing was made ready for a picture of that size");
         Pass("a decoder that cannot decode the stream is found out at its first keyframe");
     }
 
