@@ -231,6 +231,32 @@ class VideoPacerTest {
     }
 
     @Test
+    fun afterAPictureWentUnsentTheNextOneDrawnIsAKeyframeAndNoneIsDrawnForIt() {
+        started(1_000)
+        settle(1_000)
+        pacer.changed(10_000)
+        assertFalse(pacer.next(10_000, true)!!.keyframe)
+        // That picture was not sent. Nothing is drawn because of it.
+        pacer.keyframeNext()
+        assertNull(pacer.next(10_040, true))
+        assertEquals(110L, pacer.delay(10_040, true))
+        // The repeat that sharpens it is drawn anyway, and that is the keyframe.
+        assertEquals(VideoPacer.Draw(keyframe = true, repeat = true, resend = false, capturedAt = 10_150),
+            pacer.next(10_150, true))
+        // Once.
+        assertFalse(pacer.next(10_300, true)!!.keyframe)
+        assertFalse(pacer.next(10_750, true)!!.keyframe)
+
+        // On a screen that is changing, the next change carries it.
+        pacer.keyframeNext()
+        pacer.changed(20_000)
+        assertEquals(VideoPacer.Draw(keyframe = true, repeat = false, resend = false, capturedAt = 20_000),
+            pacer.next(20_000, true))
+        pacer.changed(20_040)
+        assertFalse(pacer.next(20_040, true)!!.keyframe)
+    }
+
+    @Test
     fun aNewEncoderStartsOverAndWaitsForItsFirstPicture() {
         started(1_000)
         pacer.changed(1_100)

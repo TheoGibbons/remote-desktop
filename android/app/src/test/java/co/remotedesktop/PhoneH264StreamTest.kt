@@ -356,6 +356,79 @@ class PhoneH264StreamTest {
         assertEquals(setOf(0xA1L), socket.frames.map { header(it).stream }.toSet())
     }
 
+    @Test
+    fun aPictureThatWentUnsentInABlinkOfTheGateIsFollowedByAKeyframe() {
+        startView("pc")
+        announce()
+        assertEquals(VideoSent.SENT, video(keyframe = true))
+        assertEquals(VideoSent.SENT, video())
+        socket.clear()
+
+        // A paired device joins the session: until its reply comes, not every peer is known.
+        // Its reply comes before the main thread has looked, so the stream is never paused.
+        authField("allPeersTrusted").set(PeerAuth, false)
+        assertEquals(VideoSent.NOT_SENT, video())
+        assertEquals(VideoSent.NOT_SENT, video(repeat = true))
+        authField("allPeersTrusted").set(PeerAuth, true)
+
+        // The stream goes on, but not with a picture built on ones the viewer never got.
+        assertEquals(VideoSent.NEEDS_KEYFRAME, video())
+        assertEquals(VideoSent.NEEDS_KEYFRAME, video(repeat = true))
+        assertTrue(socket.frames.isEmpty())
+        assertEquals(VideoSent.SENT, video(keyframe = true))
+        assertEquals(VideoSent.SENT, video())
+        // The same stream, and no gap in its numbers: nothing the viewer was sent is missing.
+        assertEquals(listOf(2L, 3L), socket.frames.map { header(it).seq })
+        assertEquals(listOf(true, false), socket.frames.map { header(it).keyframe })
+        assertEquals(setOf(0xA1L), socket.frames.map { header(it).stream }.toSet())
+        assertTrue(infos().isEmpty())
+    }
+
+    @Test
+    fun aViewerWithoutVideoThatComesAndGoesInOneBreathLeavesAKeyframeOwed() {
+        startView("pc")
+        announce()
+        video(keyframe = true)
+        video()
+        socket.clear()
+        // A phone starts viewing and stops again before the main thread has turned.
+        val viewers = PhoneScreenCapture::class.java.getDeclaredField("viewers").apply { isAccessible = true }
+            .get(PhoneScreenCapture) as MutableMap<String, Set<String>>
+        viewers["phone"] = setOf("jpeg")
+        assertEquals(VideoSent.NOT_SENT, video())
+        viewers.remove("phone")
+        assertEquals(VideoSent.NEEDS_KEYFRAME, video())
+        assertEquals(VideoSent.SENT, video(keyframe = true))
+        assertEquals(PhoneFrame.Header(0xA1, 2, keyframe = true, format = PhoneFrame.H264, width = 1080, height = 2340,
+            captureMs = 1234), header(socket.frames.single()))
+    }
+
+    @Test
+    fun whenPicturesMayGoAgainAStillScreenIsAskedForTheKeyframeItOwes() {
+        startView("pc")
+        announce()
+        video(keyframe = true)
+        video()
+        assertTrue(asked.isEmpty())
+        // Nothing is owed: looking at who is viewing asks nothing of the encoder.
+        PhoneScreenCapture.refresh()
+        idle()
+        assertTrue(asked.isEmpty())
+
+        // The gate blinks, a picture goes unsent, and the screen then stays as it is.
+        authField("allPeersTrusted").set(PeerAuth, false)
+        assertEquals(VideoSent.NOT_SENT, video())
+        authField("allPeersTrusted").set(PeerAuth, true)
+        PhoneScreenCapture.refresh()
+        idle()
+        assertEquals(listOf("key"), asked)
+        // The keyframe goes, and nothing more is asked.
+        assertEquals(VideoSent.SENT, video(keyframe = true, repeat = true))
+        PhoneScreenCapture.refresh()
+        idle()
+        assertEquals(listOf("key"), asked)
+    }
+
     // ---------------- streams ----------------
 
     @Test

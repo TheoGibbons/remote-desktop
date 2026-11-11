@@ -41,7 +41,11 @@ internal enum class VideoSent {
     SENT,
     /** Not sent, though video is still wanted: the next picture has to be a keyframe. */
     NEEDS_KEYFRAME,
-    /** Not sent, and nothing is owed: nobody is being sent video just now. */
+    /**
+     * Not sent: nobody is being sent video just now. Nothing is encoded to
+     * make up for it, since there may be nobody to send that to either. But
+     * the next picture that is encoded has to be a keyframe.
+     */
     NOT_SENT,
 }
 
@@ -194,6 +198,7 @@ internal class PhoneVideo(
             }
             // Asked for and not made, or made and not sent: it is asked for again.
             if (missed || result == VideoSent.NEEDS_KEYFRAME) timer.post { keyframeLost(this, ptsUs) }
+            else if (result == VideoSent.NOT_SENT) timer.post { pictureUnsent(this, ptsUs) }
         }
 
         override fun failed(error: Throwable) {
@@ -351,6 +356,16 @@ internal class PhoneVideo(
         if (current !== session || ptsUs < session.lastKeyPtsUs) return
         pacer.wantKeyframe()
         tick()
+    }
+
+    /**
+     * A picture went unsent because nobody was being sent video at that
+     * moment. Whatever is drawn next was built on it, so that is drawn as a
+     * keyframe, unless a keyframe was drawn after the unsent picture anyway.
+     */
+    private fun pictureUnsent(session: Session, ptsUs: Long) {
+        if (current !== session || ptsUs < session.lastKeyPtsUs) return
+        pacer.keyframeNext()
     }
 
     /** Looks whether the screen and the encoder are still giving what they should. */

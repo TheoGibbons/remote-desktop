@@ -543,14 +543,64 @@ class PhoneVideoTest {
     }
 
     @Test
-    fun whenNobodyIsBeingSentVideoNothingIsAskedOfTheEncoder() {
+    fun aPictureThatWentUnsentIsFollowedByAKeyframeWithoutOneBeingDrawnForIt() {
+        val pipe = running()
+        screenChanges()
+        // Nobody is being sent video at this moment: a device has just joined the session.
+        sendResult = VideoSent.NOT_SENT
+        pipe.answerAll()
+        timer.advance(40)
+        // Nothing is encoded to make up for it: there may be nobody to send that to either.
+        assertEquals(4, pipe.drawn.size)
+
+        // But whatever is drawn next was built on the picture that never went: it is a keyframe.
+        sendResult = VideoSent.SENT
+        screenChanges()
+        timer.advance(40)
+        assertEquals(5, pipe.drawn.size)
+        assertTrue(pipe.drawn.last().keyframe)
+        pipe.answerAll()
+        assertTrue(sent.last().keyframe)
+        // Once.
+        screenChanges()
+        timer.advance(40)
+        assertFalse(pipe.drawn.last().keyframe)
+    }
+
+    @Test
+    fun onAStillScreenTheRepeatAfterAnUnsentPictureIsTheKeyframe() {
         val pipe = running()
         screenChanges()
         sendResult = VideoSent.NOT_SENT
         pipe.answerAll()
+        sendResult = VideoSent.SENT
+        // The screen does not change again. The repeat that sharpens it comes 150 ms later.
+        timer.advance(200)
+        assertEquals(5, pipe.drawn.size)
+        assertTrue(pipe.drawn.last().keyframe)
+        pipe.answerAll()
+        sent.last().let {
+            assertTrue(it.keyframe)
+            assertTrue(it.repeat)
+        }
+    }
+
+    @Test
+    fun anUnsentPictureFromBeforeAKeyframeAsksForNoSecondOne() {
+        val pipe = running()
+        screenChanges()
+        val unsent = pipe.drawn.last()
         timer.advance(40)
-        // No keyframe is owed: what follows is a new stream, and the capture service starts that.
-        assertFalse(pipe.drawn.last().keyframe)
+        video.keyframe(byViewer = false)
+        timer.advance()
+        val drawn = pipe.drawn.size
+        assertTrue(pipe.drawn.last().keyframe)
+        sendResult = VideoSent.NOT_SENT
+        pipe.answer(unsent)
+        sendResult = VideoSent.SENT
+        pipe.answer(pipe.drawn.last())
+        timer.advance(2_000)
+        assertEquals(1, pipe.drawn.drop(drawn - 1).count { it.keyframe })
     }
 
     @Test

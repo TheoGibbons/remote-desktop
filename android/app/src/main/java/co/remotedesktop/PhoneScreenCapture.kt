@@ -153,6 +153,11 @@ object PhoneScreenCapture {
             val active = maySendFrames(context)
             // No pictures for now, e.g. while a device waits to be approved. The stream is over.
             if (!active) pauseStream()
+            // Pictures may go, and the video stream that is running had one go unsent a
+            // moment ago, while they might not. On a screen that has not changed since,
+            // nothing would bring the keyframe it now needs.
+            else if (synchronized(streamLock) { stream != 0L && codec == H264 && needKey && nextSeq > 0 })
+                askKeyframe(false)
             // Each viewer is told whether the screen is on and locked, while there is one.
             LockState.watch(context, active)
             val smooth = ScreenCaptureService.isRunning
@@ -320,10 +325,14 @@ object PhoneScreenCapture {
      * the time to hold back was before it was encoded ([hasRoom]).
      *
      * It is not sent when the gate is closed, or when some viewer cannot
-     * draw H.264: then nobody is being sent video just now, and what comes
-     * next is a new stream. And it is not sent when the stream may only go on
-     * with a keyframe and this is not one: after a stream starts, and after
-     * a picture that the socket would not take.
+     * draw H.264: then nobody is being sent video just now. Usually what
+     * comes next is a new stream. But the gate can close and open again
+     * before anyone has ended the stream (a device joins the session and is
+     * recognised a moment later), and then the stream goes on, with a
+     * picture missing that the next one was built on. So a stream that had a
+     * picture go unsent may only go on with a keyframe, like one that has
+     * just started and one whose picture the socket would not take; and
+     * until a keyframe comes, nothing else of it is sent.
      *
      * @param repeat the same screen as the picture before.
      * @param resend it was made because the picture before went unacknowledged.
@@ -331,10 +340,15 @@ object PhoneScreenCapture {
      */
     internal fun sendVideo(context: Context, unit: ByteArray, keyframe: Boolean, repeat: Boolean, resend: Boolean,
                            width: Int, height: Int, capturedAt: Long): VideoSent {
-        if (!maySendFrames(context)) return VideoSent.NOT_SENT
+        val open = maySendFrames(context)
         val to = recipients()
         synchronized(streamLock) {
-            if (StreamFormat.of(offers(to), video = true) != StreamFormat.H264) return VideoSent.NOT_SENT
+            if (!open || StreamFormat.of(offers(to), video = true) != StreamFormat.H264) {
+                // No viewer counts a gap for it, since it takes no number. But if this stream
+                // goes on, its next picture was built on this one.
+                if (stream != 0L && codec == H264) needKey = true
+                return VideoSent.NOT_SENT
+            }
             val word = settle(to, SCREEN_SHARE, video = true) ?: return VideoSent.NOT_SENT
             size = width to height
             for (viewer in to) tell(viewer, word, always = false)

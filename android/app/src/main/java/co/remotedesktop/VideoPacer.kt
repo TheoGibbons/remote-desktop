@@ -51,6 +51,7 @@ internal class VideoPacer(
     private var keyWanted = false
     private var keyNotBefore = Long.MIN_VALUE
     private var keyByViewer = false
+    private var keyNext = false
     private var resendWanted = false
     private var lastDrawAt = Long.MIN_VALUE / 2
     private var lastKeyAt = Long.MIN_VALUE / 2
@@ -92,6 +93,15 @@ internal class VideoPacer(
         wantKeyframe()
     }
 
+    /**
+     * The next picture drawn, for whatever reason, is to be a keyframe. No
+     * picture is drawn for the sake of it: for when a picture went unsent
+     * and there may be nobody to send another to.
+     */
+    fun keyframeNext() {
+        keyNext = true
+    }
+
     /** The picture before went unacknowledged: it goes again, as a keyframe. */
     fun wantResend() {
         resendWanted = true
@@ -112,7 +122,7 @@ internal class VideoPacer(
         if (!hasRoom || now - lastDrawAt < minIntervalMs) return null
 
         val fresh = changed
-        val keyframe = key || (fresh && now - lastKeyAt >= safetyKeyMs)
+        val keyframe = key || keyNext || (fresh && now - lastKeyAt >= safetyKeyMs)
         val draw = Draw(keyframe, repeat = !fresh, resend = !fresh && resendWanted,
             capturedAt = if (fresh) changedAt else now)
         if (keyframe) {
@@ -120,6 +130,7 @@ internal class VideoPacer(
             lastKeyAt = now
             keyWanted = false
             keyByViewer = false
+            keyNext = false
             keyNotBefore = Long.MIN_VALUE
             resendWanted = false
         }
@@ -156,6 +167,7 @@ internal class VideoPacer(
         changed = false
         keyWanted = true
         keyByViewer = false
+        keyNext = false
         keyNotBefore = Long.MIN_VALUE
         resendWanted = false
         sharpened = Int.MAX_VALUE
