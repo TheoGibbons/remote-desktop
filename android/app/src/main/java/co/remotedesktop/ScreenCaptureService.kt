@@ -205,7 +205,9 @@ class ScreenCaptureService : Service() {
      * brightens it as a finger would.
      */
     private fun holdScreen() {
-        val ms = awake.holdFor(SystemClock.uptimeMillis())
+        // A viewer's input can be on its way here as sharing stops. Taken then, the
+        // screen would be held with nothing left to let go of it but the time limit.
+        val ms = if (instance === this) awake.holdFor(SystemClock.uptimeMillis()) else null
         if (ms == null) {
             releaseScreen()
             return
