@@ -14,6 +14,7 @@
     <Compile Include="../RemoteDesktopWin/PhoneFeed.cs" Link="PhoneFeed.cs" />
     <Compile Include="../RemoteDesktopWin/PhoneStats.cs" Link="PhoneStats.cs" />
     <Compile Include="../RemoteDesktopWin/DeviceActions.cs" Link="DeviceActions.cs" />
+    <Compile Include="../RemoteDesktopWin/DeviceLink.cs" Link="DeviceLink.cs" />
   </ItemGroup>
   <!-- The H.264 decoder for a phone's video and what turns its pictures into
        colours (H264Tests.cs). They need pointers, and the Media Foundation

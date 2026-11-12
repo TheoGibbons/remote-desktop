@@ -25,11 +25,14 @@ namespace RemoteDesktopWin;
 /// The remote host injects all of this exactly as it already does for a phone
 /// viewer — the protocol and host code are unchanged.
 /// </summary>
-public partial class PcViewWindow : Window
+public partial class PcViewWindow : Window, IDeviceWindow
 {
     private readonly WsClient _ws;
-    private readonly string _peerId;
+    // Which PC this is, and the id it has in the session now: none while its
+    // connection, or this PC's, has dropped (see DeviceLink).
+    private readonly DeviceLink _link;
     private readonly string _name;
+    private readonly string _hint;
 
     // The Copy or Paste request in flight: one at a time, only its own answer
     // counts, and a host too old to know them never answers at all.
@@ -51,14 +54,24 @@ public partial class PcViewWindow : Window
     private DateTime _lastMoveSent;
     private static readonly TimeSpan MoveInterval = TimeSpan.FromMilliseconds(30);
 
-    public string PeerId => _peerId;
+    /// <summary>The id the PC has now; null while it is away.</summary>
+    public string? PeerId => _link.PeerId;
 
-    public PcViewWindow(WsClient ws, string peerId, string name)
+    /// <summary>Whether this is the window of the device with that id.</summary>
+    public bool IsOn(string? peerId) => peerId != null && _link.PeerId == peerId;
+
+    DeviceLink IDeviceWindow.Link => _link;
+    string IDeviceWindow.DeviceName => _name;
+
+    /// <param name="identity">The fingerprint of the PC's approved key, by
+    /// which it is found again after a reconnection.</param>
+    public PcViewWindow(WsClient ws, string peerId, string name, string? identity = null)
     {
         InitializeComponent();
         _ws = ws;
-        _peerId = peerId;
+        _link = new DeviceLink(peerId, identity);
         _name = name;
+        _hint = HintText.Text;
         Title = "Remote: " + name;
         _clipTimeout.Tick += (_, _) =>
         {
@@ -66,19 +79,59 @@ public partial class PcViewWindow : Window
             Toast.Show($"{_name} didn't answer. It may not have approved this PC yet, or it needs a newer Remote Desktop.");
         };
 
-        _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _peerId });
+        Send(new JsonObject { ["type"] = "start-view" });
         Closed += (_, _) =>
         {
             _clipTimeout.Stop();
-            _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _peerId });
+            Send(new JsonObject { ["type"] = "stop-view" });
         };
         Loaded += (_, _) => { Focusable = true; Focus(); Keyboard.Focus(this); };
     }
 
+    /// <summary>
+    /// Everything the window sends the PC goes from here: to the id that PC
+    /// has now, and nowhere while it is away. The id it had is dead then, and
+    /// may be another device's by the time this PC is back.
+    /// </summary>
+    private void Send(JsonObject msg)
+    {
+        if (_link.PeerId is not { } id) return;
+        msg["to"] = id;
+        _ws.SendJson(msg);
+    }
+
     /// <summary>Ask for the stream again — the first start-view is dropped when
     /// the host hasn't approved this device yet.</summary>
-    public void ResendStartView() =>
-        _ws.SendJson(new JsonObject { ["type"] = "start-view", ["to"] = _peerId });
+    public void ResendStartView() => Send(new JsonObject { ["type"] = "start-view" });
+
+    /// <summary>
+    /// The link to the PC has changed. Away, the window says so where its
+    /// hint is, sends nothing and draws nothing; back, under a new id, it
+    /// asks for the screen again and waits for a full picture.
+    /// </summary>
+    void IDeviceWindow.LinkChanged(string? was)
+    {
+        HintText.Text = _link.Notice(_name) ?? _hint;
+        if (_link.Away)
+        {
+            if (was == null) return;
+            // Keys held down there can't be let go from here; that PC lets go of them itself.
+            _downKeys.Clear();
+            EndClipRequest();
+            return;
+        }
+        if (was != null) return;
+        _haveKeyframe = false;
+        _lastSeq = -1;
+        Send(new JsonObject { ["type"] = "start-view" });
+    }
+
+    /// <summary>The wait for the PC is over: the window says so and closes.</summary>
+    void IDeviceWindow.GaveUp()
+    {
+        Toast.Show(DeviceLink.GoneText(_name), 8000);
+        Close();
+    }
 
     /// <summary>Optional: size the window to the remote desktop's aspect ratio.</summary>
     public void OnScreenInfo(int width, int height)
@@ -116,6 +169,8 @@ public partial class PcViewWindow : Window
     /// </summary>
     public void OnPatch(byte[] data)
     {
+        // A patch names no sender. While the PC is away none is its.
+        if (_link.Away) return;
         try
         {
             int p = 1; // skip frame-type byte
@@ -176,7 +231,7 @@ public partial class PcViewWindow : Window
     {
         if ((DateTime.UtcNow - _lastKeyframeReq).TotalMilliseconds < 2000) return;
         _lastKeyframeReq = DateTime.UtcNow;
-        _ws.SendJson(new JsonObject { ["type"] = "request-keyframe", ["to"] = _peerId });
+        Send(new JsonObject { ["type"] = "request-keyframe" });
     }
 
     // ---------------- mouse ----------------
@@ -206,10 +261,9 @@ public partial class PcViewWindow : Window
     };
 
     private void SendMouse(string action, string button, double x, double y) =>
-        _ws.SendJson(new JsonObject
+        Send(new JsonObject
         {
             ["type"] = "mouse",
-            ["to"] = _peerId,
             ["action"] = action,
             ["button"] = button,
             ["x"] = x,
@@ -239,13 +293,13 @@ public partial class PcViewWindow : Window
         if ((DateTime.UtcNow - _lastMoveSent) < MoveInterval) return;
         if (Normalize(e.GetPosition(ScreenImage)) is not { } n) return;
         _lastMoveSent = DateTime.UtcNow;
-        _ws.SendJson(new JsonObject { ["type"] = "mouse", ["to"] = _peerId, ["action"] = "move", ["x"] = n.x, ["y"] = n.y });
+        Send(new JsonObject { ["type"] = "mouse", ["action"] = "move", ["x"] = n.x, ["y"] = n.y });
     }
 
     private void Screen_MouseWheel(object sender, MouseWheelEventArgs e)
     {
         // One wheel notch = 120; protocol dy is in notches, positive = up.
-        _ws.SendJson(new JsonObject { ["type"] = "scroll", ["to"] = _peerId, ["dx"] = 0.0, ["dy"] = e.Delta / 120.0 });
+        Send(new JsonObject { ["type"] = "scroll", ["dx"] = 0.0, ["dy"] = e.Delta / 120.0 });
         e.Handled = true;
     }
 
@@ -289,7 +343,7 @@ public partial class PcViewWindow : Window
     private static bool IsModifierCode(string code) => code is "CTRL" or "ALT" or "SHIFT" or "WIN";
 
     private void SendKey(string code, string action) =>
-        _ws.SendJson(new JsonObject { ["type"] = "key", ["to"] = _peerId, ["code"] = code, ["action"] = action });
+        Send(new JsonObject { ["type"] = "key", ["code"] = code, ["action"] = action });
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -330,7 +384,7 @@ public partial class PcViewWindow : Window
         var text = e.Text;
         if (string.IsNullOrEmpty(text)) return;
         if (text.Length == 1 && char.IsControl(text[0])) return; // control chars go via key events
-        _ws.SendJson(new JsonObject { ["type"] = "text", ["to"] = _peerId, ["text"] = text });
+        Send(new JsonObject { ["type"] = "text", ["text"] = text });
         e.Handled = true;
     }
 
@@ -343,7 +397,7 @@ public partial class PcViewWindow : Window
 
     private void Cad_Click(object sender, RoutedEventArgs e)
     {
-        _ws.SendJson(new JsonObject { ["type"] = "cad", ["to"] = _peerId });
+        Send(new JsonObject { ["type"] = "cad" });
         Focus(); Keyboard.Focus(this);
     }
 
@@ -387,10 +441,10 @@ public partial class PcViewWindow : Window
 
     private void StartClipRequest(JsonObject request)
     {
+        if (_link.Away) return;
         _clipReq = (++_clipCounter).ToString();
-        request["to"] = _peerId;
         request["reqId"] = _clipReq;
-        _ws.SendJson(request);
+        Send(request);
         CopyButton.IsEnabled = PasteButton.IsEnabled = false;
         _clipTimeout.Start();
     }

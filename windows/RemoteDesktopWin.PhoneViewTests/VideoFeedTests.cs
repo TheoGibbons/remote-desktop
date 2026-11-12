@@ -38,6 +38,7 @@ internal static class VideoFeedTests
             CheckFeedComingInPartWay(clip);
             CheckFeedGoesByTheBytes(clip);
             CheckFeedGivesUpOnAPhoneThatSendsNoKeyframe(clip);
+            CheckFeedWhenThePhoneGoesAwayAndComesBack(clip);
             CheckFeedFallingBehind(clip, again);
             CheckFeedDecoderFailure(clip);
             CheckFeedWaitsForALatePicture(clip);
@@ -657,6 +658,83 @@ internal static class VideoFeedTests
         Check(rig.Feed.StatsText().Contains("H.264 given up for this phone (the phone sent no keyframe when asked)"), "The readout says why:\n" + rig.Feed.StatsText());
         Check(rig.GaveUp.SequenceEqual([("7", "the phone sent no keyframe when asked")]), "And the person at the PC is told, once");
         Pass("a phone that never sends the keyframe it is asked for is asked for JPEG instead, after five requests");
+    }
+
+    /// <summary>
+    /// The phone's connection drops, or this PC's: the id it had is dead, and
+    /// may be handed to another device. Its window waits and is attached to
+    /// it again under a new id (DeviceLink). Nothing may be remembered by an
+    /// id across that, and what was given up for the phone goes with the phone.
+    /// </summary>
+    private static void CheckFeedWhenThePhoneGoesAwayAndComesBack(Clip clip)
+    {
+        var rig = Viewing();
+        rig.Now = 1000;
+        rig.Frame(StreamA, 0, clip.Units[0]);
+        rig.Frame(StreamA, 1, clip.Units[1]);
+        Check(rig.Pump() == 2, "setup: two pictures");
+        uint seq = 3;
+        for (long now = 1100; now <= 8000 && !rig.Feed.VideoState.GivenUp; now += 100)
+        {
+            rig.Now = now;
+            rig.Frame(StreamA, seq++, clip.Units[1 + (int)(seq % 8)], keyframe: false);
+            rig.Pump();
+        }
+        Check(rig.Feed.VideoState.GivenUp, "setup: video is given up for the phone");
+        long gaveUpAt = rig.Now;
+
+        // It goes away. Nothing under its old id is its any more: not a stream, not a picture.
+        var gaveUp = rig.Feed.Left("7");
+        Check(gaveUp is { Why: "the phone sent no keyframe when asked" }, "What was given up for the phone is handed to its window");
+        int shown = rig.Shown.Count, jpegs = rig.Jpegs.Count, sent = rig.Sent.Count;
+        rig.Info("7", IdB, codec: "jpeg");
+        rig.Jpeg(StreamB, 0, 9);
+        rig.Frame(StreamA, seq++, clip.Units[0]);
+        rig.Pump();
+        Check(rig.Shown.Count == shown && rig.Jpegs.Count == jpegs && rig.Sent.Count == sent,
+            "While the phone is away nothing that arrives under its old id is drawn, acknowledged or answered");
+
+        // Another phone is given that id when this PC is back. It is not the one that failed.
+        Check(rig.Feed.View("7", offered: true), "A phone that is handed the old id is not taken for the one video was given up for");
+        rig.Feed.Stop("7");
+
+        // The phone comes back under a new id, and is still the phone that would not send a keyframe.
+        rig.Feed.Returned("12", gaveUp);
+        Check(!rig.Feed.View("12", offered: true), "Back under a new id, the phone is not offered video again before its time");
+        Check(rig.Feed.StatsText().Contains("H.264 given up for this phone"), "And the readout still says so:\n" + rig.Feed.StatsText());
+        rig.Info("12", IdB, codec: "jpeg");
+        rig.Jpeg(StreamB, 0, 9);
+        rig.Pump();
+        Check(rig.Jpegs.Count == jpegs + 1, "Its pictures are drawn under the new id");
+        rig.Feed.Stop("12");
+        rig.Now = gaveUpAt + PhoneFeed.GiveUpWearsOffMs + 200;
+        Check(rig.Feed.View("12", offered: true), "Ten minutes after it was given up, counted from then, video is offered again");
+        rig.Feed.Stop("12");
+
+        // A phone that came back with nothing given up is offered video like any other.
+        rig.Feed.Returned("13", null);
+        Check(rig.Feed.View("13", offered: true), "A phone with nothing given up comes back to video");
+        rig.Feed.Stop("13");
+
+        // This PC's connection drops with no window open: every id is dead, and nothing is kept by one.
+        var other = Viewing();
+        other.Now = 1000;
+        other.Frame(StreamA, 0, clip.Units[0]);
+        other.Pump();
+        seq = 2;
+        for (long now = 1100; now <= 8000 && !other.Feed.VideoState.GivenUp; now += 100)
+        {
+            other.Now = now;
+            other.Frame(StreamA, seq++, clip.Units[1 + (int)(seq % 8)], keyframe: false);
+            other.Pump();
+        }
+        Check(other.Feed.VideoState.GivenUp, "setup: video is given up for a second phone");
+        other.Feed.Stop("7");
+        Check(!other.Feed.View("7", offered: true), "setup: and stays given up while the PC stays connected");
+        other.Feed.Stop("7");
+        other.Feed.IdsDied();
+        Check(other.Feed.View("7", offered: true), "After this PC reconnects, whoever has that id is not taken for the phone that had it");
+        Pass("what was given up for a phone follows the phone to its new id, and nothing is remembered by an id that has died");
     }
 
     private static void CheckFeedFallingBehind(Clip clip, Clip again)

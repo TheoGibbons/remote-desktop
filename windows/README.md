@@ -188,6 +188,16 @@ checked its name is only what it calls itself. A device you refused is asked
 about again after Remote Desktop is closed from its tray icon and started
 again.
 
+**When a connection drops.** A window that is open on a device carries on by
+itself. If this PC loses its connection, or the device does, or the relay is
+restarted (every release does that), the window says so over the last picture
+and sends nothing meanwhile. When the same device is back and approved, the
+window asks for its screen again and goes on. It knows the device by the key
+that was approved, not by its name: another device that calls itself the same
+is never taken for it. A viewer waits a minute for its device after this PC is
+back, then closes and says why. A **Files** window keeps waiting, and files
+that were on their way fail with a **Retry**.
+
 - Press **View** on a device's row in **Devices** → opens a live view:
   - **another PC** → full desktop control: move/click/scroll with the mouse and
     type with your real keyboard (shortcuts, modifiers and arrows included) while

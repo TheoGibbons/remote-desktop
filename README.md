@@ -91,7 +91,8 @@ log and output.
 Connected apps still reconnect once per deploy, about 2 seconds after the old relay
 stops, because pairing lives in the relay's memory. For the 20 seconds while the old
 relay is taken out of rotation, a device that connects may land on the new relay before
-its peers do, and does not see them until they reconnect.
+its peers do, and does not see them until they reconnect. A viewer or file window
+that is open on the PC waits through this and carries on with the same device.
 
 The release swap uses the [docker-rollout](https://github.com/wowu/docker-rollout) CLI
 plugin, which belongs to the host. Deploying hobby-traefik installs it for the deploying

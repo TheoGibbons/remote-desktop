@@ -42,7 +42,7 @@ namespace RemoteDesktopWin;
 /// with Windows. Nothing in the title bar or the menu takes the focus, so
 /// using them never gets in the way of typing.
 /// </summary>
-public partial class PhoneViewWindow : Window
+public partial class PhoneViewWindow : Window, IDeviceWindow
 {
     /// <summary>A picture ready to be shown, and what was seen in it:
     /// whether it is nearly all black, if it was looked at, and how many
@@ -50,21 +50,36 @@ public partial class PhoneViewWindow : Window
     internal sealed record DecodedPicture(BitmapSource Image, bool? Black, int AsOf);
 
     private readonly WsClient _ws;
-    private readonly string _phoneId;
+
+    // Which phone this is, and the id it has in the session now. The id
+    // changes whenever the phone's connection or this PC's drops, and the
+    // phone is away meanwhile: nothing is sent, and everything the phone said
+    // under its old id is forgotten (see LetGo and DeviceLink).
+    private readonly DeviceLink _link;
+    private string? _phoneId => _link.PeerId;
+    private int _attachments;           // goes up each time the phone goes away: what it said before no longer counts
+    private (long At, string Why)? _gaveUpVideo;    // what the feed had given up for the phone as it went away
 
     // Where this phone's frames come in, and whether this PC has approved
-    // the phone. Only an approved phone is offered type 5 frames, since the
-    // feed then takes its word for which stream is its own. Both are null in
-    // a window made without them, which is offered nothing.
+    // the device that has a given id. Only an approved phone is offered type
+    // 5 frames, since the feed then takes its word for which stream is its
+    // own. Both are null in a window made without them, which is offered nothing.
     private readonly PhoneFeed? _feed;
-    private readonly Func<bool>? _approved;
+    private readonly Func<string, bool>? _approved;
     private bool _offered;              // the last start-view offered codecs
 
     // The Stats readout: whether it is open, and the timer that refreshes it.
     private bool _statsShown;
     private readonly DispatcherTimer _statsTimer;
 
-    public string PeerId => _phoneId;
+    /// <summary>The id the phone has now; null while it is away.</summary>
+    public string? PeerId => _link.PeerId;
+
+    /// <summary>Whether this is the window of the device with that id.</summary>
+    public bool IsOn(string? peerId) => peerId != null && _link.PeerId == peerId;
+
+    internal DeviceLink Link => _link;
+    DeviceLink IDeviceWindow.Link => _link;
 
     private Point? _downPos;
     private DateTime _downTime;
@@ -88,15 +103,15 @@ public partial class PhoneViewWindow : Window
     private PhoneState? _phoneState;
     private DateTime? _viewingSince;    // when the phone first sent a picture's size
     private readonly DispatcherTimer _updateLineTimer;
-    private readonly VolumeSender _volume = new();
-    private readonly AskPace _asks = new();
+    private VolumeSender _volume = new();
+    private AskPace _asks = new();
     private readonly DispatcherTimer _volumeTimer;
     private bool _showingPhoneVolume;   // the slider is being moved to what the phone said
     private int _lastAudible;           // the last level above 0 the phone had or was sent; 0 if none yet
     private bool _showingPhoneRotation; // the rotation choices are being lit as the phone said
-    private readonly RotationCheck _rotation = new();
+    private RotationCheck _rotation = new();
     private readonly DispatcherTimer _rotationTimer;
-    private readonly SmoothVideo _smooth = new();
+    private SmoothVideo _smooth = new();
     private readonly DispatcherTimer _smoothTimer;
 
     // What the phone last said in lock-state; null until it does, and for
@@ -140,13 +155,17 @@ public partial class PhoneViewWindow : Window
     public PhoneViewWindow(WsClient ws, string phoneId, string name) : this(ws, phoneId, name, null, null) { }
 
     /// <param name="feed">Where this phone's frames come in.</param>
-    /// <param name="approved">Whether this PC has approved the phone, asked
-    /// each time the phone is asked for its screen.</param>
-    internal PhoneViewWindow(WsClient ws, string phoneId, string name, PhoneFeed? feed, Func<bool>? approved)
+    /// <param name="approved">Whether this PC has approved the device with
+    /// the id given, asked each time the phone is asked for its screen.</param>
+    /// <param name="identity">The fingerprint of the phone's approved key,
+    /// by which it is found again after a reconnection. Without one it
+    /// cannot be, and the window closes when the phone has been gone a while.</param>
+    internal PhoneViewWindow(WsClient ws, string phoneId, string name, PhoneFeed? feed, Func<string, bool>? approved,
+        string? identity = null)
     {
         InitializeComponent();
         _ws = ws;
-        _phoneId = phoneId;
+        _link = new DeviceLink(phoneId, identity);
         _feed = feed;
         _approved = approved;
         Title = name;
@@ -208,8 +227,11 @@ public partial class PhoneViewWindow : Window
         AskPhoneState(always: true);
         Closed += (_, _) =>
         {
-            _feed?.Stop(_phoneId);
-            _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = _phoneId });
+            if (_phoneId is { } id) _feed?.Stop(id);
+            // The phone is away, so the feed has let go of it already. The
+            // readout went with this window all the same.
+            else _feed?.ShowStats(false);
+            Send(new JsonObject { ["type"] = "stop-view" });
         };
 
         // Holding the button without moving becomes a long-press on the phone.
@@ -232,8 +254,114 @@ public partial class PhoneViewWindow : Window
         return brush;
     }
 
-    private void SendAction(string type) =>
-        _ws.SendJson(new JsonObject { ["type"] = type, ["to"] = _phoneId });
+    /// <summary>
+    /// Everything the window sends its phone goes from here: to the id the
+    /// phone has now, and nowhere while it is away. The id it had is dead
+    /// then, and may be another device's by the time this PC is back.
+    /// </summary>
+    private void Send(JsonObject msg)
+    {
+        if (_link.PeerId is not { } id) return;
+        msg["to"] = id;
+        _ws.SendJson(msg);
+    }
+
+    private void SendAction(string type) => Send(new JsonObject { ["type"] = type });
+
+    // ---------------- the phone goes away and comes back ----------------
+
+    string IDeviceWindow.DeviceName => Title;
+
+    void IDeviceWindow.LinkChanged(string? was) => LinkChanged(was);
+
+    /// <summary>The wait for the phone is over: the window says so and closes.</summary>
+    void IDeviceWindow.GaveUp()
+    {
+        Toast.Show(DeviceLink.GoneText(Title), 8000);
+        Close();
+    }
+
+    /// <summary>
+    /// The link to the phone has changed: it has gone away, this PC is back
+    /// on the relay and waiting for it, or it is back under a new id.
+    /// </summary>
+    /// <param name="was">The id it had before the change, if it had one.</param>
+    internal void LinkChanged(string? was)
+    {
+        if (_link.Away && was != null) LetGo(was);
+        ShowAway();
+        if (!_link.Away && was == null) Resume();
+    }
+
+    /// <summary>Says over the picture that the phone is away, and why; or takes that away.</summary>
+    private void ShowAway()
+    {
+        var text = _link.Notice(Title);
+        bool changed = text != null && (AwayBox.Visibility != Visibility.Visible || AwayText.Text != text);
+        AwayText.Text = text ?? "";
+        AwayBox.Visibility = text == null ? Visibility.Collapsed : Visibility.Visible;
+        // Read out by a screen reader, which can't see that the picture has stopped.
+        if (changed)
+            UIElementAutomationPeer.CreatePeerForElement(AwayText)?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
+    }
+
+    /// <summary>
+    /// The phone has gone away. Everything that hung on the id it had is
+    /// over: its stream, what it said about itself, its volume, its lock and
+    /// its unlock screen, smooth video, and whatever it was still to answer.
+    /// The last picture stays, under the words that say it is not live.
+    /// </summary>
+    private void LetGo(string was)
+    {
+        _attachments++;
+        _gaveUpVideo = _feed?.Left(was);
+        _offered = false;
+
+        // A press that was under way ended with the connection. Nothing can
+        // be sent to lift a finger, and the phone lifts it by itself.
+        _holdTimer.Stop();
+        _downPos = null;
+        _touching = false;
+        _lastTouch = null;
+        ScreenImage.ReleaseMouseCapture();
+        ClearTrail();
+
+        // The menu, which showed what that phone could do. Closing it ends a drag of the slider.
+        CloseMenu();
+        _updateLineTimer.Stop();
+        _volumeTimer.Stop();
+        _rotationTimer.Stop();
+        _smoothTimer.Stop();
+        _phoneTypes = null;
+        _phoneState = null;
+        _viewingSince = null;
+        _lastAudible = 0;
+        _volume = new VolumeSender();
+        _asks = new AskPace();
+        _rotation = new RotationCheck();
+        _smooth = new SmoothVideo();
+        ShowMenuRows();
+        ShowSmoothRow();
+
+        // What it said about its screen and its lock, and what is drawn from that.
+        _lock = null;
+        lock (_blackWatch) _blackWatch.Forget();
+        _pictureBlack = false;
+        _lockChanges++;
+        _lookAgainTimer.Stop();
+        ShowCaption();
+        DrawUnlockScreen();
+    }
+
+    /// <summary>The phone is back, under a new id: it is asked for
+    /// everything afresh, as when the window opened.</summary>
+    private void Resume()
+    {
+        if (_phoneId is { } id) _feed?.Returned(id, _gaveUpVideo);
+        _gaveUpVideo = null;
+        SendStartView();
+        AskPhoneState(always: true);
+    }
 
     // ---------------- title bar and menu ----------------
 
@@ -331,6 +459,7 @@ public partial class PhoneViewWindow : Window
     /// the phone hasn't approved this device yet.</summary>
     public void ResendStartView()
     {
+        if (_link.Away) return;
         SendStartView();
         AskPhoneState(always: true);
     }
@@ -339,19 +468,20 @@ public partial class PhoneViewWindow : Window
     /// viewer can draw: the phone takes the latest as the whole of it.</summary>
     private void SendStartView()
     {
-        _offered = _feed != null && _approved?.Invoke() == true;
+        if (_phoneId is not { } id) return;
+        _offered = _feed != null && _approved?.Invoke(id) == true;
         // The feed is told first: the phone's answer is read on another thread.
         // It says whether video goes into the offer: only where Windows can
         // decode it, and not once the decoder has failed.
-        bool h264 = _feed?.View(_phoneId, _offered) == true;
-        _ws.SendJson(PhoneFeed.StartView(_phoneId, _offered, h264));
+        bool h264 = _feed?.View(id, _offered) == true;
+        _ws.SendJson(PhoneFeed.StartView(id, _offered, h264));
     }
 
     /// <summary>This PC has approved a device, or no longer does. If that
     /// changes what this phone may be offered, it is asked again.</summary>
     public void TrustChanged()
     {
-        if (_feed != null && (_approved?.Invoke() == true) != _offered) SendStartView();
+        if (_feed != null && _phoneId is { } id && (_approved?.Invoke(id) == true) != _offered) SendStartView();
     }
 
     // ---------------- the Stats readout ----------------
@@ -431,8 +561,10 @@ public partial class PhoneViewWindow : Window
     /// that smooth video has ended and why.</summary>
     public void OnSmoothStatus(JsonObject msg)
     {
+        int attached = _attachments;
         Dispatcher.BeginInvoke(() =>
         {
+            if (attached != _attachments) return;   // said before the phone went away
             var said = _smooth.Status(msg);
             // A state this app does not know is no answer: the phone is still waited for.
             if (_smooth.NextDue == null) _smoothTimer.Stop();
@@ -450,7 +582,7 @@ public partial class PhoneViewWindow : Window
     private void AskPhoneState(bool always = false)
     {
         var now = DateTime.UtcNow;
-        if (!_asks.Ask(now, always)) return;
+        if (_link.Away || !_asks.Ask(now, always)) return;
         // Its answer is counted with the slider's, so they can be told apart.
         _volume.Sent(now);
         SendAction("get-phone-state");
@@ -458,9 +590,10 @@ public partial class PhoneViewWindow : Window
 
     public void OnPhoneState(JsonObject msg)
     {
+        int attached = _attachments;
         Dispatcher.BeginInvoke(() =>
         {
-            if (PhoneState.Parse(msg) is not { } state) return;
+            if (attached != _attachments || PhoneState.Parse(msg) is not { } state) return;
             // What the phone can do and how its screen is held always apply.
             // Its volume doesn't when it is an answer the slider has since
             // moved on from.
@@ -531,7 +664,7 @@ public partial class PhoneViewWindow : Window
         if (_showingPhoneRotation || (sender as FrameworkElement)?.Tag is not string orientation) return;
         var now = DateTime.UtcNow;
         _volume.Sent(now);
-        _ws.SendJson(new JsonObject { ["type"] = "rotate", ["to"] = _phoneId, ["orientation"] = orientation });
+        Send(new JsonObject { ["type"] = "rotate", ["orientation"] = orientation });
         ShowRotation();
 
         _rotation.Chose(orientation, _picture?.W ?? 0, _picture?.H ?? 0, now);
@@ -547,11 +680,11 @@ public partial class PhoneViewWindow : Window
     {
         if (_phoneState is not { } state) return;
         var (mute, level) = state.SpeakerClick(_lastAudible);
-        var msg = new JsonObject { ["type"] = "volume", ["to"] = _phoneId };
+        var msg = new JsonObject { ["type"] = "volume" };
         if (mute is { } on) msg["mute"] = on;
         if (level is { } to) msg["level"] = to;
         _volume.Sent(DateTime.UtcNow);
-        _ws.SendJson(msg);
+        Send(msg);
     }
 
     private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -587,7 +720,7 @@ public partial class PhoneViewWindow : Window
         if (level is { } value)
         {
             if (value > 0) _lastAudible = value;
-            _ws.SendJson(new JsonObject { ["type"] = "volume", ["to"] = _phoneId, ["level"] = value });
+            Send(new JsonObject { ["type"] = "volume", ["level"] = value });
         }
         _volumeTimer.Stop();
         if (_volume.NextDue is { } due)
@@ -602,9 +735,10 @@ public partial class PhoneViewWindow : Window
 
     public void OnLockState(JsonObject msg)
     {
+        int attached = _attachments;
         Dispatcher.BeginInvoke(() =>
         {
-            if (LockInfo.Parse(msg) is not { } state || state == _lock) return;
+            if (attached != _attachments || LockInfo.Parse(msg) is not { } state || state == _lock) return;
             bool screenOrLock = !state.SameScreenAndLock(_lock);
             _lock = state;
             // The picture on show was taken before this, and so was any that
@@ -770,9 +904,7 @@ public partial class PhoneViewWindow : Window
     {
         foreach (var (x, y) in points)
         {
-            var tap = LockOverlay.PinTapMessage(x, y);
-            tap["to"] = _phoneId;
-            _ws.SendJson(tap);
+            Send(LockOverlay.PinTapMessage(x, y));
         }
     }
 
@@ -829,8 +961,10 @@ public partial class PhoneViewWindow : Window
     /// <param name="smooth">What the phone said about smooth sharing, if it said.</param>
     public void OnScreenInfo(int width, int height, bool typing, string? smooth = null)
     {
+        int attached = _attachments;
         Dispatcher.BeginInvoke(() =>
         {
+            if (attached != _attachments) return;   // said before the phone went away
             _phoneTypes = typing;
             _smooth.Offer(smooth);
             ShowSmoothRow();
@@ -1006,10 +1140,9 @@ public partial class PhoneViewWindow : Window
     private void SendTouch(string action, double x, double y)
     {
         _lastTouch = (x, y);
-        _ws.SendJson(new JsonObject
+        Send(new JsonObject
         {
             ["type"] = "touch",
-            ["to"] = _phoneId,
             ["action"] = action,
             ["x"] = x,
             ["y"] = y,
@@ -1077,7 +1210,7 @@ public partial class PhoneViewWindow : Window
         else if (Normalize(down) is { } a)
         {
             // Short press with no movement: plain tap.
-            _ws.SendJson(new JsonObject { ["type"] = "tap", ["to"] = _phoneId, ["x"] = a.x, ["y"] = a.y });
+            Send(new JsonObject { ["type"] = "tap", ["x"] = a.x, ["y"] = a.y });
         }
     }
 
@@ -1104,10 +1237,9 @@ public partial class PhoneViewWindow : Window
     private void Screen_MouseWheel(object sender, MouseWheelEventArgs e)
     {
         var at = Normalize(e.GetPosition(ScreenImage)) ?? (0.5, 0.5);
-        _ws.SendJson(new JsonObject
+        Send(new JsonObject
         {
             ["type"] = "pinch",
-            ["to"] = _phoneId,
             ["x"] = at.Item1,
             ["y"] = at.Item2,
             ["dir"] = e.Delta > 0 ? "in" : "out",
@@ -1253,8 +1385,7 @@ public partial class PhoneViewWindow : Window
         }
         // Held keys repeat, so holding Backspace keeps deleting.
         if (KeyMessage(key, modifiers) is not { } msg) return;
-        msg["to"] = _phoneId;
-        _ws.SendJson(msg);
+        Send(msg);
         e.Handled = true;
     }
 
@@ -1283,7 +1414,7 @@ public partial class PhoneViewWindow : Window
             _warnedNoTyping = true;
             Toast.Show("This phone can't take typing from the PC. It needs Android 13 or later and the latest Remote Desktop app.");
         }
-        _ws.SendJson(new JsonObject { ["type"] = "text", ["to"] = _phoneId, ["text"] = text });
+        Send(new JsonObject { ["type"] = "text", ["text"] = text });
     }
 
     /// <summary>Types this PC's clipboard into the phone, which is where a

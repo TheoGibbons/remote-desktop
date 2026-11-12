@@ -69,6 +69,17 @@
                            FontFamily="Segoe UI" FontSize="13" Foreground="White"
                            AutomationProperties.LiveSetting="Polite"/>
             </Border>
+            <!-- Says that the phone's connection, or this PC's, has dropped
+                 and is being waited for (see DeviceLink). It lies over the
+                 whole picture and dims it: the picture is the last one that
+                 came, and is not live. Nothing is sent to the phone
+                 meanwhile, so clicks do nothing. -->
+            <Border x:Name="AwayBox" Background="#B3000000" IsHitTestVisible="False" Visibility="Collapsed">
+                <TextBlock x:Name="AwayText" MaxWidth="300" Margin="16" TextWrapping="Wrap" TextAlignment="Center"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           FontFamily="Segoe UI" FontSize="14" Foreground="White"
+                           AutomationProperties.LiveSetting="Polite"/>
+            </Border>
             <!-- The Stats readout (F8, or Stats in the menu): how fast
                  pictures arrive and how far behind the phone they are. The
                  top layer, in a bottom corner, clear of the caption. Clicks

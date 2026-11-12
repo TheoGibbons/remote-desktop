@@ -12,11 +12,16 @@ using System.Windows.Threading;
 namespace RemoteDesktopWin;
 
 /// <summary>Browses one device's filesystem; transfers land in Downloads.</summary>
-public partial class FileExplorerWindow : Window
+public partial class FileExplorerWindow : Window, IDeviceWindow
 {
     private readonly WsClient _ws;
     private readonly FsService _fs;
-    private readonly string _phoneId;
+    // Which device this is, and whether it is in the session (see
+    // DeviceLink). While it is away nothing is asked of it or sent to it: the
+    // id it had is dead, and may be another device's when this PC is back.
+    private readonly DeviceLink _link;
+    // The id the device has, or had last: its transfers are known by it.
+    private string _phoneId;
     private readonly string _phoneName;
     private readonly Action _showTransfers;
     private readonly Action<string> _downloaded;
@@ -57,13 +62,17 @@ public partial class FileExplorerWindow : Window
     /// <param name="showTransfers">Opens the window listing every device's transfers.</param>
     /// <param name="downloaded">Told of each file a download saves in Downloads, or of the
     /// folder there that a folder's file went in.</param>
+    /// <param name="identity">The fingerprint of the device's approved key, by which it is
+    /// found again after a reconnection.</param>
     public FileExplorerWindow(WsClient ws, FsService fs, string phoneId, string phoneName, AppSettings settings,
-        Action showTransfers, Action<string> downloaded)
+        Action showTransfers, Action<string> downloaded, string? identity = null)
     {
         InitializeComponent();
         _ws = ws;
         _fs = fs;
         _phoneId = phoneId;
+        // A list of files shows nothing that is not so, however long the device is gone: it is waited for for good.
+        _link = new DeviceLink(phoneId, identity, wait: null);
         _phoneName = phoneName;
         _showTransfers = showTransfers;
         _downloaded = downloaded;
@@ -83,6 +92,48 @@ public partial class FileExplorerWindow : Window
         // Open in Downloads, which the first listing says where to find.
         _navigateToDownloads = true;
         RequestList("");
+    }
+
+    /// <summary>The id the device has now; null while it is away.</summary>
+    public string? PeerId => _link.PeerId;
+
+    /// <summary>Whether this is the window of the device with that id.</summary>
+    public bool IsOn(string? peerId) => peerId != null && _link.PeerId == peerId;
+
+    DeviceLink IDeviceWindow.Link => _link;
+    string IDeviceWindow.DeviceName => _phoneName;
+
+    /// <summary>Never called: this window waits for its device for good.</summary>
+    void IDeviceWindow.GaveUp() { }
+
+    /// <summary>
+    /// The link to the device has changed. Away, the window says so and asks
+    /// for nothing; the transfers that were under way fail by themselves and
+    /// say why. Back, under a new id, it carries on from the folder it was in.
+    /// </summary>
+    void IDeviceWindow.LinkChanged(string? was)
+    {
+        if (_link.PeerId is not { } id)
+        {
+            // A transfer under way is about to say that it failed, and why.
+            if (!Busy) SetStatus(_link.Notice(_phoneName)!);
+            return;
+        }
+        if (was != null) return;
+        _phoneId = id;
+        // What a failed upload says stays, with its Retry, which now goes to the new id.
+        if (!Busy && RetryButton.Visibility != Visibility.Visible) RequestList(_path);
+    }
+
+    private bool Busy => _uploading || _downloadIds.Count > 0 || _counting != null;
+
+    /// <summary>Said in place of doing something the device would have to answer, while it is away.</summary>
+    /// <returns>Whether it is away.</returns>
+    private bool AwayNow()
+    {
+        if (_link.Notice(_phoneName) is not { } notice) return false;
+        if (!_uploading) SetStatus(notice);
+        return true;
     }
 
     /// <param name="sending">Set for transfer progress, which gets an up or down arrow.</param>
@@ -147,7 +198,7 @@ public partial class FileExplorerWindow : Window
 
     public void OnUploadResult(JsonNode msg)
     {
-        if (msg["from"]?.GetValue<string>() != _phoneId ||
+        if (!IsOn(msg["from"]?.GetValue<string>()) ||
             msg["xferId"]?.GetValue<long>() is not long id ||
             id < 0 || id > uint.MaxValue || !_uploadIds.Remove((uint)id)) return;
         if (id == _lastUploadId)
@@ -160,6 +211,7 @@ public partial class FileExplorerWindow : Window
 
     private void RequestList(string path)
     {
+        if (AwayNow()) return;
         _requestedPath = path;
         if (!_uploading) SetStatus("Loading...");
         _ws.SendJson(new JsonObject
@@ -173,7 +225,7 @@ public partial class FileExplorerWindow : Window
 
     public void OnListResult(JsonNode msg)
     {
-        if (msg["from"]?.GetValue<string>() != _phoneId) return;
+        if (!IsOn(msg["from"]?.GetValue<string>())) return;
         var reqId = msg["reqId"]?.GetValue<string>();
         if (reqId != null && _countListings.TryGetValue(reqId, out var counted))
         {
@@ -344,6 +396,7 @@ public partial class FileExplorerWindow : Window
             SetStatus("Still counting the files in the last folder chosen");
             return;
         }
+        if (AwayNow()) return;
         // Where they are, even if the window moves on while folders are counted.
         var from = _path;
         var files = picked.Where(p => !p.Dir)
@@ -421,6 +474,8 @@ public partial class FileExplorerWindow : Window
             SetStatus("Download failed: " + ex.Message);
             return;
         }
+        // It may have gone while the folders were counted or the question was up.
+        if (AwayNow()) return;
         _downloadTotal += files.Count;
         foreach (var file in files)
         {
@@ -476,7 +531,9 @@ public partial class FileExplorerWindow : Window
         _countListings[reqId] = reply;
         try
         {
-            _ws.SendJson(new JsonObject { ["type"] = "fs-list", ["to"] = _phoneId, ["path"] = path, ["reqId"] = reqId });
+            // Not asked of a device that is away: it is reported as one that did not answer.
+            if (_link.PeerId is not { } to) throw new TimeoutException();
+            _ws.SendJson(new JsonObject { ["type"] = "fs-list", ["to"] = to, ["path"] = path, ["reqId"] = reqId });
             return await reply.Task.WaitAsync(TimeSpan.FromSeconds(15), cancel);
         }
         finally
@@ -679,6 +736,8 @@ public partial class FileExplorerWindow : Window
             if (!_uploading) SetStatus("Drop files to upload; folders are not supported.");
             return;
         }
+        // Nothing is begun while the device is away. Files that failed stay to be retried when it is back.
+        if (!_uploading && AwayNow()) return;
         foreach (var file in files) _uploadQueue.Enqueue(file);
         _uploadTotal += files.Length;
         // Files added while an upload runs join its batch.
@@ -705,8 +764,17 @@ public partial class FileExplorerWindow : Window
                 _uploadStatus = $"Sent {name}{UploadProgress}";
                 _uploadPath = null;
                 SetStatus($"Uploading {name}{UploadProgress} to Downloads...");
+                // The device went away during the batch. Its old id may be another
+                // device's by now, so nothing more goes to it: the rest wait for Retry.
+                if (_link.PeerId is not { } to)
+                {
+                    _uploadIds.Remove(xferId);
+                    _failedUploads.Add(file);
+                    _uploadError ??= $"{_phoneName} lost its connection";
+                    continue;
+                }
                 // Sent only once the device says it saved it: a file can go in full and still be lost.
-                var result = await _fs.SendFileAsync(_phoneId, file, xferId, awaitSaved: true);
+                var result = await _fs.SendFileAsync(to, file, xferId, awaitSaved: true);
                 if (result.State == TransferState.Done)
                 {
                     sent++;

@@ -1013,6 +1013,23 @@ session key never expires, and the device-authentication handshake re-runs
 silently on every reconnect — an approved device never sees a prompt again
 unless it is revoked or the session key changes.
 
+A device has a new peer id after every reconnect, and ids are handed out
+again: after the relay restarts, the id one device had may be another's. When
+a device's own connection drops, the others hear `peer-left` for its old id
+and `peer-joined` for its new one. When a device reconnects itself, it hears
+nothing about the ids it knew: its `welcome` lists who is there now. So
+nothing that is to outlast a connection may be kept by peer id. A viewer or a
+file window that is open on a device knows it by its identity, the
+fingerprint of the key it proved. While that device is not in the session
+under an id whose key has been verified and approved, the window sends
+nothing: not input, not `start-view`, not a file. When it is, the window
+sends `start-view` (or its listing request) to the new id, and takes nothing
+for granted from before: the stream, `phone-state`, `lock-state` and `smooth`
+are all told again by the host. The Windows viewer waits 60 seconds for its
+device once the PC is on the relay, then closes. A phone that is viewed tells
+a viewer that comes back this way from a new one: see the paragraph on waking
+a sleeping phone, above.
+
 ### File-access status
 
 An authenticated viewer sends `get-file-access` with `to` to query a desktop or

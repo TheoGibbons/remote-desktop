@@ -234,6 +234,50 @@ internal sealed class PhoneFeed : IDisposable
         }
     }
 
+    /// <summary>
+    /// The phone being viewed has left the session, or this PC's connection
+    /// has dropped: its id is dead, and its window is waiting for the same
+    /// phone to come back under another (see <see cref="DeviceLink"/>).
+    /// Everything that hung on the id is over, as when the window closes.
+    /// </summary>
+    /// <returns>Whether video was given up for that phone, and since when
+    /// and why: to be handed to <see cref="Returned"/> if the phone comes
+    /// back, so that it is not offered video again before its time. It is
+    /// kept here no longer: the id may be another device's next.</returns>
+    public (long At, string Why)? Left(string phoneId)
+    {
+        lock (_gate)
+        {
+            (long At, string Why)? gaveUp = _givenUp.Remove(phoneId, out var entry) ? entry : null;
+            if (phoneId == _phoneId)
+            {
+                Reset();
+                _phoneId = null;
+                _offered = false;
+                _stream.OffersH264 = false;
+            }
+            return gaveUp;
+        }
+    }
+
+    /// <summary>The phone is back under <paramref name="phoneId"/>, with what
+    /// <see cref="Left"/> answered for it. Called before <see cref="View"/>.</summary>
+    public void Returned(string phoneId, (long At, string Why)? gaveUp)
+    {
+        lock (_gate)
+        {
+            if (gaveUp is { } entry) _givenUp[phoneId] = entry;
+        }
+    }
+
+    /// <summary>This PC's connection has dropped. Every id is dead, and may
+    /// be handed to another device when the PC is back, so nothing is
+    /// remembered by one.</summary>
+    public void IdsDied()
+    {
+        lock (_gate) _givenUp.Clear();
+    }
+
     /// <summary>Under the lock.</summary>
     private void Reset()
     {

@@ -246,7 +246,7 @@ internal static class PrivacyLifecycleTests
             if (!video && !H264Decoder.IsNotInstalled)
                 throw new Exception("Windows has an H.264 decoder and it could not be set up: " + H264Decoder.WhyNotAvailable);
             string codecs = video ? "[\"h264\",\"jpeg\"]" : "[\"jpeg\"]";
-            var view = new PhoneViewWindow(ws, phone, "Test phone", feed, () => auth.IsTrusted(phone));
+            var view = new PhoneViewWindow(ws, phone, "Test phone", feed, auth.IsTrusted);
             typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, view);
             try
             {
@@ -418,7 +418,7 @@ internal static class PrivacyLifecycleTests
                     Until(() => screen.Source is System.Windows.Media.Imaging.BitmapSource { PixelWidth: 8, PixelHeight: 16 }, "A JPEG stream after video was not shown");
 
                     // And video again, with the window closing while frames are still being decoded.
-                    var closing = new PhoneViewWindow(ws, phone, "Test phone", feed, () => auth.IsTrusted(phone));
+                    var closing = new PhoneViewWindow(ws, phone, "Test phone", feed, auth.IsTrusted);
                     typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, closing);
                     OffSocket(Sealed(VideoInfo("00000000000000dd"), phone), binary: false);
                     for (int i = 0; i < encoded.Count; i++)
@@ -516,6 +516,184 @@ internal static class PrivacyLifecycleTests
                 typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
             }
 
+            // A window that is open on a device follows that device through
+            // reconnections, by the key it proved and never by its id or its
+            // name. First the relay restarts, as it does for every release:
+            // this PC drops, everyone is back under new ids, and no "left"
+            // message ever comes for the old ones. The devices here prove
+            // their keys as real ones do, by signing this PC's challenge.
+            var approvedKeys = Field<Dictionary<string, PeerAuth.TrustedDevice>>(auth, "_trusted");
+            var challenges = Field<Dictionary<string, byte[]>>(auth, "_outstandingNonce");
+            DeviceIdentity KeyOf(string name)
+            {
+                var key = DeviceIdentity.LoadOrCreate(Path.Combine(storage, name + ".bin"));
+                approvedKeys[key.Fingerprint] = new PeerAuth.TrustedDevice(key.Fingerprint, name, "android", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+                return key;
+            }
+            var phoneKey = KeyOf("Test phone");
+            var otherKey = KeyOf("Other phone");
+            JsonObject Peer(string id, string name) => new() { ["id"] = id, ["device"] = "android", ["name"] = name };
+            void Welcome(params JsonObject[] peers) => Invoke(host, "OnJson", new JsonObject
+                { ["type"] = "welcome", ["id"] = "this-pc", ["peers"] = new JsonArray(peers.Cast<JsonNode?>().ToArray()) });
+            void Proves(string id, DeviceIdentity key)
+            {
+                var nonce = challenges[id];
+                Invoke(host, "OnJson", new JsonObject
+                {
+                    ["type"] = "auth-response", ["from"] = id, ["nonce"] = Convert.ToBase64String(nonce),
+                    ["pub"] = Convert.ToBase64String(key.PublicKey), ["sig"] = Convert.ToBase64String(key.Sign(nonce, "")),
+                });
+            }
+            void WaitFor(Func<bool> done, string what)
+            {
+                for (int i = 0; i < 100 && !done(); i++) Pump(20);
+                if (!done()) throw new Exception(what);
+            }
+            byte[] picture;
+            using (var bitmap = new System.Drawing.Bitmap(8, 16))
+            using (var bytes = new MemoryStream())
+            {
+                bitmap.Save(bytes, System.Drawing.Imaging.ImageFormat.Jpeg);
+                picture = bytes.ToArray();
+            }
+            byte[] PictureOf(ulong stream, uint seq) => Frame(Crypto.ChPhone, PhoneFrame.Build(
+                new PhoneFrameHeader(stream, seq, true, PhoneFrame.Jpeg, false, false, 8, 16, 0), picture));
+            string Announce(string stream, string extra = "") => "{\"type\":\"screen-info\",\"width\":8,\"height\":16,\"typing\":true," +
+                "\"stream\":\"" + stream + "\",\"codec\":\"jpeg\",\"capture\":\"accessibility\"" + extra + "}";
+            // What the windows send. The main window tells every approved device where it
+            // stands with this PC as it joins, whichever device that is, and that is left out.
+            List<JsonObject> FromWindows() => Outgoing()
+                .Where(m => m["type"]!.GetValue<string>() is not ("file-access" or "privacy-state")).ToList();
+            var words = new List<string>();
+            Toast.Capture = words.Add;
+            PhoneViewWindow? follower = null;
+            FileExplorerWindow? files = null;
+            bool closed = false;
+            var explorers = Field<List<FileExplorerWindow>>(host, "_fileExplorers");
+            try
+            {
+                Invoke(host, "OnState", "connected");
+                Welcome(Peer("p1", "Test phone"));
+                Proves("p1", phoneKey);
+                if (!auth.IsTrusted("p1")) throw new Exception("setup: the phone that proved an approved key is not approved");
+                Outgoing();
+                follower = new PhoneViewWindow(ws, "p1", "Test phone", feed, auth.IsTrusted, phoneKey.Fingerprint);
+                follower.Closed += (_, _) => closed = true;
+                typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, follower);
+                files = new FileExplorerWindow(ws, Field<FsService>(host, "_fs"), "p1", "Test phone", Field<AppSettings>(host, "_settings"),
+                    () => { }, _ => { }, phoneKey.Fingerprint);
+                explorers.Add(files);
+                var shownAt = (System.Windows.Controls.Image)follower.FindName("ScreenImage");
+                var away = (System.Windows.Controls.Border)follower.FindName("AwayBox");
+                var awayText = (System.Windows.Controls.TextBlock)follower.FindName("AwayText");
+                var caption = (System.Windows.Controls.Border)follower.FindName("CaptionBox");
+                var smoothRow = (System.Windows.Controls.Button)follower.FindName("SmoothButton");
+                var fileStatus = (System.Windows.Controls.TextBlock)files.FindName("StatusText");
+                var opened = Outgoing();
+                if (!opened.Any(m => m["type"]!.GetValue<string>() == "start-view" && m["to"]!.GetValue<string>() == "p1" && m["codecs"] != null) ||
+                    !opened.Any(m => m["type"]!.GetValue<string>() == "fs-list" && m["to"]!.GetValue<string>() == "p1"))
+                    throw new Exception("setup: the windows did not ask the phone for its screen and its files");
+
+                // The phone is viewed: a picture, smooth video on, and asleep behind its lock.
+                OffSocket(Sealed(Announce("00000000000000a1", ",\"smooth\":\"on\""), "p1"), binary: false);
+                OffSocket(PictureOf(0xa1, 0), binary: true);
+                OffSocket(Sealed("{\"type\":\"lock-state\",\"screenOn\":false,\"locked\":true}", "p1"), binary: false);
+                WaitFor(() => shownAt.Source != null, "setup: the phone's picture was not shown");
+                if (smoothRow.Visibility != Visibility.Visible || caption.Visibility != Visibility.Visible)
+                    throw new Exception("setup: the window does not show what the phone said about itself");
+                var lastPicture = shownAt.Source;
+                Outgoing();
+
+                // This PC drops off the relay.
+                Invoke(host, "OnState", "disconnected: connection closed");
+                if (follower.PeerId != null || files.PeerId != null) throw new Exception("A window kept the id of a device after this PC lost its connection");
+                if (away.Visibility != Visibility.Visible || awayText.Text != "This PC has lost its connection. Reconnecting…")
+                    throw new Exception("The viewer does not say that this PC is reconnecting: " + awayText.Text);
+                if (smoothRow.Visibility == Visibility.Visible || caption.Visibility == Visibility.Visible)
+                    throw new Exception("What the phone said under its old id was kept after it went away");
+                if (fileStatus.Text != "This PC has lost its connection. Reconnecting…")
+                    throw new Exception("The files window does not say that this PC is reconnecting: " + fileStatus.Text);
+                Invoke(host, "OnState", "connecting");
+
+                // Back on the relay. Another approved phone has been handed the id
+                // the first one had, and calls itself by the same name.
+                Invoke(host, "OnState", "connected");
+                if (awayText.Text != "Test phone has lost its connection. Waiting for it to come back…")
+                    throw new Exception("The viewer does not say that it is waiting for the phone: " + awayText.Text);
+                Welcome(Peer("p1", "Test phone"), Peer("p9", "Test phone"));
+                Proves("p1", otherKey);
+                if (!auth.IsTrusted("p1")) throw new Exception("setup: the other phone is not approved");
+                if (follower.PeerId != null || files.PeerId != null)
+                    throw new Exception("A window was attached to another device because it has the old id and the same name");
+                // Whatever is typed, clicked or asked for meanwhile goes nowhere, and what
+                // the device with the old id sends is not the phone's.
+                Invoke(follower, "SendText", "secret");
+                Invoke(follower, "SendAction", "homebtn");
+                follower.ResendStartView();
+                Invoke(files, "RequestList", "");
+                OffSocket(Sealed(Announce("00000000000000a2"), "p1"), binary: false);
+                OffSocket(PictureOf(0xa2, 0), binary: true);
+                OffSocket(PictureOf(0xa1, 1), binary: true);
+                OffSocket(Sealed("{\"type\":\"lock-state\",\"screenOn\":false,\"locked\":true}", "p1"), binary: false);
+                Pump(200);
+                var leaked = FromWindows();
+                if (leaked.Count != 0) throw new Exception("Something was sent while the phone was away: " + leaked[0].ToJsonString());
+                if (!ReferenceEquals(lastPicture, shownAt.Source) || caption.Visibility == Visibility.Visible)
+                    throw new Exception("A device that has the phone's old id was drawn or believed in the phone's window");
+
+                // The phone itself is back, under a new id, and proves its key.
+                Proves("p9", phoneKey);
+                if (follower.PeerId != "p9" || files.PeerId != "p9") throw new Exception("The windows were not attached to the phone under its new id");
+                if (away.Visibility == Visibility.Visible) throw new Exception("The viewer still says the phone is away");
+                var again = FromWindows();
+                if (again.Any(m => m["to"]?.GetValue<string>() != "p9"))
+                    throw new Exception("Something went to an id other than the phone's new one: " + again.First(m => m["to"]?.GetValue<string>() != "p9").ToJsonString());
+                if (!again.Any(m => m["type"]!.GetValue<string>() == "start-view" && m["codecs"] != null) ||
+                    !again.Any(m => m["type"]!.GetValue<string>() == "get-phone-state") ||
+                    !again.Any(m => m["type"]!.GetValue<string>() == "fs-list"))
+                    throw new Exception("The phone was not asked for its screen, its state and its files again under its new id");
+                // Its new stream is shown, and its word is taken again.
+                OffSocket(Sealed(Announce("00000000000000a3", ",\"smooth\":\"available\""), "p9"), binary: false);
+                OffSocket(PictureOf(0xa3, 0), binary: true);
+                WaitFor(() => !ReferenceEquals(lastPicture, shownAt.Source), "The phone's pictures were not shown under its new id");
+                if (smoothRow.Visibility != Visibility.Visible) throw new Exception("The phone's word about smooth video was not taken under its new id");
+                if (FromWindows().Any(m => m["to"]?.GetValue<string>() != "p9")) throw new Exception("A picture was acknowledged to the wrong id");
+                Console.WriteLine("PASS: when this PC reconnects, its windows wait and carry on with the same device under its new id, and with no other");
+
+                // Only the phone's connection drops: it leaves, and joins again under another id.
+                Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-left", ["id"] = "p9" });
+                if (closed || follower.PeerId != null) throw new Exception("The viewer did not wait for a phone that left");
+                if (awayText.Text != "Test phone has lost its connection. Waiting for it to come back…")
+                    throw new Exception("The viewer does not say that the phone has lost its connection: " + awayText.Text);
+                Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-joined", ["peer"] = Peer("p12", "Test phone") });
+                if (follower.PeerId != null) throw new Exception("The viewer was attached to a device that has proved nothing yet");
+                Proves("p12", phoneKey);
+                if (follower.PeerId != "p12" || away.Visibility == Visibility.Visible)
+                    throw new Exception("The viewer did not carry on with a phone that reconnected");
+                if (!Outgoing().Any(m => m["type"]!.GetValue<string>() == "start-view" && m["to"]!.GetValue<string>() == "p12"))
+                    throw new Exception("The phone that reconnected was not asked for its screen again");
+
+                // It leaves and stays away: the viewer waits a minute, says so, and closes. The files window stays.
+                Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-left", ["id"] = "p12" });
+                words.Clear();
+                Invoke(host, "CheckLinks", DateTime.UtcNow + DeviceLink.Wait - TimeSpan.FromSeconds(5));
+                if (closed) throw new Exception("The viewer gave up on its phone before the wait was over");
+                Invoke(host, "CheckLinks", DateTime.UtcNow + DeviceLink.Wait + TimeSpan.FromSeconds(5));
+                if (!closed) throw new Exception("The viewer stayed open on a phone that did not come back");
+                if (!words.SequenceEqual(new[] { "Test phone did not come back online, so its window was closed." }))
+                    throw new Exception("The person was not told why the viewer closed: " + string.Join(" | ", words));
+                if (!explorers.Contains(files) || files.PeerId != null) throw new Exception("The files window did not go on waiting");
+                Console.WriteLine("PASS: a viewer waits for a phone that reconnects, and closes with a word of why when it stays away");
+            }
+            finally
+            {
+                Toast.Capture = null;
+                if (!closed) follower?.Close();
+                typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
+                files?.Close();
+                explorers.Clear();
+            }
+
             // The device list. View and Files are for a device this PC has
             // approved: what is typed in a viewer and the files that are sent
             // go to the device the row names, and until its key is approved
@@ -543,7 +721,9 @@ internal static class PrivacyLifecycleTests
                 keys["row-refused"] = new string('c', 64);
                 refused.Add(new string('c', 64));
                 Invoke(host, "RefreshDeviceList");
-                var rows = ((IEnumerable<MainWindow.DeviceRow>)host.DevicesList.ItemsSource).ToDictionary(r => r.PeerId!);
+                // The devices that are online; approved ones that are not have rows too.
+                var rows = ((IEnumerable<MainWindow.DeviceRow>)host.DevicesList.ItemsSource).Where(r => r.PeerId != null)
+                    .ToDictionary(r => r.PeerId!);
                 if (!rows["row-approved"].CanOpen || rows["row-approved"].ViewTip != DeviceActions.ViewTip ||
                     rows["row-approved"].FilesTip != DeviceActions.FilesTip)
                     throw new Exception("An approved device's row does not offer View and Files");

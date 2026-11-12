@@ -91,7 +91,10 @@ public partial class MainWindow : Window
     private volatile PhoneViewWindow? _phoneView;   // read by the phone feed's thread too
     private PcViewWindow? _pcView;
     // One per device, so each upload goes to the device its window names.
-    private readonly Dictionary<string, FileExplorerWindow> _fileExplorers = new();
+    private readonly List<FileExplorerWindow> _fileExplorers = new();
+    // Looks once a second, while a window is waiting for its device to come
+    // back, whether it has waited long enough (see DeviceLink).
+    private readonly DispatcherTimer _linkTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly TransferList _transfers;
     private readonly DownloadsFolderOpener _downloadsOpener;
     private TransfersWindow? _transfersWindow;
@@ -155,6 +158,10 @@ public partial class MainWindow : Window
         // rather than from inside it.
         _auth.ApprovalNeeded += req => Dispatcher.BeginInvoke(() => ShowApprovalPrompt(req));
         _auth.Changed += RefreshDeviceList;
+        // A device that proves its key and is approved may be the one a window is waiting for.
+        _auth.Changed += FindDevicesAgain;
+        _linkTimer.Tick += (_, _) => CheckLinks(DateTime.UtcNow);
+        Closed += (_, _) => _linkTimer.Stop();
         // A phone approved, or no longer approved, while its window is open is asked again.
         _auth.Changed += () => _phoneView?.TrustChanged();
         _auth.Changed += () =>
@@ -645,6 +652,10 @@ public partial class MainWindow : Window
         _lastState = state;
         if (state != "connected")
         {
+            // First, while each window still knows the id it was using: the
+            // ids are dead, and when this PC is back they may be other devices'.
+            EachLink(link => link.ConnectionLost());
+            _phoneFeed.IdsDied();
             _peers.Clear();
             _auth.ResetConnection(); // peer ids are stale after a drop
             CaptureOfferCard.PeerLeft(null);
@@ -652,7 +663,53 @@ public partial class MainWindow : Window
             _fs.PeerLeft(null, RelayLostError(state));
             RefreshDeviceList();
         }
+        // Back on the relay: each window's device is waited for from now.
+        else EachLink(link => link.Connected(DateTime.UtcNow));
         UpdateStatusCard();
+    }
+
+    // ---------- windows that are open on a device ----------
+
+    // A window sends to the id the relay gave its device, and ids do not
+    // last: see DeviceLink. This is where the three kinds of window are told
+    // that their device has gone, and are attached to it again when the same
+    // approved key turns up in the session under another id.
+
+    private IEnumerable<IDeviceWindow> DeviceWindows()
+    {
+        if (_phoneView is { } phone) yield return phone;
+        if (_pcView is { } pc) yield return pc;
+        foreach (var files in _fileExplorers) yield return files;
+    }
+
+    /// <summary>Makes a change to every window's link, and tells the windows it changed something for.</summary>
+    private void EachLink(Func<DeviceLink, bool> change)
+    {
+        foreach (var window in DeviceWindows().ToList())
+        {
+            var was = window.Link.PeerId;
+            if (change(window.Link)) window.LinkChanged(was);
+        }
+        WatchLinks();
+    }
+
+    private void WatchLinks() => _linkTimer.IsEnabled = DeviceWindows().Any(w => w.Link.GiveUpAt != null);
+
+    /// <summary>
+    /// Attaches each window whose device is away to that device, if it is in
+    /// the session again: one that has proved the same key, and is approved.
+    /// Never by its name, and never by the id it had.
+    /// </summary>
+    private void FindDevicesAgain() => EachLink(link =>
+        link.Away && link.Identity != null &&
+        _peers.FirstOrDefault(p => _auth.IsTrusted(p.Id) && _auth.FingerprintOf(p.Id) == link.Identity) is { } back &&
+        link.Returned(back.Id, _auth.FingerprintOf(back.Id)));
+
+    /// <summary>Has each window that has waited long enough for its device say so and close.</summary>
+    private void CheckLinks(DateTime now)
+    {
+        foreach (var window in DeviceWindows().Where(w => w.Link.GaveUp(now)).ToList()) window.GaveUp();
+        WatchLinks();
     }
 
     /// <summary>Why transfers failed, with this PC's own reason for the drop when it has
@@ -908,6 +965,11 @@ public partial class MainWindow : Window
                 _peers.RemoveAll(p => p.Id == leftId);
                 if (leftId != null)
                 {
+                    // A window open on it waits for the same device to come
+                    // back: a phone whose connection dropped is in the session
+                    // again a moment later, under a new id. Before the id is
+                    // forgotten, so the window is never taken for unapproved.
+                    EachLink(link => link.Left(leftId, DateTime.UtcNow));
                     _auth.OnPeerLeft(leftId);
                     // Drop their viewport, or the stream stays cropped to a
                     // region nobody is looking at any more.
@@ -916,8 +978,6 @@ public partial class MainWindow : Window
                     _fs.PeerLeft(leftId, $"{leftName} went offline");
                 }
                 RefreshDeviceList();
-                if (_pcView != null && _pcView.PeerId == leftId) _pcView.Close();
-                if (_phoneView != null && _phoneView.PeerId == leftId) _phoneView.Close();
                 break;
 
             case "error":
@@ -1069,38 +1129,38 @@ public partial class MainWindow : Window
                 break;
 
             case "clip-get-result":
-                if (_pcView != null && _pcView.PeerId == from) _pcView.OnClipResult(msg);
+                if (_pcView != null && _pcView.IsOn(from)) _pcView.OnClipResult(msg);
                 break;
             case "clip-set-result":
-                if (_pcView != null && _pcView.PeerId == from) _pcView.OnPasteResult(msg);
+                if (_pcView != null && _pcView.IsOn(from)) _pcView.OnPasteResult(msg);
                 break;
 
             case "screen-info":
                 var siW = msg["width"]?.GetValue<int>() ?? 0;
                 var siH = msg["height"]?.GetValue<int>() ?? 0;
-                if (_phoneView != null && _phoneView.PeerId == from)
+                if (_phoneView != null && _phoneView.IsOn(from))
                     _phoneView.OnScreenInfo(siW, siH, msg["typing"]?.GetValue<bool>() ?? false,
                         // Whether it can be asked for smooth video. Only an approved phone's word puts a row in the menu.
                         _auth.IsTrusted(from) && msg["smooth"] is JsonValue smooth && smooth.TryGetValue<string>(out var word) ? word : null);
-                if (_pcView != null && _pcView.PeerId == from) _pcView.OnScreenInfo(siW, siH);
+                if (_pcView != null && _pcView.IsOn(from)) _pcView.OnScreenInfo(siW, siH);
                 break;
 
             case "phone-state":
                 // The phone being viewed says what its menu can offer, and its volume.
-                if (_phoneView != null && _phoneView.PeerId == from && msg is JsonObject phoneState)
+                if (_phoneView != null && _phoneView.IsOn(from) && msg is JsonObject phoneState)
                     _phoneView.OnPhoneState(phoneState);
                 break;
 
             case "lock-state":
                 // The phone being viewed says whether its screen is on and whether it is locked.
-                if (_phoneView != null && _phoneView.PeerId == from && msg is JsonObject lockState)
+                if (_phoneView != null && _phoneView.IsOn(from) && msg is JsonObject lockState)
                     _phoneView.OnLockState(lockState);
                 break;
 
             case "smooth-status":
                 // The phone being viewed says how a request for smooth video went, in
                 // words of its own that are shown: only an approved phone's are.
-                if (_phoneView != null && _phoneView.PeerId == from && _auth.IsTrusted(from) && msg is JsonObject smoothStatus)
+                if (_phoneView != null && _phoneView.IsOn(from) && _auth.IsTrusted(from) && msg is JsonObject smoothStatus)
                     _phoneView.OnSmoothStatus(smoothStatus);
                 break;
 
@@ -1124,12 +1184,12 @@ public partial class MainWindow : Window
                 break;
 
             case "fs-list-result":
-                if (from != null && _fileExplorers.TryGetValue(from, out var listed)) listed.OnListResult(msg);
+                _fileExplorers.FirstOrDefault(w => w.IsOn(from))?.OnListResult(msg);
                 break;
             case "fs-saved":
                 // The answer to a file this PC sent, which an upload waits for.
                 _fs.HandleJson(msg, peerAccessAllowed: false);
-                if (from != null && _fileExplorers.TryGetValue(from, out var saved)) saved.OnUploadResult(msg);
+                _fileExplorers.FirstOrDefault(w => w.IsOn(from))?.OnUploadResult(msg);
                 break;
         }
     }
@@ -1164,8 +1224,8 @@ public partial class MainWindow : Window
             case "trusted":
                 // Approved (possibly after a prompt): re-request any stream whose
                 // start-view was dropped while we were still unapproved.
-                if (_pcView != null && _pcView.PeerId == from) _pcView.ResendStartView();
-                if (_phoneView != null && _phoneView.PeerId == from) _phoneView.ResendStartView();
+                if (_pcView != null && _pcView.IsOn(from)) _pcView.ResendStartView();
+                if (_phoneView != null && _phoneView.IsOn(from)) _phoneView.ResendStartView();
                 break;
             case "pending":
                 Toast.Show($"{PeerName(from)} is asking its user to approve this device — " +
@@ -1176,8 +1236,8 @@ public partial class MainWindow : Window
                 break;
             case "revoked":
             case "disconnected":
-                if (_pcView != null && _pcView.PeerId == from) _pcView.Close();
-                if (_phoneView != null && _phoneView.PeerId == from) _phoneView.Close();
+                if (_pcView != null && _pcView.IsOn(from)) _pcView.Close();
+                if (_phoneView != null && _phoneView.IsOn(from)) _phoneView.Close();
                 if (from != null) _streamer.Regions.RemoveViewer(from);
                 _streamer.Stop(); // a full hang-up: stop streaming to them too
                 Toast.Show(status == "revoked"
@@ -1416,9 +1476,10 @@ public partial class MainWindow : Window
     {
         if (_phoneView == null || !_phoneView.IsLoaded)
         {
-            var view = new PhoneViewWindow(_ws, phone.Id, phone.Name, _phoneFeed, () => _auth.IsTrusted(phone.Id));
+            var view = new PhoneViewWindow(_ws, phone.Id, phone.Name, _phoneFeed, _auth.IsTrusted,
+                _auth.FingerprintOf(phone.Id));
             _phoneView = view;
-            view.Closed += (_, _) => _phoneView = null;
+            view.Closed += (_, _) => { _phoneView = null; WatchLinks(); };
             view.Show();
         }
         else
@@ -1431,8 +1492,8 @@ public partial class MainWindow : Window
     {
         if (_pcView == null || !_pcView.IsLoaded)
         {
-            _pcView = new PcViewWindow(_ws, pc.Id, pc.Name);
-            _pcView.Closed += (_, _) => _pcView = null;
+            _pcView = new PcViewWindow(_ws, pc.Id, pc.Name, _auth.FingerprintOf(pc.Id));
+            _pcView.Closed += (_, _) => { _pcView = null; WatchLinks(); };
             _pcView.Show();
         }
         else
@@ -1445,15 +1506,15 @@ public partial class MainWindow : Window
     {
         if (peer == null) { Toast.Show("That device is no longer online."); return; }
         if (DeviceActions.WhyNot(StandingOf(peer.Id), "browsed") is { } why) { Toast.Show(why, 7000); return; }
-        if (_fileExplorers.TryGetValue(peer.Id, out var open))
+        if (_fileExplorers.FirstOrDefault(w => w.IsOn(peer.Id)) is { } open)
         {
             open.Activate();
             return;
         }
         var explorer = new FileExplorerWindow(_ws, _fs, peer.Id, peer.Name, _settings, ShowTransfers,
-            _downloadsOpener.Saved);
-        _fileExplorers[peer.Id] = explorer;
-        explorer.Closed += (_, _) => _fileExplorers.Remove(peer.Id);
+            _downloadsOpener.Saved, _auth.FingerprintOf(peer.Id));
+        _fileExplorers.Add(explorer);
+        explorer.Closed += (_, _) => _fileExplorers.Remove(explorer);
         explorer.Show();
     }
 
