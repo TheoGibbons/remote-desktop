@@ -1,6 +1,6 @@
 # Waking and unlocking a phone from a viewer: plan
 
-Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). All three phases were built on 2026-11-11 and their sections below describe what was built. None of it is released, and nothing that needs a sleeping or locked phone has been tried yet.
+Written 2026-11-10 against `main` at `30009c4` (one commit after v1.0.53). All three phases were built on 2026-11-11 and their sections below describe what was built. It was released in v1.0.55 on 2026-11-12. What needs a sleeping or locked phone was tried on the S26 that day (see each phase's section); the real pattern, a PIN and a password lock have not been tried by anyone.
 
 **This is the plan for unlocking.** `PHONE-VIDEO-PLAN.md` used to contain a *Phase U. Unlocking the phone from the PC*; that phase is now a pointer here, and its checks C4 and C5 stay there as a record. [Differences from Phase U](#differences-from-phase-u) lists what changed on the way. `PHONE-PLANS-ORDER.md` gives the build order: this plan is its steps 5 to 7, after the menu plan and before the video plan.
 
@@ -161,7 +161,7 @@ Tests: `LockScreenReaderTest` (plain JVM, no Robolectric) with the S26's pattern
 
 ### Phase 3: the phone viewer, and docs
 
-Built 2026-11-11, not released.
+Built 2026-11-11, released in v1.0.55 (2026-11-12).
 
 - `PhoneViewerActivity` / `PhoneScreenView` (the plan said `RemoteScreenView`, which is the PC viewer's view): the same overlay, drawn in the view's own `onDraw`, decided in `LockCaption.kt`. A finger drag over the grid already streams as `touch`; its trail is drawn while one finger is down. PIN keys are tapped directly. The viewer's keyboard box follows the same rule as the PC's keyboard while a PIN pad is up (`LockCaption.pinMessages`): digits become taps marked `onlyIfLocked`, Backspace and Enter the pad's delete and OK keys, and nothing is sent as text. A password is typed with the viewer's keyboard button.
 - PROTOCOL.md: `entry` and `message` of `lock-state`. `android/README.md`: what the Accessibility service now reads and when, replacing "reads no text". README.md and windows/README.md say the unlock screen is drawn.

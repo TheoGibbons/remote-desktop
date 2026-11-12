@@ -134,7 +134,11 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           DEFAULT_RELAY_SERVER_URL: wss://relay.remote-desktop.co/ws
         run: |
-          .\android\gradlew.bat -p android --no-daemon :app:assembleRelease :app:bundleRelease :app:lintRelease :app:testDebugUnitTest
+          # The output is also kept in a file, so that a failure can be named
+          # in a later step. cmd joins Gradle's two streams, so PowerShell is
+          # handed plain lines.
+          $log = Join-Path $env:RUNNER_TEMP 'gradle.log'
+          cmd /c ".\android\gradlew.bat -p android --no-daemon :app:assembleRelease :app:bundleRelease :app:lintRelease :app:testDebugUnitTest 2>&1" | Tee-Object -FilePath $log
           if ($LASTEXITCODE -ne 0) { throw 'Android build failed.' }
           Move-Item android/app/build/outputs/apk/release/app-release.apk dist/RemoteDesktop-Android.apk
           Move-Item android/app/build/outputs/bundle/release/app-release.aab dist/RemoteDesktop-Android.aab
@@ -160,6 +164,40 @@ jobs:
                 "::error title=$($case.classname).$($case.name)::$text"
               }
             }
+
+      - name: Name the Gradle failure
+        if: failure()
+        shell: pwsh
+        run: |
+          # Gradle's own account of what went wrong, as annotations, for the
+          # same reason: a build that fails before any test has run leaves
+          # nothing for the step above to name.
+          $log = Join-Path $env:RUNNER_TEMP 'gradle.log'
+          if (-not (Test-Path -LiteralPath $log)) { exit 0 }
+          $lines = @(Get-Content -LiteralPath $log)
+          if ($lines.Count -eq 0) { '::error title=Gradle::Gradle printed nothing'; exit 0 }
+          # A later step failed, not the build.
+          if (@($lines | Where-Object { $_ -match '^BUILD SUCCESSFUL' }).Count -gt 0) { exit 0 }
+          $say = {
+            param($title, $text)
+            $text = $text -join "`n"
+            if ($text.Length -gt 3000) { $text = $text.Substring(0, 3000) }
+            $text = $text -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
+            "::error title=$title::$text"
+          }
+          $failed = @($lines | Where-Object { $_ -match '^> Task .* FAILED$' })
+          if ($failed.Count -gt 0) { & $say 'Gradle tasks that failed' $failed }
+          $at = 0..($lines.Count - 1) | Where-Object { $lines[$_] -match '^\* What went wrong:' } | Select-Object -First 1
+          if ($null -ne $at) {
+            $end = [Math]::Min($at + 25, $lines.Count - 1)
+            $try = $at..$end | Where-Object { $lines[$_] -match '^\* Try:' } | Select-Object -First 1
+            if ($null -ne $try) { $end = $try - 1 }
+            & $say 'Gradle: what went wrong' $lines[$at..$end]
+          } else {
+            & $say 'Gradle: its last lines' @($lines | Select-Object -Last 25)
+          }
+          $errors = @($lines | Where-Object { $_ -match '^e: |: error: |: Error: ' } | Select-Object -First 15)
+          if ($errors.Count -gt 0) { & $say 'Compiler and lint errors' $errors }
 
       - name: Verify Android signature
         shell: pwsh
