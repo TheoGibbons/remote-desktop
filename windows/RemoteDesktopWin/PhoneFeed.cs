@@ -82,6 +82,14 @@ internal sealed class PhoneFeed : IDisposable
     private readonly Action<PhonePicture> _draw;
     private readonly Action<PhoneVideoPicture>? _drawVideo;
     private readonly Action<JsonObject> _send;
+    // Which connection to the relay this PC is on, and which one the phone
+    // was last asked for its screen on. The phone's id means the phone only on
+    // that one. The window hears of a drop on its own thread, a moment after
+    // it happens; until then this is what keeps an acknowledgement, a request
+    // or a ping from going out under the old id on the next connection, where
+    // the id may be another device's.
+    private readonly Func<int>? _connection;
+    private int _viewedOn;
     private readonly Func<long> _nowMs;
     private readonly PhoneVideoStream _stream = new();
     private readonly AckPacer _acks = new();
@@ -159,12 +167,18 @@ internal sealed class PhoneFeed : IDisposable
     /// out, the feed's thread finds out as it starts, which takes a moment
     /// and so is kept off the window's thread; a feed with no thread never
     /// finds out and offers none.</param>
+    /// <param name="connection">Which connection to the relay this PC is on:
+    /// a number that moves on whenever one opens or closes. Nothing is sent to
+    /// the phone on any connection but the one it was last asked on. Left out,
+    /// everything is sent.</param>
     /// <param name="gaveUp">Told when video is given up for a phone: its peer
     /// id, and why. Called under the feed's lock, on whichever thread found
     /// out, so it must only pass the word on.</param>
     public PhoneFeed(Action<PhonePicture> draw, Action<JsonObject> send, Func<long> nowMs, bool ownThread = true,
-        Action<PhoneVideoPicture>? drawVideo = null, bool? canDecodeH264 = null, Action<string, string>? gaveUp = null)
+        Action<PhoneVideoPicture>? drawVideo = null, bool? canDecodeH264 = null, Action<string, string>? gaveUp = null,
+        Func<int>? connection = null)
     {
+        _connection = connection;
         _gaveUp = gaveUp;
         _draw = draw;
         _send = send;
@@ -213,6 +227,7 @@ internal sealed class PhoneFeed : IDisposable
             }
             _phoneId = phoneId;
             _offered = offered;
+            _viewedOn = _connection?.Invoke() ?? 0;
             _stream.OffersH264 = offered && _canDecode == true && !_givenUp.ContainsKey(phoneId);
             return _stream.OffersH264;
         }
@@ -406,9 +421,9 @@ internal sealed class PhoneFeed : IDisposable
             else return;
             Monitor.Pulse(_gate);
         }
-        if (ack != null) _send(ack);
-        if (keyframe != null) _send(keyframe);
-        if (jpegOnly != null) _send(jpegOnly);
+        if (ack != null) Send(ack);
+        if (keyframe != null) Send(keyframe);
+        if (jpegOnly != null) Send(jpegOnly);
     }
 
     /// <summary>
@@ -705,6 +720,8 @@ internal sealed class PhoneFeed : IDisposable
 
     private void Send(JsonObject message)
     {
+        // Not under an id from a connection that is over.
+        if (_connection != null && _connection() != Volatile.Read(ref _viewedOn)) return;
         try { _send(message); }
         catch (Exception ex) { Debug.WriteLine($"Phone feed: {ex.Message}"); }
     }

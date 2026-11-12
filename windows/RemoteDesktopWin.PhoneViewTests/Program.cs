@@ -53,6 +53,7 @@ internal static class Program
         CheckAcknowledgements();
         CheckFeedDrawsAnnouncedFrames();
         CheckFeedBelievesOnlyAnApprovedPhone();
+        CheckFeedSendsOnlyOnTheConnectionItAskedOn();
         CheckFeedKeepsTheNewest();
         CheckFeedOnItsOwnThread();
         CheckStartView();
@@ -1346,6 +1347,44 @@ internal static class Program
     }
 
     private static bool Drew(List<byte[]> drawn, params byte[] picture) => drawn.Count == 1 && drawn[0].SequenceEqual(picture);
+
+    /// <summary>
+    /// The connection drops and another opens before the window has heard of
+    /// it: the window hears on its own thread. Frames may still arrive, and the
+    /// readout's pings fall due, with the phone's old id still in hand, and on
+    /// the new connection that id may be another device's.
+    /// </summary>
+    private static void CheckFeedSendsOnlyOnTheConnectionItAskedOn()
+    {
+        int connection = 4;
+        long now = 1000;
+        var sent = new List<string>();
+        using var feed = new PhoneFeed(_ => { }, m => sent.Add(m.ToJsonString()), () => now, ownThread: false, connection: () => connection);
+        byte[] Frame(uint seq) => [Crypto.ChPhone, .. PhoneFrame.Build(new PhoneFrameHeader(StreamA, seq, true, PhoneFrame.Jpeg, false, false, 8, 16, 0), [1, 2])];
+        feed.View("7", offered: true);
+        feed.OnScreenInfo(new JsonObject { ["type"] = "screen-info", ["from"] = "7", ["stream"] = IdA, ["codec"] = "jpeg" });
+        feed.OnFrame(Frame(0));
+        feed.ShowStats(true);
+        while (feed.Pump()) { }
+        Check(sent.Count(m => m.Contains("frame-ack")) == 1 && sent.Count(m => m.Contains("diagnostic-ping")) == 1,
+            "setup: on the connection it asked on, the feed acknowledges and pings: " + string.Join(" ", sent));
+
+        // Dropped and connected again, and the window has not caught up.
+        connection += 2;
+        sent.Clear();
+        now += 5000;
+        feed.OnFrame(Frame(1));
+        while (feed.Pump()) { }
+        Check(sent.Count == 0, "Nothing goes out under the phone's old id on a later connection: " + string.Join(" ", sent));
+
+        // The window attaches to the phone again, under its new id, and it is all sent again.
+        feed.Left("7");
+        feed.View("12", offered: true);
+        feed.OnScreenInfo(new JsonObject { ["type"] = "screen-info", ["from"] = "12", ["stream"] = IdA, ["codec"] = "jpeg" });
+        feed.OnFrame(Frame(0));
+        Check(sent.Count(m => m.Contains("frame-ack") && m.Contains("\"to\":\"12\"")) == 1, "Asked again on the new connection, the phone is acknowledged there");
+        Console.WriteLine("PASS: the feed sends nothing under a phone's id on any connection but the one it asked on");
+    }
 
     private static void CheckFeedDrawsAnnouncedFrames()
     {

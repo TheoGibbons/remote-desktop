@@ -204,7 +204,8 @@ public partial class MainWindow : Window
             drawVideo: PhoneVideoDecoded,
             // Said once, where the person at the PC will see it. The Stats readout has the reason.
             gaveUp: (phoneId, _) => Dispatcher.BeginInvoke(() =>
-                Toast.Show($"This PC could not show {PeerName(phoneId)}'s video, so its screen is shown as pictures instead.")));
+                Toast.Show($"This PC could not show {PeerName(phoneId)}'s video, so its screen is shown as pictures instead.")),
+            connection: () => _ws.Generation);
         Closed += (_, _) => _phoneFeed.Dispose();
         _pcPatches = new FrameMailbox(MaxWaitingPatches, patch => _pcView?.OnPatch(patch), drawLater);
 
