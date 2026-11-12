@@ -43,6 +43,16 @@ The release workflow builds the APK and AAB together, runs Android lint and unit
 tests, and verifies both signatures before creating the GitHub Release. Both
 artifacts compile and target API 36, with Android 8.0 (API 26) as the minimum.
 
+`.github/workflows/android.yml` runs the same build, lint and tests with a
+throwaway signing key when the Android code on `main` changes, and twice a
+week. A run that passes also saves the libraries Gradle and Robolectric
+downloaded. A release reads that cache, so it downloads only what changed since
+the last passing run on `main`. A release that changes libraries is pushed
+together with its tag, so it still downloads those. When Gradle or Robolectric
+reports a failed download, the build waits and tries again, three times over
+eleven minutes. Both workflows build through
+`.github/scripts/build-android.ps1`.
+
 For local builds, use JDK 21 and Android SDK Platform 36. Set
 `ANDROID_KEYSTORE_FILE` to the absolute path of the existing keystore, and set
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD` in
