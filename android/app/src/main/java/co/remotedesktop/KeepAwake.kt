@@ -27,7 +27,9 @@ package co.remotedesktop
  * device is taken to be coming back, not starting, unless its last view ended
  * with its own `stop-view`, which is what closing a viewer sends. Devices are
  * told apart by their identity, which survives a reconnection; the id the
- * relay gives them does not.
+ * relay gives them does not. [ViewerReturns] does the same for waking the
+ * phone and announcing the viewer, and says why it has a limit of time and
+ * this has none.
  *
  * Used from the network thread and the main one.
  */

@@ -202,8 +202,15 @@ A phone that has gone to sleep is woken by input, as touching it would wake
 it: by every message in the table except the `move`s of a `touch`, `lock`,
 `volume`, `rotate` and `get-phone-state`. `start-view` wakes it too, when it
 comes from a device that was not already viewing; a viewer that sends it again
-neither wakes the phone nor is announced on it again. Its lock screen stays in
-place.
+neither wakes the phone nor is announced on it again. Nor does a viewer that
+is only back. A viewer whose connection dropped, or that sees the phone come
+back after the phone's did, sends `start-view` again by itself, with nobody at
+it, and it is under a new peer id then. So the phone knows each viewer by its
+identity, the key it approved, and takes its `start-view` for a return when
+that device's last view ended without a `stop-view` from it, and no more than
+five minutes ago. After five minutes, or after a `stop-view`, it is a viewer
+that someone opened: the phone wakes and announces it. The lock screen stays
+in place either way.
 
 The phone answers `volume`, `rotate` and `get-phone-state`, to the device that sent them, with:
 
@@ -367,8 +374,10 @@ only back after its connection dropped does not: a viewer asks for the screen
 again by itself then, with nobody at it. The phone takes a `start-view` for
 such a return unless that device, by its identity and not its peer id, ended
 its last view with `stop-view`. So a viewer sends `stop-view` when the person
-at it stops viewing, and not when its connection drops. Accessibility viewing
-does not keep the phone awake.
+at it stops viewing, and not when its connection drops. No length of absence
+makes a return count here, unlike for waking the phone (above), where a return
+is believed for five minutes. Accessibility viewing does not keep the phone
+awake.
 
 **File system** (`path` uses the native separators of the target device)
 

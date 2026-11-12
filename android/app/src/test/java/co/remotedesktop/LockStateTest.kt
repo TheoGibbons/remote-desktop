@@ -55,6 +55,10 @@ class LockStateTest {
     @Suppress("UNCHECKED_CAST")
     private val trustedPeers get() = authField("trustedPeers").get(PeerAuth) as MutableSet<String>
 
+    /** The key each device proved it holds, by its peer id. */
+    @Suppress("UNCHECKED_CAST")
+    private val fingerprints get() = authField("peerFingerprint").get(PeerAuth) as MutableMap<String, String>
+
     private val captureContext = PhoneScreenCapture::class.java.getDeclaredField("appContext")
         .apply { isAccessible = true }
 
@@ -82,6 +86,8 @@ class LockStateTest {
         previous["capture"] = captureContext.get(PhoneScreenCapture)
         captureContext.set(PhoneScreenCapture, null)
         PhoneScreenCapture.init(context)
+        // Whose views an earlier test cut off: none of them is coming back in this one.
+        PhoneScreenCapture.returns = ViewerReturns()
         service = Robolectric.buildService(InputAccessibilityService::class.java).create().get()
         instanceField.set(null, service)
         // Left behind by a test that ended with a wake still to be looked at,
@@ -110,6 +116,7 @@ class LockStateTest {
         for ((name, value) in previous) connectionField(name).set(ConnectionManager, value)
         ConnectionManager.peers.clear()
         trustedPeers.clear()
+        fingerprints.clear()
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
@@ -311,6 +318,70 @@ class LockStateTest {
         receive("pc", "start-view")
         assertNotNull(ShadowPowerManager.getLatestWakeLock())
         assertEquals(3, ShadowToast.shownToastCount())
+    }
+
+    /** The relay says a device has left, and then that it has joined again: the same key under a new id. */
+    private fun rejoins(was: String, id: String, key: String, name: String = "Test PC") {
+        handleJson.invoke(ConnectionManager, JSONObject().put("type", "peer-left").put("id", was))
+        ConnectionManager.peers.add(ConnectionManager.Peer(id, "windows", name))
+        trustedPeers.add(id)
+        fingerprints[id] = key
+        idle()
+    }
+
+    /**
+     * A PC whose connection dropped comes back under a new id and asks for
+     * the screen again by itself, with nobody at it. Every release of the app
+     * restarts the relay, which does this to every viewer at once.
+     */
+    @Test
+    fun aViewerThatIsOnlyBackNeitherWakesThePhoneNorIsAnnouncedAgain() {
+        fingerprints["pc"] = "the pc's key"
+        receive("pc", "start-view")
+        assertEquals(1, ShadowToast.shownToastCount())
+        screen(on = false, locked = true, Intent.ACTION_SCREEN_OFF)
+
+        rejoins(was = "pc", id = "pc-2", key = "the pc's key")
+        socket.messages.clear()
+        receive("pc-2", "start-view")
+        assertNull("Coming back must not turn the screen on", ShadowPowerManager.getLatestWakeLock())
+        assertEquals(1, ShadowToast.shownToastCount())
+        assertTrue(PhoneScreenCapture.isViewing("pc-2"))
+        // Its window is told how things stand all the same: it knows nothing under its new id.
+        assertEquals(1, lockStates("pc-2").size)
+
+        // The same when it is the phone that lost its connection, and every id is new.
+        PhoneScreenCapture.onViewStopped()
+        rejoins(was = "pc-2", id = "pc-3", key = "the pc's key")
+        receive("pc-3", "start-view")
+        assertNull(ShadowPowerManager.getLatestWakeLock())
+        assertEquals(1, ShadowToast.shownToastCount())
+
+        // Another device that is given the id the PC had is not the PC.
+        rejoins(was = "other-pc", id = "pc", key = "another key", name = "Other PC")
+        receive("pc", "start-view")
+        assertNotNull("A device that was not viewing before wakes the phone", ShadowPowerManager.getLatestWakeLock())
+        assertEquals(2, ShadowToast.shownToastCount())
+        aSecondLater()
+        ShadowPowerManager.clearWakeLocks()
+
+        // Closed by the person at it and opened again, it is a new viewer, whatever its id.
+        receive("pc-3", "stop-view")
+        rejoins(was = "pc-3", id = "pc-4", key = "the pc's key")
+        receive("pc-4", "start-view")
+        assertNotNull(ShadowPowerManager.getLatestWakeLock())
+        assertEquals(3, ShadowToast.shownToastCount())
+        aSecondLater()
+        ShadowPowerManager.clearWakeLocks()
+
+        // And so it is when it comes back long after it was cut off: its app
+        // was closed with the viewer open, and someone has opened it again.
+        handleJson.invoke(ConnectionManager, JSONObject().put("type", "peer-left").put("id", "pc-4"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ViewerReturns.WITHIN_MS + 1_000))
+        rejoins(was = "pc-4", id = "pc-5", key = "the pc's key")
+        receive("pc-5", "start-view")
+        assertNotNull(ShadowPowerManager.getLatestWakeLock())
+        assertEquals(4, ShadowToast.shownToastCount())
     }
 
     @Test

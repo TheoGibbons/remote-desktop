@@ -96,6 +96,8 @@ class PhoneScreenCaptureTest {
         PhoneScreenCapture.init(context)
         PhoneScreenCapture.stateListeners.clear()
         PhoneScreenCapture.onViewStopped()
+        // Whose views were cut off just now, or by an earlier test: none of them is coming back in this one.
+        PhoneScreenCapture.returns = ViewerReturns()
         main.idle()
     }
 

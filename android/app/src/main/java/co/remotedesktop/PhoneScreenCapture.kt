@@ -45,6 +45,9 @@ object PhoneScreenCapture {
     private val viewerDevice = ConcurrentHashMap<String, String>()
 
     private fun identityOf(peerId: String): String = PeerAuth.fingerprintOfPeer(peerId) ?: peerId
+
+    /** Which devices are only back after a view that was cut off, and so neither wake the phone nor are announced. */
+    internal var returns = ViewerReturns()
     private var appContext: Context? = null
     val stateListeners = CopyOnWriteArrayList<() -> Unit>()
 
@@ -74,16 +77,20 @@ object PhoneScreenCapture {
         // Only a device that was not already viewing wakes the phone and is
         // announced. A viewer may ask again, and that changes nothing here.
         val started = viewers.put(peerId, codecs) == null
-        if (started) identityOf(peerId).let {
-            viewerDevice[peerId] = it
-            ScreenCaptureService.viewerStarted(it)
+        // Nor does a device that is only back: its connection or this phone's
+        // dropped, and it asks again by itself, under a new id (ViewerReturns).
+        val device = if (started) identityOf(peerId) else null
+        val opened = device != null && !returns.isBack(device, SystemClock.elapsedRealtime())
+        if (device != null) {
+            viewerDevice[peerId] = device
+            ScreenCaptureService.viewerStarted(device)
         }
         // Whatever it was told about the stream, it is told again: it may have started over.
         synchronized(streamLock) { told.remove(peerId) }
-        if (started) ScreenWaker.wake(context)
+        if (opened) ScreenWaker.wake(context)
         main.post {
             if (!viewers.containsKey(peerId)) return@post
-            if (started) {
+            if (opened) {
                 val setupHint = if (Build.VERSION.SDK_INT >= 30)
                     "Enable Screen view and control (Accessibility) in Permissions & Access"
                 else "Enable screen sharing in Permissions & Access to view this phone"
@@ -122,7 +129,10 @@ object PhoneScreenCapture {
         for (id in if (peerId == null) viewers.keys.toList() else listOf(peerId)) {
             // A stop-view also counts from a device whose view was already lost with its connection.
             val wasViewing = viewers.remove(id) != null
-            if (wasViewing || byViewer) ScreenCaptureService.viewerStopped(viewerDevice.remove(id) ?: identityOf(id), byViewer)
+            if (wasViewing || byViewer) (viewerDevice.remove(id) ?: identityOf(id)).let {
+                returns.ended(it, byViewer, SystemClock.elapsedRealtime())
+                ScreenCaptureService.viewerStopped(it, byViewer)
+            }
         }
         forgetGone()
         // If it starts again it is told how things stand again, though nothing has changed.
@@ -132,8 +142,10 @@ object PhoneScreenCapture {
 
     /** [peerId] may no longer view. Not its own doing, so it is not a view that it closed. */
     private fun onViewEnded(peerId: String) {
-        if (viewers.remove(peerId) != null)
-            ScreenCaptureService.viewerStopped(viewerDevice.remove(peerId) ?: identityOf(peerId), byItself = false)
+        if (viewers.remove(peerId) != null) (viewerDevice.remove(peerId) ?: identityOf(peerId)).let {
+            returns.ended(it, byItself = false, SystemClock.elapsedRealtime())
+            ScreenCaptureService.viewerStopped(it, byItself = false)
+        }
     }
 
     /** Rechecked before capture and before sending, including after asynchronous screenshots. */

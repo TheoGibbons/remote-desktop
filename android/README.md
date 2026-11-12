@@ -343,7 +343,12 @@ When an approved device starts viewing, or sends a tap or key while the screen
 is off, the phone turns its screen on. The lock screen stays in place and the
 phone sleeps again on its usual timeout. Setting the volume, turning the
 screen and locking are not input and leave a sleeping phone asleep. So does a
-viewer that is already viewing and asks for the picture again.
+viewer that is already viewing and asks for the picture again, and one that
+is only back: when a connection drops, or the relay is restarted, a viewer
+that was open carries on by itself, and the phone neither wakes for it nor
+shows "started viewing" again. It knows the device by the key it approved.
+A viewer that comes back more than five minutes later is treated as newly
+opened.
 
 A Samsung phone turns its screen on for an app only while that app's
 notifications are allowed. That is why **Notifications** is one of the rows
