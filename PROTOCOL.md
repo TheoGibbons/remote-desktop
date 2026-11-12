@@ -1025,7 +1025,20 @@ under an id whose key has been verified and approved, the window sends
 nothing: not input, not `start-view`, not a file. When it is, the window
 sends `start-view` (or its listing request) to the new id, and takes nothing
 for granted from before: the stream, `phone-state`, `lock-state` and `smooth`
-are all told again by the host. The Windows viewer waits 60 seconds for its
+are all told again by the host.
+
+The same holds for a device that is being viewed. When its own connection
+drops it forgets every viewer: it stops its stream and drops their viewports
+and codecs, and whatever a peer had asked of it and not yet been answered
+(a clipboard request, a file on its way) is dropped unanswered. It serves
+nobody again until that device has proved its key on the new connection and
+sent `start-view` again. Between a connection opening and `welcome` it knows
+nobody, and takes nobody for approved: "every peer is approved" is never
+concluded from an empty list. And it never sends a frame with nobody to
+address, which the relay would deliver to the whole session. A Windows host
+did none of this until 2026-11-11: it kept streaming to its viewers' old ids,
+and so, after a relay restart, to whichever approved device had been handed
+one. The Windows viewer waits 60 seconds for its
 device once the PC is on the relay, then closes. A phone that is viewed tells
 a viewer that comes back this way from a new one: see the paragraph on waking
 a sleeping phone, above.

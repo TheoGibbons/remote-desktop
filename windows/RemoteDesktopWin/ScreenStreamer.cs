@@ -222,7 +222,9 @@ public class ScreenStreamer
         {
             while (!ct.IsCancellationRequested)
             {
-                if (Gate is { } gate && !gate())
+                // Nothing is ever sent to nobody: the relay takes a frame with
+                // no address for one that is meant for everybody.
+                if (Gate is { } gate && !gate() || !Regions.HasViewers)
                 {
                     // Stream paused: the viewer state is unknown, so resume with
                     // a full frame rather than deltas against a stale canvas.

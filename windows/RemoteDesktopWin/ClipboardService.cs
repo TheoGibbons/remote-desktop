@@ -114,6 +114,10 @@ internal sealed class ClipboardService
     private readonly Action<JsonObject> _send;
     private readonly Func<string, bool> _controlAllowed;
     private readonly Func<bool> _filesAllowed;
+    // Which connection to the relay this PC is on: a number that moves on
+    // whenever one opens or closes. A peer id means a device only on the
+    // connection it was heard on; on the next it may be another device's.
+    private readonly Func<int>? _connection;
     // One request at a time: a paste landing during a copy's wait would be
     // read back as that copy.
     private readonly SemaphoreSlim _busy = new(1, 1);
@@ -121,12 +125,19 @@ internal sealed class ClipboardService
     /// <param name="controlAllowed">Whether a peer may control this PC right now. Asked
     /// again when a request's turn comes, since the switch may change while it waits.</param>
     /// <param name="filesAllowed">Whether this PC's files may be fetched.</param>
-    public ClipboardService(Action<JsonObject> send, Func<string, bool> controlAllowed, Func<bool> filesAllowed)
+    /// <param name="connection">Which connection this PC is on. A request that has waited through a
+    /// reconnection is dropped: its turn must not come, and its answer must not go, under an id that
+    /// may by then be some other device's. Left out, every request is carried out.</param>
+    public ClipboardService(Action<JsonObject> send, Func<string, bool> controlAllowed, Func<bool> filesAllowed,
+        Func<int>? connection = null)
     {
         _send = send;
         _controlAllowed = controlAllowed;
         _filesAllowed = filesAllowed;
+        _connection = connection;
     }
+
+    private bool Gone(int connection) => _connection != null && _connection() != connection;
 
     /// <summary>A string field, or null when it is missing, JSON null, not a
     /// string, or not valid UTF-16 (a lone surrogate escape).</summary>
@@ -155,9 +166,11 @@ internal sealed class ClipboardService
     public async Task HandleGetAsync(string peerId, string? reqId, bool press)
     {
         JsonObject reply;
+        int connection = _connection?.Invoke() ?? 0;
         await _busy.WaitAsync();
         try
         {
+            if (Gone(connection)) return;
             reply = await CopyAsync(peerId, reqId, press);
         }
         catch (Exception ex)
@@ -169,6 +182,8 @@ internal sealed class ClipboardService
         {
             _busy.Release();
         }
+        // The answer goes to the device that asked, or to nobody.
+        if (Gone(connection)) return;
         _send(reply);
     }
 
@@ -229,9 +244,11 @@ internal sealed class ClipboardService
     public async Task HandleSetAsync(JsonNode msg, string peerId, string peerName)
     {
         var reply = Reply("clip-set-result", peerId, Str(msg["reqId"]));
+        int connection = _connection?.Invoke() ?? 0;
         await _busy.WaitAsync();
         try
         {
+            if (Gone(connection)) return;
             reply["error"] = await SetAsync(msg, peerId, peerName);
         }
         catch (Exception ex)
@@ -242,6 +259,8 @@ internal sealed class ClipboardService
         {
             _busy.Release();
         }
+        // The answer goes to the device that asked, or to nobody.
+        if (Gone(connection)) return;
         _send(reply);
     }
 

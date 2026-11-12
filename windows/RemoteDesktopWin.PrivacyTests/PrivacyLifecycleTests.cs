@@ -34,6 +34,8 @@ internal static class PrivacyLifecycleTests
         var privacy = Field<PrivacyOverlayManager>(host, "_privacy");
         var streamer = Field<ScreenStreamer>(host, "_streamer");
         var trusted = Field<HashSet<string>>(auth, "_trustedPeers");
+        // What the host would tell the person at this PC is never put on the screen of whoever runs this.
+        Toast.Capture = Quiet;
         const string peer = "viewer";
         const string reconnected = "reconnected-viewer";
         try
@@ -507,7 +509,7 @@ internal static class PrivacyLifecycleTests
                 }
                 finally
                 {
-                    Toast.Capture = null;
+                    Toast.Capture = Quiet;
                 }
             }
             finally
@@ -515,6 +517,47 @@ internal static class PrivacyLifecycleTests
                 view.Close();
                 typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
             }
+
+            // This PC as the one being viewed, when its connection drops. Its
+            // screen goes to its viewers' ids, and those are dead: after the
+            // relay restarts, one may be handed to a device that never asked
+            // to view. So the stream ends with the connection, nothing is
+            // taken for approved until the relay has said who is there, and a
+            // viewer has to ask again.
+            host.AllowStreamCheck.IsChecked = true;   // not saved: see above
+            trusted.Add(peer);
+            Json("start-view", peer);
+            if (!streamer.IsStreaming || !streamer.Regions.IsViewing(peer)) throw new Exception("setup: the PC is not being viewed");
+            Invoke(host, "OnState", "disconnected: connection closed");
+            if (streamer.IsStreaming || streamer.Regions.HasViewers)
+                throw new Exception("This PC went on streaming to its viewers' old ids after its connection dropped");
+            if (auth.AllPeersTrusted) throw new Exception("With the connection gone, everyone was taken for approved");
+            Invoke(host, "OnState", "connecting");
+            Invoke(host, "OnState", "connected");
+            if (streamer.IsStreaming || auth.AllPeersTrusted)
+                throw new Exception("Back on the relay, and before it has said who is there, this PC would send to everybody");
+            Invoke(host, "OnJson", new JsonObject { ["type"] = "welcome", ["id"] = "this-pc", ["peers"] = new JsonArray(
+                new JsonObject { ["id"] = peer, ["device"] = "android", ["name"] = "Someone else" }) });
+            if (streamer.IsStreaming || auth.AllPeersTrusted || auth.IsTrusted(peer))
+                throw new Exception("A device that was handed a viewer's old id was sent this PC's screen, or taken for approved");
+            host.AllowStreamCheck.IsChecked = false;
+            // The same for what a device asked of the clipboard before the drop:
+            // neither carried out nor answered under an id that has changed hands.
+            int connection = 1;
+            var answered = new List<JsonObject>();
+            var clipboard = new ClipboardService(answered.Add, _ => false, () => true, () => connection);
+            Task clipAsk = clipboard.HandleGetAsync(peer, "9", press: false);
+            while (!clipAsk.IsCompleted) Pump(5);
+            if (answered.Count != 1) throw new Exception("setup: a clipboard request on the same connection was not answered");
+            answered.Clear();
+            // The connection changes while the request waits its turn, which is when the switch is asked about.
+            clipboard = new ClipboardService(answered.Add, _ => { connection++; return false; }, () => true, () => connection);
+            clipAsk = clipboard.HandleGetAsync(peer, "10", press: false);
+            while (!clipAsk.IsCompleted) Pump(5);
+            clipAsk = clipboard.HandleSetAsync(new JsonObject { ["reqId"] = "11", ["text"] = "x" }, peer, "Someone else");
+            while (!clipAsk.IsCompleted) Pump(5);
+            if (answered.Count != 0) throw new Exception("A clipboard request was answered under an id from before a reconnection");
+            Console.WriteLine("PASS: when this PC's connection drops it stops streaming, and nothing goes to an old id or to everybody until its viewers have asked again");
 
             // A window that is open on a device follows that device through
             // reconnections, by the key it proved and never by its id or its
@@ -717,7 +760,7 @@ internal static class PrivacyLifecycleTests
             }
             finally
             {
-                Toast.Capture = null;
+                Toast.Capture = Quiet;
                 if (!closed) follower?.Close();
                 typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
                 if (files != null && explorers.Contains(files)) files.Close();
@@ -782,7 +825,7 @@ internal static class PrivacyLifecycleTests
             }
             finally
             {
-                Toast.Capture = null;
+                Toast.Capture = Quiet;
             }
         }
         finally
@@ -870,6 +913,8 @@ internal static class PrivacyLifecycleTests
             Invoke(host, "OnJson", new JsonObject { ["type"] = type, ["from"] = from, ["id"] = id,
                 ["enabled"] = enabled, ["autoUnprivacy"] = autoUnprivacy });
     }
+
+    private static readonly Action<string> Quiet = _ => { };
 
     private static T Field<T>(object instance, string name) =>
         (T)instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(instance)!;

@@ -126,6 +126,9 @@ public class PeerAuth
     private readonly Dictionary<string, TrustedDevice> _trusted = new();   // fingerprint -> entry
     private readonly HashSet<string> _deniedFingerprints = new();          // this process run only
     private readonly List<PendingRequest> _pending = new();
+    // Whether the relay has said who is in the session on this connection.
+    // True until the first connection, when there is nothing to send to anyone.
+    private bool _sessionKnown = true;
 
     // Per-connection state (peer ids are new on every reconnect).
     private readonly Dictionary<string, (string Name, string Device)> _peerInfo = new();
@@ -183,8 +186,21 @@ public class PeerAuth
         _peerFingerprint.Clear();
         _trustedPeers.Clear();
         _pending.Clear();
+        _sessionKnown = false;
         RecomputeAllTrusted();
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// The relay's welcome has arrived: who is in the session is known from
+    /// here on, as each one is passed to <see cref="OnPeerJoined"/>. Between
+    /// a connection opening and this, nobody is known, and "everyone here is
+    /// approved" must not be taken from an empty list.
+    /// </summary>
+    public void OnSessionKnown()
+    {
+        _sessionKnown = true;
+        RecomputeAllTrusted();
     }
 
     public void OnPeerJoined(string id, string name, string device)
@@ -358,7 +374,7 @@ public class PeerAuth
         });
 
     private void RecomputeAllTrusted() =>
-        _allTrusted = _peerInfo.Keys.All(_trustedPeers.Contains);
+        _allTrusted = _sessionKnown && _peerInfo.Keys.All(_trustedPeers.Contains);
 
     private void Save()
     {

@@ -34,6 +34,18 @@ internal static class Program
             await ExpectIdle(ws);
             Console.WriteLine("PASS: idle recovery request survives a busy video lane");
 
+            // The last viewer is gone, as when the connection drops. A frame
+            // with nobody to address is one the relay sends to everybody, so
+            // none is made, whatever is asked for meanwhile.
+            streamer.Regions.Clear();
+            streamer.RequestKeyframe();
+            await ExpectIdle(ws);
+            streamer.Regions.SetRegion("viewer", new ViewRegion(0, 0, 0.1, 0.1, 100, 100));
+            streamer.Regions.SetH264("viewer", true);
+            await ExpectFrame(ws, keyframe: true);
+            await ExpectIdle(ws);
+            Console.WriteLine("PASS: nothing is sent while nobody is viewing");
+
             // A final inter frame can be dropped downstream with no next seq
             // to reveal the gap. The periodic refresh must still repair it.
             DxgiCaptureSource.DamageNextCapture = true;

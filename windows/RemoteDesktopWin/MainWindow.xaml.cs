@@ -135,7 +135,9 @@ public partial class MainWindow : Window
         _fs.PushSaved += path => Dispatcher.BeginInvoke(() => _downloadsOpener.Saved(path));
         _clip = new ClipboardService(_ws.SendJson,
             peer => AllowStreamCheck.IsChecked == true && _auth.IsTrusted(peer),
-            () => AllowFilesCheck.IsChecked == true);
+            () => AllowFilesCheck.IsChecked == true,
+            // A request is its sender's only on the connection it came in on.
+            () => _ws.Generation);
         _privacy = new PrivacyOverlayManager(Dispatcher);
         _privacy.Changed += error =>
         {
@@ -428,14 +430,20 @@ public partial class MainWindow : Window
     /// phone that is viewing it. It answers with update-status as it goes.</summary>
     private async Task UpdateForPeerAsync(string peerId)
     {
-        void Reply(string state, string? error = null) => _ws.SendJson(new JsonObject
+        // Only on the connection the request came in on: after another, the id is not that device's.
+        int connection = _ws.Generation;
+        void Reply(string state, string? error = null)
         {
-            ["type"] = "update-status",
-            ["to"] = peerId,
-            ["state"] = state,
-            ["version"] = state == "current" ? Updater.RunningVersion : _updater.Latest,
-            ["error"] = error,
-        });
+            if (_ws.Generation != connection) return;
+            _ws.SendJson(new JsonObject
+            {
+                ["type"] = "update-status",
+                ["to"] = peerId,
+                ["state"] = state,
+                ["version"] = state == "current" ? Updater.RunningVersion : _updater.Latest,
+                ["error"] = error,
+            });
+        }
 
         if (_updater.Latest == null)
         {
@@ -656,6 +664,14 @@ public partial class MainWindow : Window
             // ids are dead, and when this PC is back they may be other devices'.
             EachLink(link => link.ConnectionLost());
             _phoneFeed.IdsDied();
+            // And this PC as the one being viewed. Its screen goes to the
+            // ids of its viewers, and those ids are dead: when the PC is
+            // back, one of them may belong to a device that never asked to
+            // view, and until the relay says who is there, a frame with
+            // nobody to address goes to everybody. So the stream ends here,
+            // with every viewer's viewport. A viewer that wants it back asks
+            // again, once it has proved its key again.
+            _streamer.Stop();
             _peers.Clear();
             _auth.ResetConnection(); // peer ids are stale after a drop
             CaptureOfferCard.PeerLeft(null);
@@ -928,6 +944,9 @@ public partial class MainWindow : Window
         switch (type)
         {
             case "welcome":
+                // The relay has said who is in the session. Until each of
+                // them has proved an approved key, nothing is broadcast.
+                _auth.OnSessionKnown();
                 _peers.Clear();
                 foreach (var p in msg["peers"]!.AsArray())
                     _peers.Add(Peer.From(p!));
