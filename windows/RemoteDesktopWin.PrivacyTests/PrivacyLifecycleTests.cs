@@ -684,13 +684,43 @@ internal static class PrivacyLifecycleTests
                     throw new Exception("The person was not told why the viewer closed: " + string.Join(" | ", words));
                 if (!explorers.Contains(files) || files.PeerId != null) throw new Exception("The files window did not go on waiting");
                 Console.WriteLine("PASS: a viewer waits for a phone that reconnects, and closes with a word of why when it stays away");
+
+                // Hanging up on a device from its row, or revoking it, closes this PC's
+                // own windows on it. The device stops sending its screen here when it
+                // hears, so a viewer left open would show its last picture for good.
+                typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
+                Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-joined", ["peer"] = Peer("p20", "Test phone") });
+                Proves("p20", phoneKey);
+                if (files.PeerId != "p20") throw new Exception("setup: the files window was not attached to the phone that came back");
+                PhoneViewWindow Viewer()
+                {
+                    var window = new PhoneViewWindow(ws, "p20", "Test phone", feed, auth.IsTrusted, phoneKey.Fingerprint);
+                    window.Closed += (_, _) => typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
+                    typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, window);
+                    return window;
+                }
+                bool Viewing() => typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(host) != null;
+                var onRow = new MainWindow.DeviceRow { PeerId = "p20", Fingerprint = phoneKey.Fingerprint, Name = "Test phone" };
+                Viewer();
+                Invoke(host, "DisconnectRow", new MainWindow.DeviceRow { PeerId = "p1", Name = "Other phone" });
+                if (!Viewing()) throw new Exception("Hanging up on one device closed the viewer of another");
+                Invoke(host, "DisconnectRow", onRow);
+                if (Viewing()) throw new Exception("The viewer stayed open on a device this PC hung up on");
+                if (!explorers.Contains(files) || files.PeerId != "p20") throw new Exception("Hanging up on a device closed its files window, which still works");
+                // Revoked, after the question has been answered yes: no window stays on a device that is not approved.
+                Viewer();
+                files.Closed += (_, _) => explorers.Remove(files);
+                Invoke(host, "Revoke", onRow, phoneKey.Fingerprint);
+                if (Viewing() || explorers.Contains(files)) throw new Exception("A window stayed open on a device whose approval was taken away");
+                if (auth.IsTrusted("p20")) throw new Exception("setup: the device is still approved");
+                Console.WriteLine("PASS: hanging up on a device closes this PC's viewer of it, and revoking it closes every window on it");
             }
             finally
             {
                 Toast.Capture = null;
                 if (!closed) follower?.Close();
                 typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
-                files?.Close();
+                if (files != null && explorers.Contains(files)) files.Close();
                 explorers.Clear();
             }
 

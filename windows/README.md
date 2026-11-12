@@ -179,7 +179,8 @@ reconnects and restarts; it is keyed to the device's cryptographic identity in
 its name. The **Devices** list shows every approved or connected device with
 **Approve / Deny / Revoke / Disconnect** buttons — *Revoke* deletes the
 approval (the device must be approved again to connect), *Disconnect* just ends
-its current session. Changing the session key resets all approvals. While an
+its current session. Either one also closes this PC's own viewer of that
+device, and *Revoke* its files window too. Changing the session key resets all approvals. While an
 unapproved device is present in the session, streaming and file serving pause.
 A device's **View** and **Files** buttons are greyed until this PC has
 approved it, and say why when the pointer rests on them: what you type in a

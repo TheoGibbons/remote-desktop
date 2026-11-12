@@ -1424,7 +1424,18 @@ public partial class MainWindow : Window
             "It will be disconnected and must be approved again before it can connect.",
             "Revoke device", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (res != MessageBoxResult.Yes) return;
+        Revoke(row, fp);
+    }
+
+    /// <summary>Revokes a device, once the person has said yes.</summary>
+    private void Revoke(DeviceRow row, string fp)
+    {
         _auth.Revoke(fp); // untrusting the live peer also pauses the stream via the gate
+        // Its windows go with its approval. The device stops sending this PC
+        // its screen and its files when it hears, so a window left open would
+        // show the last picture for good; and no window is to be open on a
+        // device that is not approved, whether it is here now or expected back.
+        foreach (var window in DeviceWindows().Where(w => w.Link.Identity == fp).ToList()) ((Window)window).Close();
         Toast.Show($"Revoked {row.Name}");
     }
 
@@ -1435,6 +1446,10 @@ public partial class MainWindow : Window
         // Hang up whatever it was watching. (Sessions are expected to hold two
         // devices, so stopping the streamer outright is fine.)
         _streamer.Stop();
+        // And this PC's own view of it: the device stops sending its screen
+        // here when it hears, and the viewer would show its last picture for good.
+        if (_pcView != null && _pcView.IsOn(id)) _pcView.Close();
+        if (_phoneView != null && _phoneView.IsOn(id)) _phoneView.Close();
         Toast.Show($"Disconnected {row.Name} (it stays trusted and may reconnect)");
     }
 
