@@ -28,6 +28,7 @@ class VideoBitrateTest {
     private val failures = ArrayList<String>()
     private var room = true
     private var sent = 0
+    private var refuse: (VideoSetup.Attempt) -> Boolean = { false }
 
     /** Whether a viewer's acknowledgements are late. Where a test does not say, they are whenever there is no room. */
     private var behind: Boolean? = null
@@ -38,6 +39,7 @@ class VideoBitrateTest {
     private fun video(fed: Boolean = false) = PhoneVideo(
         encoders = { listOf(VideoSetup.Encoder("hardware", hardware = true, constantBitrate = true) { _, _ -> true }) },
         open = { attempt, _, _, events ->
+            if (refuse(attempt)) throw IllegalStateException("cannot configure ${attempt.width}")
             FakeVideoPipe(attempt, events).also {
                 it.keyPadTo = KEYFRAME
                 pipes += it
@@ -266,6 +268,22 @@ class VideoBitrateTest {
         assertTrue(video.start(1080, 2340))
         assertEquals(START, pipe.attempt.bitrate)
         assertEquals(START, video.bitrate)
+    }
+
+    @Test
+    fun aSizeThatWillNotStartAfterATurnLeavesTheRateWhereItWas() {
+        running()
+        scroll(4, heldMs = 500)
+        assertEquals(DOWN_ONCE, video.bitrate)
+
+        // The phone is turned. At the new shape the encoder refuses the full size, and three quarters is tried.
+        video.stop()
+        refuse = { it.width == 2340 }
+        assertTrue(video.start(2340, 1080))
+        assertEquals(1754 to 810, pipe.width to pipe.height)
+        val usual = VideoSetup.bitrate(1754, 810)
+        assertEquals((usual * 0.7).toInt(), pipe.attempt.bitrate)
+        assertEquals((usual * 0.7).toInt(), video.bitrate)
     }
 
     @Test

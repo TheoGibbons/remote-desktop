@@ -463,6 +463,21 @@ class BitrateStepsTest {
     }
 
     @Test
+    fun aSizeThatWillNotStartDoesNotThrowAwayTheRateThatWasCarriedOver() {
+        broughtDown(1)
+        steps.ended(now)
+        now += 50
+        // The phone was turned, and at its new shape the encoder will not start at full size:
+        // that is asked about and refused, and three quarters size is tried, a moment later.
+        val full = VideoSetup.bitrate(2340, 1080)
+        val smaller = VideoSetup.bitrate(1754, 810)
+        assertEquals((full * 0.7).toInt(), steps.begin(full, now))
+        now += 30
+        assertEquals((smaller * 0.7).toInt(), steps.begin(smaller, now))
+        assertEquals((smaller * 0.7).toInt(), steps.bitrate)
+    }
+
+    @Test
     fun anEncoderStartedLaterStartsOver() {
         broughtDown(2)
         steps.ended(now)

@@ -94,19 +94,22 @@ internal class BitrateSteps(
 
     /**
      * An encoder is being started that would, with nothing known about the
-     * link, be given [startRate] bits a second.
+     * link, be given [startRate] bits a second. Called once for every
+     * encoder and size that is tried: one that will not start is followed by
+     * the next, which carries on from the same place.
      * @return what to give it.
      */
     @Synchronized fun begin(startRate: Int, now: Long): Int {
-        if (endedAt == NEVER || now - endedAt > KEEP_MS) {
+        // Measured from when the last encoder that ran ended, however many have been tried since.
+        if (endedAt != NEVER && now - endedAt > KEEP_MS) {
             factor = 1.0
             climbWaitMs = 0
             noClimbBefore = NEVER
             lastUpAt = NEVER
             lastKeyAskAt = NEVER
             lastDownAt = NEVER
+            endedAt = NEVER
         }
-        endedAt = NEVER
         base = maxOf(startRate, floor)
         good = 0
         climbing = false
