@@ -753,7 +753,12 @@ internal static class PrivacyLifecycleTests
                 // Revoked, after the question has been answered yes: no window stays on a device that is not approved.
                 Viewer();
                 files.Closed += (_, _) => explorers.Remove(files);
+                Outgoing();
                 Invoke(host, "Revoke", onRow, phoneKey.Fingerprint);
+                // The viewer tells the phone it has stopped, and asks it for nothing more on the way out.
+                var parting = FromWindows().Select(m => m["type"]!.GetValue<string>()).ToList();
+                if (parting.Contains("start-view") || !parting.Contains("stop-view"))
+                    throw new Exception("Revoking a device that is being viewed sent it: " + string.Join(", ", parting));
                 if (Viewing() || explorers.Contains(files)) throw new Exception("A window stayed open on a device whose approval was taken away");
                 if (auth.IsTrusted("p20")) throw new Exception("setup: the device is still approved");
                 Console.WriteLine("PASS: hanging up on a device closes this PC's viewer of it, and revoking it closes every window on it");

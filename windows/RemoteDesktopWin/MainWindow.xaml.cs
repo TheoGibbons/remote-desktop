@@ -1449,12 +1449,15 @@ public partial class MainWindow : Window
     /// <summary>Revokes a device, once the person has said yes.</summary>
     private void Revoke(DeviceRow row, string fp)
     {
-        _auth.Revoke(fp); // untrusting the live peer also pauses the stream via the gate
-        // Its windows go with its approval. The device stops sending this PC
-        // its screen and its files when it hears, so a window left open would
-        // show the last picture for good; and no window is to be open on a
-        // device that is not approved, whether it is here now or expected back.
+        // Its windows go with its approval, and go first. The device stops
+        // sending this PC its screen and its files when it hears, so a window
+        // left open would show the last picture for good; and no window is to
+        // be open on a device that is not approved, whether it is here now or
+        // expected back. Closed while it is still approved, a viewer tells the
+        // device that it has stopped; closed after, it would first ask the
+        // device again, as for any change of approval.
         foreach (var window in DeviceWindows().Where(w => w.Link.Identity == fp).ToList()) ((Window)window).Close();
+        _auth.Revoke(fp); // untrusting the live peer also pauses the stream via the gate
         Toast.Show($"Revoked {row.Name}");
     }
 
