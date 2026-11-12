@@ -157,8 +157,10 @@ The site is then on <http://remote-desktop.localhost:8085> and the relay on
 
 ## Setup push-to-deploy
 
-A push to `main` runs `.github/workflows/deploy.yml`, which SSHes to the instance and
-runs `bash scripts/deploy.sh` in `~/projects/remote-desktop`.
+A push to `main` runs `.github/workflows/deploy.yml`. It first runs the relay's tests
+(`npm test` in `server/`). If they pass, it SSHes to the instance and runs
+`bash scripts/deploy.sh <commit>` in `~/projects/remote-desktop`, naming the commit it
+tested, and that commit goes live. If a test fails, nothing is deployed.
 
 **Part 1 — once per server, not once per project.** The instance needs to read GitHub
 so `git pull --ff-only` works. Skip this if another project on the same box has
@@ -357,7 +359,8 @@ Nothing the relay holds survives a deploy, any more than it survives a restart: 
 pairings, peer lists and the per-IP rate-limit and ban counters all live in its memory.
 Devices rebuild the pairings by reconnecting on their own.
 
-A manual redeploy is the same command the workflow runs:
+A manual redeploy is the command the workflow runs, without a commit, which takes the
+newest `main` and runs no tests:
 
 ```bash
 ssh ubuntu@<ec2-public-dns> 'bash ~/projects/remote-desktop/scripts/deploy.sh'

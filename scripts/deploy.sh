@@ -49,7 +49,19 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
 fi
 
 pulled_from="$(git rev-parse HEAD)"
-git pull --ff-only
+# The workflow names the commit whose tests passed, and that commit goes live,
+# not whatever main has moved on to since. Run by hand with no commit named,
+# the newest main is taken. A commit older than the checkout changes nothing.
+if (( $# )); then
+  if [[ ! "$1" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Name the commit to deploy by its full 40-character hash, or name none." >&2
+    exit 1
+  fi
+  git fetch
+  git merge --ff-only "$1"
+else
+  git pull --ff-only
+fi
 
 # Bash keeps running the copy of this script it started with, not the one just
 # pulled, so a change to deploy.sh would otherwise take effect one deploy late.

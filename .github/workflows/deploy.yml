@@ -13,8 +13,53 @@ permissions:
   contents: read
 
 jobs:
+  # Nothing is deployed unless the relay's own tests pass.
+  test:
+    name: Test the relay
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      # The Node version of the relay's image (server/Dockerfile).
+      - name: Set up Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Install the relay's packages
+        working-directory: server
+        run: npm ci
+
+      - name: Test the relay
+        working-directory: server
+        shell: bash
+        run: npm test 2>&1 | tee "$RUNNER_TEMP/relay-test.log"
+
+      - name: Name failed relay tests
+        if: failure()
+        shell: bash
+        run: |
+          # Job logs need a GitHub login; annotations can be read without one.
+          log="$RUNNER_TEMP/relay-test.log"
+          [ -f "$log" ] || exit 0
+          if grep -q '^FAIL' "$log"; then
+            grep '^FAIL' "$log" | head -n 20 |
+              sed -e 's/%/%25/g' -e 's/^FAIL  */::error title=Relay test failed::/'
+          else
+            # No test is marked as failed: the tests stopped part-way.
+            printf '::error title=Relay tests stopped::%s\n' \
+              "$(tail -n 15 "$log" | sed -e 's/%/%25/g' | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/%0A/g')"
+          fi
+
+  # Deploys the commit that was tested, and only from main: a run started by
+  # hand on another branch stops after the tests.
   deploy:
     name: Deploy relay and site
+    needs: test
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -33,4 +78,4 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USER }}
-        run: ssh -o BatchMode=yes "$EC2_USER@$EC2_HOST" 'bash ~/projects/remote-desktop/scripts/deploy.sh'
+        run: ssh -o BatchMode=yes "$EC2_USER@$EC2_HOST" "bash ~/projects/remote-desktop/scripts/deploy.sh $GITHUB_SHA"

@@ -87,6 +87,9 @@ minimum-key-length check, the brute-force rate limit (and that a device's own
 reconnects never trip it), the reasons given for refused connections, the reason
 logged when a device leaves, and that a malformed frame cannot crash the relay.
 
+A push to `main` runs these tests first, and deploys only if they pass
+(`.github/workflows/deploy.yml`).
+
 ## Logs
 
 Each `[leave]` line says how long the device was connected and why it left:
