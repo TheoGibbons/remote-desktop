@@ -21,6 +21,19 @@ internal object VideoSetup {
     const val MIN_BITRATE = 300_000
     const val MAX_BITRATE = 8_000_000
 
+    /**
+     * Whether the bitrate follows the link in smooth sharing
+     * ([BitrateSteps]). Off, every encoder keeps the rate it starts with
+     * and nothing else changes: pictures are still held back for room, so a
+     * slow link shows fewer of them at full quality.
+     *
+     * It is off until the steps have been measured on a link held to a
+     * rate, and is to be turned on only by what was measured there
+     * (PHONE-VIDEO-PLAN.md, 3.1). A check on a phone turns it on in its own
+     * build.
+     */
+    const val BITRATE_STEPS = false
+
     /** The picture at full size, then smaller, for an encoder that refuses or fails at the size before. */
     private val SCALES = listOf(1.0, 0.75, 0.5)
 

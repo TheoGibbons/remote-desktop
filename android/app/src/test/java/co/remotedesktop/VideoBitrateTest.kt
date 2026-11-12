@@ -36,7 +36,17 @@ class VideoBitrateTest {
     /** Whether the app's own queue is full: a file is on its way out of the phone. */
     private var queueFull = false
 
-    private fun video(fed: Boolean = false) = PhoneVideo(
+    /** With the steps on unless a test says otherwise: whether the app ships them on is another matter. */
+    private fun video(fed: Boolean = false, steps: Boolean? = true) = if (steps == null) PhoneVideo(
+        encoders = { listOf(VideoSetup.Encoder("hardware", hardware = true, constantBitrate = true) { _, _ -> true }) },
+        open = { attempt, _, _, events -> FakeVideoPipe(attempt, events).also { pipes += it } },
+        timer = timer,
+        clock = { timer.now },
+        hasRoom = { room },
+        send = { sent++; VideoSent.SENT },
+        onFailed = { reason, _ -> failures += reason },
+        spare = { it() },
+    ) else PhoneVideo(
         encoders = { listOf(VideoSetup.Encoder("hardware", hardware = true, constantBitrate = true) { _, _ -> true }) },
         open = { attempt, _, _, events ->
             if (refuse(attempt)) throw IllegalStateException("cannot configure ${attempt.width}")
@@ -54,6 +64,7 @@ class VideoBitrateTest {
         fed = fed,
         viewersBehind = { behind ?: !room },
         ownQueueFull = { queueFull },
+        bitrateSteps = steps,
     )
 
     private val video = video()
@@ -317,6 +328,50 @@ class VideoBitrateTest {
         pipe.answerAll()
         scroll(3)
         assertTrue("${pipe.bitrates}", neverBroughtDown())
+    }
+
+    // ---------------- the switch ----------------
+
+    @Test
+    fun switchedOffEveryEncoderKeepsTheRateItStartsWithAndNothingElseChanges() {
+        val fixed = video(steps = false)
+        running(fixed)
+        // A link that stays too slow, for a minute.
+        val drawnBefore = pipe.drawn.size
+        scroll(60, heldMs = 500, of = fixed)
+        assertTrue(pipe.bitrates.isEmpty())
+        assertEquals(START, fixed.bitrate)
+        // Pictures were still held back for room: about half as many as the screen gave.
+        val drawn = pipe.drawn.size - drawnBefore
+        assertTrue("$drawn", drawn in 700..1_100)
+        // A viewer that asks for keyframes gets them, and the rate stays.
+        val keyframes = pipe.drawn.count { it.keyframe }
+        repeat(3) {
+            fixed.keyframe(byViewer = true)
+            timer.advance(1_200)
+            pipe.answerAll()
+        }
+        assertEquals(keyframes + 3, pipe.drawn.count { it.keyframe })
+        assertTrue(pipe.bitrates.isEmpty())
+        // A good link gets no more either.
+        scroll(30, of = fixed)
+        assertTrue(pipe.bitrates.isEmpty())
+        // And a turned phone's encoder starts where any does.
+        fixed.stop()
+        assertTrue(fixed.start(2340, 1080))
+        assertEquals(START, pipe.attempt.bitrate)
+        assertEquals(START, fixed.bitrate)
+        assertTrue(failures.isEmpty())
+    }
+
+    @Test
+    fun whetherTheAppUsesTheStepsIsOneConstant() {
+        // The video as the app makes it, with nothing said about the steps.
+        val asShipped = video(steps = null)
+        running(asShipped)
+        scroll(10, heldMs = 500, of = asShipped)
+        assertEquals(VideoSetup.BITRATE_STEPS, pipe.bitrates.isNotEmpty())
+        assertEquals(VideoSetup.BITRATE_STEPS, asShipped.bitrate != START)
     }
 
     @Test

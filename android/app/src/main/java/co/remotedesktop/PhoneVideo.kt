@@ -159,7 +159,8 @@ internal class VideoLedger {
  *   ordinary picture came out in its place;
  * - the encoder throws when it is given a new bitrate.
  *
- * **The bitrate**, for a mirrored screen, is moved by [BitrateSteps]: down
+ * **The bitrate**, for a mirrored screen and where [VideoSetup.BITRATE_STEPS]
+ * has it so, is moved by [BitrateSteps]: down
  * when pictures are kept waiting for room second after second, and up again
  * when they are not. It goes by what this class sees: how long a picture
  * that was due waited for a viewer's acknowledgements, when a keyframe was
@@ -236,6 +237,8 @@ internal class PhoneVideo(
      * it has to be one that goes on while the phone sleeps.
      */
     private val longClock: () -> Long = clock,
+    /** Whether the bitrate follows the link ([BitrateSteps]). Never for pictures that are handed over. */
+    private val bitrateSteps: Boolean = VideoSetup.BITRATE_STEPS,
 ) {
     interface Timer {
         fun post(task: Runnable)
@@ -329,7 +332,7 @@ internal class PhoneVideo(
 
     @Volatile private var current: Session? = null
     private val pacer = VideoPacer()
-    private val steps: BitrateSteps? = if (fed) null else BitrateSteps()
+    private val steps: BitrateSteps? = if (fed || !bitrateSteps) null else BitrateSteps()
     private var sending = false
     @Volatile private var shutDown = false
 
