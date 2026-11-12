@@ -95,11 +95,15 @@
                                         <Button Content="View" Style="{StaticResource RdOutlinedButton}" Padding="12,5" Margin="4,0,0,0"
                                                 Visibility="{Binding ShowView, Converter={StaticResource BoolToVis}}"
                                                 Click="RowView_Click"
-                                                ToolTip="View and control this device"/>
+                                                IsEnabled="{Binding CanOpen}" ToolTipService.ShowOnDisabled="True"
+                                                ToolTip="{Binding ViewTip}"
+                                                AutomationProperties.HelpText="{Binding ViewTip}"/>
                                         <Button Content="Files" Style="{StaticResource RdOutlinedButton}" Padding="12,5" Margin="4,0,0,0"
                                                 Visibility="{Binding ShowView, Converter={StaticResource BoolToVis}}"
                                                 Click="RowFiles_Click"
-                                                ToolTip="Browse this device's files"/>
+                                                IsEnabled="{Binding CanOpen}" ToolTipService.ShowOnDisabled="True"
+                                                ToolTip="{Binding FilesTip}"
+                                                AutomationProperties.HelpText="{Binding FilesTip}"/>
                                         <Button Content="&#xE712;" Style="{StaticResource RdIconButton}" Margin="4,0,0,0"
                                                 Foreground="{StaticResource RdOnSurfaceVariantBrush}"
                                                 Visibility="{Binding ShowMore, Converter={StaticResource BoolToVis}}"

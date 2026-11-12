@@ -181,9 +181,14 @@ its name. The **Devices** list shows every approved or connected device with
 approval (the device must be approved again to connect), *Disconnect* just ends
 its current session. Changing the session key resets all approvals. While an
 unapproved device is present in the session, streaming and file serving pause.
+A device's **View** and **Files** buttons are greyed until this PC has
+approved it, and say why when the pointer rests on them: what you type in a
+viewer and the files you send go to that device, and until its code has been
+checked its name is only what it calls itself. A device you refused is asked
+about again after Remote Desktop is closed from its tray icon and started
+again.
 
-- Select a device in **Devices**, then **View screen** (or double-click
-  it) → opens a live view:
+- Press **View** on a device's row in **Devices** → opens a live view:
   - **another PC** → full desktop control: move/click/scroll with the mouse and
     type with your real keyboard (shortcuts, modifiers and arrows included) while
     the window is focused. A **Ctrl+Alt+Del** button covers the one combo Windows

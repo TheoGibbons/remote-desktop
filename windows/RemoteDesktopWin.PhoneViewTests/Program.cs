@@ -61,6 +61,7 @@ internal static class Program
         CheckFeedKeepsTheFigures();
         H264Tests.Run();
         VideoFeedTests.Run();
+        DeviceTests.Run();
     }
 
     // ---------------- the menu ----------------

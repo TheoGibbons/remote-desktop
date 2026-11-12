@@ -515,6 +515,65 @@ internal static class PrivacyLifecycleTests
                 view.Close();
                 typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
             }
+
+            // The device list. View and Files are for a device this PC has
+            // approved: what is typed in a viewer and the files that are sent
+            // go to the device the row names, and until its key is approved
+            // that name is only its own word. Four devices are online, one of
+            // each standing short of revoked, set up as the handshake leaves them.
+            var keys = Field<Dictionary<string, string>>(auth, "_peerFingerprint");
+            var asking = Field<List<PeerAuth.PendingRequest>>(auth, "_pending");
+            var refused = Field<HashSet<string>>(auth, "_deniedFingerprints");
+            var said = new List<string>();
+            Toast.Capture = said.Add;
+            try
+            {
+                JsonObject Device(string id, string name) => new() { ["id"] = id, ["device"] = "android", ["name"] = name };
+                Invoke(host, "OnJson", new JsonObject
+                {
+                    ["type"] = "welcome",
+                    ["id"] = "this-pc",
+                    ["peers"] = new JsonArray(Device("row-approved", "Approved phone"), Device("row-waiting", "Waiting phone"),
+                        Device("row-refused", "Refused phone"), Device("row-new", "New phone")),
+                });
+                trusted.Add("row-approved");
+                keys["row-approved"] = new string('a', 64);
+                keys["row-waiting"] = new string('b', 64);
+                asking.Add(new PeerAuth.PendingRequest("row-waiting", new string('b', 64), "Waiting phone", "android"));
+                keys["row-refused"] = new string('c', 64);
+                refused.Add(new string('c', 64));
+                Invoke(host, "RefreshDeviceList");
+                var rows = ((IEnumerable<MainWindow.DeviceRow>)host.DevicesList.ItemsSource).ToDictionary(r => r.PeerId!);
+                if (!rows["row-approved"].CanOpen || rows["row-approved"].ViewTip != DeviceActions.ViewTip ||
+                    rows["row-approved"].FilesTip != DeviceActions.FilesTip)
+                    throw new Exception("An approved device's row does not offer View and Files");
+                foreach (var (id, word) in new[] { ("row-waiting", "approve it"), ("row-refused", "refused"), ("row-new", "has not shown") })
+                {
+                    var row = rows[id];
+                    if (row.CanOpen) throw new Exception("View and Files are offered on a device this PC has not approved: " + id);
+                    if (!row.ViewTip.Contains(word) || !row.ViewTip.Contains("viewed") || !row.FilesTip.Contains(word) || !row.FilesTip.Contains("browsed"))
+                        throw new Exception($"The row of {id} does not say why it can't be opened: {row.ViewTip} / {row.FilesTip}");
+                    // Asked for all the same, nothing opens, and the reason is said.
+                    said.Clear();
+                    var button = new FrameworkElement { DataContext = row };
+                    Invoke(host, "RowView_Click", button, new RoutedEventArgs());
+                    Invoke(host, "RowFiles_Click", button, new RoutedEventArgs());
+                    if (typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(host) != null ||
+                        typeof(MainWindow).GetField("_pcView", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(host) != null ||
+                        Field<System.Collections.ICollection>(host, "_fileExplorers").Count != 0)
+                        throw new Exception("A window was opened on a device this PC has not approved: " + id);
+                    if (!said.SequenceEqual(new[] { row.ViewTip, row.FilesTip }))
+                        throw new Exception("Asking to open a device that is not approved did not say why: " + string.Join(" | ", said));
+                }
+                // Only the waiting one can be approved or refused from its row.
+                if (!rows["row-waiting"].ShowApprove || rows["row-refused"].ShowApprove || rows["row-new"].ShowApprove || rows["row-approved"].ShowApprove)
+                    throw new Exception("Approve is offered on the wrong rows");
+                Console.WriteLine("PASS: a device's row offers View and Files only once this PC has approved it, and says why until then");
+            }
+            finally
+            {
+                Toast.Capture = null;
+            }
         }
         finally
         {

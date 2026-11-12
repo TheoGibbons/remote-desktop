@@ -217,6 +217,10 @@ public class PeerAuth
 
     public string? FingerprintOf(string peerId) => _peerFingerprint.GetValueOrDefault(peerId);
 
+    /// <summary>Whether the person here said no to this device since the app
+    /// started. It is not asked about again until the app is restarted.</summary>
+    public bool IsRefused(string fingerprint) => _deniedFingerprints.Contains(fingerprint);
+
     /// <returns>true if the message was an auth message and has been handled.</returns>
     public bool HandleJson(JsonNode msg)
     {

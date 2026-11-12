@@ -66,6 +66,12 @@ public partial class MainWindow : Window
         public string DotTip { get; init; } = "";
         public bool ShowApprove { get; init; }
         public bool ShowView { get; init; }
+        /// <summary>Whether View and Files can be used: only on a device this
+        /// PC has approved (see <see cref="DeviceActions"/>). Greyed otherwise,
+        /// with tooltips that say why.</summary>
+        public bool CanOpen { get; init; }
+        public string ViewTip { get; init; } = DeviceActions.ViewTip;
+        public string FilesTip { get; init; } = DeviceActions.FilesTip;
         public bool ShowDisconnect { get; init; }
         public bool ShowRevoke { get; init; }
         /// <summary>The newer version this PC could be asked to update to.</summary>
@@ -1241,6 +1247,7 @@ public partial class MainWindow : Window
                 "Verifying…";
             var code = fp == null ? "" : $"Code {DeviceIdentity.ShortCode(fp)}";
             var subtitle = code.Length > 0 && status.Length > 0 ? $"{code} — {status}" : code + status;
+            var standing = StandingOf(p.Id);
             rows.Add(new DeviceRow
             {
                 PeerId = p.Id,
@@ -1253,6 +1260,9 @@ public partial class MainWindow : Window
                 DotTip = trusted ? "Online" : "Online, not approved",
                 ShowApprove = pending,
                 ShowView = true,
+                CanOpen = DeviceActions.CanOpen(standing),
+                ViewTip = DeviceActions.TipForView(standing),
+                FilesTip = DeviceActions.TipForFiles(standing),
                 ShowDisconnect = trusted,
                 ShowRevoke = fp != null && _auth.TrustedDevices.Any(d => d.Fingerprint == fp),
                 // Only PCs can update themselves; a phone's user installs the APK.
@@ -1277,6 +1287,14 @@ public partial class MainWindow : Window
         DevicesList.ItemsSource = rows;
         DevicesEmptyText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateStatusCard();
+    }
+
+    /// <summary>How a device that is online stands with this PC.</summary>
+    private DeviceActions.Standing StandingOf(string peerId)
+    {
+        var fp = _auth.FingerprintOf(peerId);
+        return DeviceActions.Of(_auth.IsTrusted(peerId), _auth.Pending.Any(r => r.PeerId == peerId),
+            verified: fp != null, refused: fp != null && _auth.IsRefused(fp));
     }
 
     private static DeviceRow? RowOf(object sender) => (sender as FrameworkElement)?.DataContext as DeviceRow;
@@ -1387,6 +1405,9 @@ public partial class MainWindow : Window
     private void OpenViewFor(Peer? peer)
     {
         if (peer == null) { Toast.Show("That device is no longer online."); return; }
+        // The button is greyed for a device that is not approved; this is for
+        // one that stopped being approved as it was clicked.
+        if (DeviceActions.WhyNot(StandingOf(peer.Id), "viewed") is { } why) { Toast.Show(why, 7000); return; }
         if (peer.Device == "windows") OpenPcView(peer);
         else OpenPhoneView(peer);
     }
@@ -1423,6 +1444,7 @@ public partial class MainWindow : Window
     private void OpenFilesFor(Peer? peer)
     {
         if (peer == null) { Toast.Show("That device is no longer online."); return; }
+        if (DeviceActions.WhyNot(StandingOf(peer.Id), "browsed") is { } why) { Toast.Show(why, 7000); return; }
         if (_fileExplorers.TryGetValue(peer.Id, out var open))
         {
             open.Activate();
