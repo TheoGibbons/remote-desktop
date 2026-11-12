@@ -720,7 +720,7 @@ public partial class MainWindow : Window
     private void FindDevicesAgain() => EachLink(link =>
         link.Away && link.Identity != null &&
         _peers.FirstOrDefault(p => _auth.IsTrusted(p.Id) && _auth.FingerprintOf(p.Id) == link.Identity) is { } back &&
-        link.Returned(back.Id, _auth.FingerprintOf(back.Id)));
+        link.Returned(back.Id, _auth.FingerprintOf(back.Id), DateTime.UtcNow));
 
     /// <summary>Has each window that has waited long enough for its device say so and close.</summary>
     private void CheckLinks(DateTime now)
@@ -1248,10 +1248,16 @@ public partial class MainWindow : Window
                 if (_phoneView != null && _phoneView.IsOn(from)) _phoneView.ResendStartView();
                 break;
             case "pending":
+                // Someone there has to answer: a window that is waiting for that device waits afresh.
+                foreach (var window in DeviceWindows()) window.Link.StillAsking(from, DateTime.UtcNow);
                 Toast.Show($"{PeerName(from)} is asking its user to approve this device — " +
                            $"code {DeviceIdentity.ShortCode(_auth.OwnFingerprint)}");
                 break;
             case "denied":
+                // It will send this PC nothing: a viewer left open would show
+                // nothing, or its last picture from before, for good.
+                if (_pcView != null && _pcView.IsOn(from)) _pcView.Close();
+                if (_phoneView != null && _phoneView.IsOn(from)) _phoneView.Close();
                 Toast.Show($"{PeerName(from)} denied this device access");
                 break;
             case "revoked":

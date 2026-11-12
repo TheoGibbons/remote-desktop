@@ -79,11 +79,11 @@ public partial class PcViewWindow : Window, IDeviceWindow
             Toast.Show($"{_name} didn't answer. It may not have approved this PC yet, or it needs a newer Remote Desktop.");
         };
 
-        Send(new JsonObject { ["type"] = "start-view" });
+        Send(new JsonObject { ["type"] = "start-view" }, always: true);
         Closed += (_, _) =>
         {
             _clipTimeout.Stop();
-            Send(new JsonObject { ["type"] = "stop-view" });
+            Send(new JsonObject { ["type"] = "stop-view" }, always: true);
         };
         Loaded += (_, _) => { Focusable = true; Focus(); Keyboard.Focus(this); };
     }
@@ -91,18 +91,27 @@ public partial class PcViewWindow : Window, IDeviceWindow
     /// <summary>
     /// Everything the window sends the PC goes from here: to the id that PC
     /// has now, and nowhere while it is away. The id it had is dead then, and
-    /// may be another device's by the time this PC is back.
+    /// may be another device's by the time this PC is back. Nor while it is
+    /// back and has not answered yet, when the picture is still the old one;
+    /// only asking for the screen, and saying the window has closed, go then.
     /// </summary>
-    private void Send(JsonObject msg)
+    private void Send(JsonObject msg, bool always = false)
     {
-        if (_link.PeerId is not { } id) return;
+        if (_link.PeerId is not { } id || !always && !_link.Live) return;
         msg["to"] = id;
         _ws.SendJson(msg);
     }
 
     /// <summary>Ask for the stream again — the first start-view is dropped when
     /// the host hasn't approved this device yet.</summary>
-    public void ResendStartView() => Send(new JsonObject { ["type"] = "start-view" });
+    public void ResendStartView() => Send(new JsonObject { ["type"] = "start-view" }, always: true);
+
+    /// <summary>The PC has sent its screen's size or a full picture. If it had
+    /// been away, that is its answer to being asked again.</summary>
+    private void Answered()
+    {
+        if (_link.Answered()) HintText.Text = _hint;
+    }
 
     /// <summary>
     /// The link to the PC has changed. Away, the window says so where its
@@ -123,19 +132,20 @@ public partial class PcViewWindow : Window, IDeviceWindow
         if (was != null) return;
         _haveKeyframe = false;
         _lastSeq = -1;
-        Send(new JsonObject { ["type"] = "start-view" });
+        Send(new JsonObject { ["type"] = "start-view" }, always: true);
     }
 
     /// <summary>The wait for the PC is over: the window says so and closes.</summary>
     void IDeviceWindow.GaveUp()
     {
-        Toast.Show(DeviceLink.GoneText(_name), 8000);
+        Toast.Show(_link.GaveUpText(_name), 10000);
         Close();
     }
 
     /// <summary>Optional: size the window to the remote desktop's aspect ratio.</summary>
     public void OnScreenInfo(int width, int height)
     {
+        Answered();
         if (width <= 0 || height <= 0 || _sizedToSurface) return;
         SizeToSurface(width, height);
     }
@@ -190,6 +200,8 @@ public partial class PcViewWindow : Window, IDeviceWindow
                 if (!_sizedToSurface) SizeToSurface(w, h);
             }
 
+            // A full picture is only sent to a device that asked for the screen.
+            if (keyframe) Answered();
             if (keyframe) _haveKeyframe = true;
             else if (!_haveKeyframe || seq != _lastSeq + 1) RequestKeyframe();
             _lastSeq = seq;

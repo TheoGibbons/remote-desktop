@@ -1025,7 +1025,14 @@ under an id whose key has been verified and approved, the window sends
 nothing: not input, not `start-view`, not a file. When it is, the window
 sends `start-view` (or its listing request) to the new id, and takes nothing
 for granted from before: the stream, `phone-state`, `lock-state` and `smooth`
-are all told again by the host.
+are all told again by the host. Being in the session again is not yet being
+viewed again: the host may have stopped approving the viewer while it was
+away, or had control switched off, and then it ignores `start-view` without
+a word. So the window goes on saying that its picture is not live, and sends
+no input, until the host answers with `screen-info` (a Windows host: or a
+full picture). If no answer comes in 60 seconds it closes and says that the
+device is there and sent nothing; `auth-result` `pending` starts that wait
+again, and `denied` closes the window at once.
 
 The same holds for a device that is being viewed. When its own connection
 drops it forgets every viewer: it stops its stream and drops their viewports

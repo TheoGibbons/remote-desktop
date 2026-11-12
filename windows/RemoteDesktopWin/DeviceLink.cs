@@ -21,6 +21,13 @@ namespace RemoteDesktopWin;
 /// not back <see cref="Wait"/> after this PC could have seen it, the window
 /// stops waiting.
 ///
+/// Being back in the session is not yet being viewed again. The device may
+/// have stopped approving this PC while it was away, or had control switched
+/// off, and then it ignores what it is asked without a word. So a viewer
+/// that has found its device is <see cref="Resuming"/> until the device
+/// answers: the window still says that its picture is not live, still sends
+/// no input, and stops waiting after the same <see cref="Wait"/>.
+///
 /// The wait does not run while this PC is itself off the relay: nothing
 /// can be seen from there, and the main window says that it is reconnecting.
 ///
@@ -60,6 +67,13 @@ internal sealed class DeviceLink
     /// <summary>The device is not in the session, as far as this PC can tell.</summary>
     public bool Away => PeerId == null;
 
+    /// <summary>The device is back and has been asked for its screen again,
+    /// and has not answered yet. Never so for a window that waits for good.</summary>
+    public bool Resuming { get; private set; }
+
+    /// <summary>The device is there and answering: what is typed and clicked may be sent to it.</summary>
+    public bool Live => !Away && !Resuming;
+
     /// <summary>This PC is off the relay.</summary>
     public bool Offline { get; private set; }
 
@@ -73,6 +87,7 @@ internal sealed class DeviceLink
     {
         if (Away && Offline) return false;
         PeerId = null;
+        Resuming = false;
         Offline = true;
         GiveUpAt = null;
         return true;
@@ -94,6 +109,7 @@ internal sealed class DeviceLink
     {
         if (Away || peerId != PeerId) return false;
         PeerId = null;
+        Resuming = false;
         GiveUpAt = now + _wait;
         return true;
     }
@@ -104,25 +120,54 @@ internal sealed class DeviceLink
     /// </summary>
     /// <param name="identity">The fingerprint of the key it proved.</param>
     /// <returns>Whether it was.</returns>
-    public bool Returned(string peerId, string? identity)
+    public bool Returned(string peerId, string? identity, DateTime now)
     {
         if (!Away || Offline || Identity == null || identity != Identity) return false;
         PeerId = peerId;
+        // A viewer waits for its answer as long again; a window that waits for good has nothing to wait out.
+        Resuming = _wait != null;
+        GiveUpAt = now + _wait;
+        return true;
+    }
+
+    /// <summary>The device has answered what it was asked on coming back:
+    /// it has said what it is sending.</summary>
+    /// <returns>Whether that is news.</returns>
+    public bool Answered()
+    {
+        if (!Resuming) return false;
+        Resuming = false;
         GiveUpAt = null;
         return true;
     }
 
-    /// <summary>Whether the device has been waited for long enough.</summary>
-    public bool GaveUp(DateTime now) => Away && !Offline && GiveUpAt is { } at && now >= at;
+    /// <summary>The device says it is asking its user to approve this PC:
+    /// that takes a person a while, so the wait for its answer starts again.</summary>
+    public void StillAsking(string peerId, DateTime now)
+    {
+        if (Resuming && peerId == PeerId) GiveUpAt = now + _wait;
+    }
 
-    /// <summary>What a window says while its device is away, or null while it is there.</summary>
+    /// <summary>Whether the device has been waited for long enough: to come
+    /// back, or to answer once it had.</summary>
+    public bool GaveUp(DateTime now) => (Away || Resuming) && !Offline && GiveUpAt is { } at && now >= at;
+
+    /// <summary>What a window says while its picture is not live, or null while it is.</summary>
     public string? Notice(string name) =>
+        Resuming ? $"{name} is back. Asking for its screen again…" :
         !Away ? null :
         Offline ? "This PC has lost its connection. Reconnecting…" :
         $"{name} has lost its connection. Waiting for it to come back…";
 
-    /// <summary>What is said when the wait is over.</summary>
+    /// <summary>What is said when the wait is over: for a device that stayed
+    /// away, or for one that came back and did not answer.</summary>
+    public string GaveUpText(string name) => Resuming ? NoAnswerText(name) : GoneText(name);
+
     public static string GoneText(string name) => $"{name} did not come back online, so its window was closed.";
+
+    public static string NoAnswerText(string name) =>
+        $"{name} is back online but did not send its screen, so its window was closed. " +
+        "Control may have been switched off on it, or it may no longer approve this PC.";
 }
 
 /// <summary>A window that is open on one device, and follows it through

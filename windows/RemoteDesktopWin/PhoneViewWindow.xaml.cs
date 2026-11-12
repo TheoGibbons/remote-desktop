@@ -227,11 +227,15 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
         AskPhoneState(always: true);
         Closed += (_, _) =>
         {
-            if (_phoneId is { } id) _feed?.Stop(id);
+            if (_phoneId is { } id)
+            {
+                _feed?.Stop(id);
+                // Also to a phone that is back and has not answered yet: it may be about to.
+                _ws.SendJson(new JsonObject { ["type"] = "stop-view", ["to"] = id });
+            }
             // The phone is away, so the feed has let go of it already. The
             // readout went with this window all the same.
             else _feed?.ShowStats(false);
-            Send(new JsonObject { ["type"] = "stop-view" });
         };
 
         // Holding the button without moving becomes a long-press on the phone.
@@ -257,11 +261,13 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
     /// <summary>
     /// Everything the window sends its phone goes from here: to the id the
     /// phone has now, and nowhere while it is away. The id it had is dead
-    /// then, and may be another device's by the time this PC is back.
+    /// then, and may be another device's by the time this PC is back. Nor
+    /// while the phone is back and has not answered yet: the picture is still
+    /// the old one, and a click on it is a click on nothing the phone shows.
     /// </summary>
     private void Send(JsonObject msg)
     {
-        if (_link.PeerId is not { } id) return;
+        if (!_link.Live || _link.PeerId is not { } id) return;
         msg["to"] = id;
         _ws.SendJson(msg);
     }
@@ -277,7 +283,7 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
     /// <summary>The wait for the phone is over: the window says so and closes.</summary>
     void IDeviceWindow.GaveUp()
     {
-        Toast.Show(DeviceLink.GoneText(Title), 8000);
+        Toast.Show(_link.GaveUpText(Title), 10000);
         Close();
     }
 
@@ -353,13 +359,26 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
         DrawUnlockScreen();
     }
 
-    /// <summary>The phone is back, under a new id: it is asked for
-    /// everything afresh, as when the window opened.</summary>
+    /// <summary>The phone is back, under a new id: it is asked for its
+    /// screen again. The rest is asked when it answers (<see cref="Answered"/>).</summary>
     private void Resume()
     {
         if (_phoneId is { } id) _feed?.Returned(id, _gaveUpVideo);
         _gaveUpVideo = null;
         SendStartView();
+    }
+
+    /// <summary>
+    /// The phone has said what it is sending. If it had been away, that is
+    /// its answer to being asked again: the picture is live from here, the
+    /// words over it go, and it is asked what it can do, as when the window
+    /// opened. Until then the phone may be one that no longer lets this PC
+    /// view it, and says nothing.
+    /// </summary>
+    private void Answered()
+    {
+        if (!_link.Answered()) return;
+        ShowAway();
         AskPhoneState(always: true);
     }
 
@@ -474,7 +493,12 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
         // It says whether video goes into the offer: only where Windows can
         // decode it, and not once the decoder has failed.
         bool h264 = _feed?.View(id, _offered) == true;
-        _ws.SendJson(PhoneFeed.StartView(id, _offered, h264));
+        var msg = PhoneFeed.StartView(id, _offered, h264);
+        // Asked by the window itself, on finding its phone again, with nobody
+        // at it: the phone is not to wake for this, or announce it as a new
+        // viewer (PROTOCOL.md, start-view). Only until the phone answers.
+        if (_link.Resuming) msg["resume"] = true;
+        _ws.SendJson(msg);
     }
 
     /// <summary>This PC has approved a device, or no longer does. If that
@@ -582,7 +606,7 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
     private void AskPhoneState(bool always = false)
     {
         var now = DateTime.UtcNow;
-        if (_link.Away || !_asks.Ask(now, always)) return;
+        if (!_link.Live || !_asks.Ask(now, always)) return;
         // Its answer is counted with the slider's, so they can be told apart.
         _volume.Sent(now);
         SendAction("get-phone-state");
@@ -965,6 +989,7 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
         Dispatcher.BeginInvoke(() =>
         {
             if (attached != _attachments) return;   // said before the phone went away
+            Answered();
             _phoneTypes = typing;
             _smooth.Offer(smooth);
             ShowSmoothRow();

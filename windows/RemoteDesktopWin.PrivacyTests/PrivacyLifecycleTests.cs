@@ -693,21 +693,50 @@ internal static class PrivacyLifecycleTests
                 // The phone itself is back, under a new id, and proves its key.
                 Proves("p9", phoneKey);
                 if (follower.PeerId != "p9" || files.PeerId != "p9") throw new Exception("The windows were not attached to the phone under its new id");
-                if (away.Visibility == Visibility.Visible) throw new Exception("The viewer still says the phone is away");
+                // Being in the session again is not being viewed again: until the phone
+                // answers, the viewer still says its picture is not live, and sends no input.
+                if (away.Visibility != Visibility.Visible || awayText.Text != "Test phone is back. Asking for its screen again…")
+                    throw new Exception("The viewer does not say that it is asking the phone again: " + awayText.Text);
                 var again = FromWindows();
                 if (again.Any(m => m["to"]?.GetValue<string>() != "p9"))
                     throw new Exception("Something went to an id other than the phone's new one: " + again.First(m => m["to"]?.GetValue<string>() != "p9").ToJsonString());
-                if (!again.Any(m => m["type"]!.GetValue<string>() == "start-view" && m["codecs"] != null) ||
-                    !again.Any(m => m["type"]!.GetValue<string>() == "get-phone-state") ||
-                    !again.Any(m => m["type"]!.GetValue<string>() == "fs-list"))
-                    throw new Exception("The phone was not asked for its screen, its state and its files again under its new id");
-                // Its new stream is shown, and its word is taken again.
+                // It is asked for its screen, and told that nobody opened this viewer just now: the
+                // phone is not to wake for it or announce it. Its files are asked for again too.
+                bool Resumes(JsonObject m) => m["type"]!.GetValue<string>() == "start-view" && m["codecs"] != null &&
+                    m["resume"] is JsonValue marked && marked.TryGetValue<bool>(out var yes) && yes;
+                if (again.Count(Resumes) != 1 || !again.Any(m => m["type"]!.GetValue<string>() == "fs-list"))
+                    throw new Exception("The phone was not asked for its screen, as a viewer that is only back, and for its files: " +
+                        string.Join(" ", again.Select(m => m.ToJsonString())));
+                Invoke(follower, "SendText", "typed at the old picture");
+                Invoke(follower, "SendAction", "homebtn");
+                if (FromWindows().Count != 0) throw new Exception("Input went to a phone that has not answered yet, from a picture that is not live");
+                // The phone approves this PC a moment after this PC approved it. The
+                // request it had dropped until then is sent again, marked the same way.
+                Invoke(host, "OnAuthResult", "p9", "trusted");
+                if (FromWindows().Count(Resumes) != 1) throw new Exception("Asked again once the phone approved this PC, the viewer did not say it was only back");
+                // Its answer: what it is sending. The picture is live from here, and its word is taken again.
                 OffSocket(Sealed(Announce("00000000000000a3", ",\"smooth\":\"available\""), "p9"), binary: false);
+                if (away.Visibility == Visibility.Visible) throw new Exception("The viewer still says the picture is not live after the phone answered");
+                if (!FromWindows().Any(m => m["type"]!.GetValue<string>() == "get-phone-state"))
+                    throw new Exception("The phone was not asked what it can do once it had answered");
+                // From here a start-view is a viewer asking again, as before, and is not marked.
+                follower.ResendStartView();
+                if (FromWindows().Any(m => m["resume"] != null)) throw new Exception("A viewer that is live said it was only back");
                 OffSocket(PictureOf(0xa3, 0), binary: true);
                 WaitFor(() => !ReferenceEquals(lastPicture, shownAt.Source), "The phone's pictures were not shown under its new id");
                 if (smoothRow.Visibility != Visibility.Visible) throw new Exception("The phone's word about smooth video was not taken under its new id");
                 if (FromWindows().Any(m => m["to"]?.GetValue<string>() != "p9")) throw new Exception("A picture was acknowledged to the wrong id");
                 Console.WriteLine("PASS: when this PC reconnects, its windows wait and carry on with the same device under its new id, and with no other");
+
+                // Two files are on their way to the phone when it drops: the files
+                // window is still finding the phone's Downloads folder for them.
+                var sending = new[] { Path.Combine(storage, "first.txt"), Path.Combine(storage, "second.txt") };
+                foreach (var path in sending) File.WriteAllText(path, "for the phone");
+                var retry = (System.Windows.Controls.Button)files.FindName("RetryButton");
+                Outgoing();
+                Invoke(files, "UploadFilesAsync", (object)sending);
+                if (!Outgoing().Any(m => m["type"]!.GetValue<string>() == "fs-list" && m["to"]!.GetValue<string>() == "p9"))
+                    throw new Exception("setup: the upload did not begin by asking the phone where its Downloads folder is");
 
                 // Only the phone's connection drops: it leaves, and joins again under another id.
                 Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-left", ["id"] = "p9" });
@@ -722,10 +751,37 @@ internal static class PrivacyLifecycleTests
                 Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-joined", ["peer"] = Peer("p12", "Test phone") });
                 if (follower.PeerId != null) throw new Exception("The viewer was attached to a device that has proved nothing yet");
                 Proves("p12", phoneKey);
-                if (follower.PeerId != "p12" || away.Visibility == Visibility.Visible)
-                    throw new Exception("The viewer did not carry on with a phone that reconnected");
-                if (!Outgoing().Any(m => m["type"]!.GetValue<string>() == "start-view" && m["to"]!.GetValue<string>() == "p12"))
-                    throw new Exception("The phone that reconnected was not asked for its screen again");
+                if (follower.PeerId != "p12" || awayText.Text != "Test phone is back. Asking for its screen again…")
+                    throw new Exception("The viewer did not ask a phone that reconnected for its screen: " + awayText.Text);
+                var rejoined = Outgoing();
+                if (!rejoined.Any(m => Resumes(m) && m["to"]!.GetValue<string>() == "p12"))
+                    throw new Exception("The phone that reconnected was not asked for its screen again, as by a viewer that is only back");
+                OffSocket(Sealed(Announce("00000000000000a4"), "p12"), binary: false);
+                if (away.Visibility == Visibility.Visible) throw new Exception("The viewer did not carry on with a phone that reconnected and answered");
+
+                // The upload that the drop cut off says that it failed, once it has waited its
+                // fifteen seconds for the old connection's answer, and offers the files again.
+                // Nothing of it went to the id the phone had, and Retry goes to the id it has.
+                for (int i = 0; i < 900 && retry.Visibility != Visibility.Visible; i++) Pump(20);
+                if (retry.Visibility != Visibility.Visible || !fileStatus.Text.StartsWith("Couldn't upload 2 files"))
+                    throw new Exception("An upload cut off by the phone's connection dropping did not fail with Retry: " + fileStatus.Text);
+                if (FromWindows().Any(m => m["to"]?.GetValue<string>() != "p12"))
+                    throw new Exception("Something of the upload went to the id the phone had before it dropped");
+                retry.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                var retried = FromWindows();
+                if (retried.Count != 1 || retried[0]["type"]!.GetValue<string>() != "fs-list" || retried[0]["to"]!.GetValue<string>() != "p12")
+                    throw new Exception("Retry did not go to the phone under its new id: " + string.Join(" ", retried.Select(m => m.ToJsonString())));
+                // The phone answers, and the files go to it. (No relay is connected here, so they fail again at once.)
+                string Listing(string path) => "{\"type\":\"fs-list-result\",\"reqId\":\"" + Field<int>(files, "_reqCounter") +
+                    "\",\"path\":\"" + path + "\",\"downloadsPath\":\"/sdcard/Download\",\"entries\":[]}";
+                OffSocket(Sealed(Listing("/sdcard"), "p12"), binary: false);
+                OffSocket(Sealed(Listing("/sdcard/Download"), "p12"), binary: false);
+                for (int i = 0; i < 200 && Field<bool>(files, "_uploading"); i++) Pump(20);
+                if (Field<bool>(files, "_uploading") || retry.Visibility != Visibility.Visible)
+                    throw new Exception("The retried upload did not end: " + fileStatus.Text);
+                if (FromWindows().Any(m => m["to"]?.GetValue<string>() != "p12"))
+                    throw new Exception("A retried upload sent something to an id other than the phone's new one");
+                Console.WriteLine("PASS: an upload cut off when the phone drops fails with Retry, and Retry goes to the phone's new id");
 
                 // It leaves and stays away: the viewer waits a minute, says so, and closes. The files window stays.
                 Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-left", ["id"] = "p12" });
@@ -773,6 +829,94 @@ internal static class PrivacyLifecycleTests
                 if (Viewing() || explorers.Contains(files)) throw new Exception("A window stayed open on a device whose approval was taken away");
                 if (auth.IsTrusted("p20")) throw new Exception("setup: the device is still approved");
                 Console.WriteLine("PASS: hanging up on a device closes this PC's viewer of it, and revoking it closes every window on it");
+
+                // A device that comes back and will not be viewed any more. While it was
+                // away it stopped approving this PC, or had control switched off: it proves
+                // its key as before, and then ignores what it is asked without a word. The
+                // viewer must not sit on its last picture as if that were the phone now.
+                string otherId = "p1";
+                PhoneViewWindow OtherViewer()
+                {
+                    var window = new PhoneViewWindow(ws, otherId, "Other phone", feed, auth.IsTrusted, otherKey.Fingerprint);
+                    window.Closed += (_, _) => typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
+                    typeof(MainWindow).GetField("_phoneView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, window);
+                    return window;
+                }
+                void ComesBackAs(string id)
+                {
+                    Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-left", ["id"] = otherId });
+                    Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-joined", ["peer"] = Peer(id, "Other phone") });
+                    Proves(id, otherKey);
+                    otherId = id;
+                }
+                var silent = OtherViewer();
+                ComesBackAs("p31");
+                var silentNotice = (System.Windows.Controls.TextBlock)silent.FindName("AwayText");
+                if (silent.PeerId != "p31" || silentNotice.Text != "Other phone is back. Asking for its screen again…")
+                    throw new Exception("setup: the viewer is not asking the phone that came back: " + silentNotice.Text);
+                Outgoing();
+                Invoke(silent, "SendText", "typed at the old picture");
+                Invoke(silent, "SendAction", "homebtn");
+                if (FromWindows().Count != 0) throw new Exception("Input went to a phone that has not answered since it came back");
+                words.Clear();
+                Invoke(host, "CheckLinks", DateTime.UtcNow + DeviceLink.Wait - TimeSpan.FromSeconds(5));
+                if (!Viewing()) throw new Exception("The viewer gave up on a phone that came back before it had time to answer");
+                Invoke(host, "CheckLinks", DateTime.UtcNow + DeviceLink.Wait + TimeSpan.FromSeconds(5));
+                if (Viewing()) throw new Exception("The viewer stayed open, on its old picture, on a phone that came back and never answered");
+                if (!words.SequenceEqual(new[] { DeviceLink.NoAnswerText("Other phone") }))
+                    throw new Exception("The person was not told that the phone is there and sent nothing: " + string.Join(" | ", words));
+                // And one that says no outright.
+                OtherViewer();
+                ComesBackAs("p32");
+                words.Clear();
+                Invoke(host, "OnAuthResult", "p32", "pending");
+                if (!Viewing()) throw new Exception("The viewer closed while the phone was still asking its user");
+                Invoke(host, "OnAuthResult", "p32", "denied");
+                if (Viewing()) throw new Exception("The viewer stayed open on a phone that refused this PC");
+                if (!words.Any(w => w.Contains("denied this device access"))) throw new Exception("The person was not told that the phone refused this PC");
+                Console.WriteLine("PASS: a device that comes back and does not answer, or refuses, is not left looking viewed");
+
+                // The window on another PC follows its device the same way.
+                Outgoing();
+                var pcWindow = new PcViewWindow(ws, otherId, "Other PC", otherKey.Fingerprint);
+                typeof(MainWindow).GetField("_pcView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, pcWindow);
+                try
+                {
+                    var hint = (System.Windows.Controls.TextBlock)pcWindow.FindName("HintText");
+                    string usual = hint.Text;
+                    if (!Outgoing().Any(m => m["type"]!.GetValue<string>() == "start-view" && m["to"]!.GetValue<string>() == "p32"))
+                        throw new Exception("setup: the PC window did not ask for the screen");
+                    Invoke(host, "OnState", "disconnected: connection closed");
+                    if (pcWindow.PeerId != null || hint.Text != "This PC has lost its connection. Reconnecting…")
+                        throw new Exception("The PC window does not say that this PC is reconnecting: " + hint.Text);
+                    Invoke(pcWindow, "SendKey", "A", "down");
+                    Invoke(host, "OnState", "connected");
+                    // Another device has the id now; the PC that was viewed has a new one.
+                    Welcome(Peer("p32", "Other PC"), Peer("p40", "Other PC"));
+                    Proves("p32", KeyOf("Third device"));
+                    Invoke(pcWindow, "SendKey", "A", "down");
+                    if (pcWindow.PeerId != null || FromWindows().Count != 0)
+                        throw new Exception("The PC window sent keys to, or was attached to, another device with the old id");
+                    Proves("p40", otherKey);
+                    if (pcWindow.PeerId != "p40" || hint.Text != "Other PC is back. Asking for its screen again…")
+                        throw new Exception("The PC window was not attached to the PC under its new id: " + hint.Text);
+                    Invoke(pcWindow, "SendKey", "A", "down");
+                    var asked = FromWindows();
+                    if (asked.Count != 1 || asked[0]["type"]!.GetValue<string>() != "start-view" || asked[0]["to"]!.GetValue<string>() != "p40")
+                        throw new Exception("Back, the PC was not asked for its screen and nothing else: " + string.Join(" ", asked.Select(m => m.ToJsonString())));
+                    OffSocket(Sealed("{\"type\":\"screen-info\",\"width\":800,\"height\":600}", "p40"), binary: false);
+                    if (hint.Text != usual) throw new Exception("The PC window still says it is waiting after the PC answered: " + hint.Text);
+                    Invoke(pcWindow, "SendKey", "A", "down");
+                    var keysSent = FromWindows();
+                    if (keysSent.Count != 1 || keysSent[0]["type"]!.GetValue<string>() != "key" || keysSent[0]["to"]!.GetValue<string>() != "p40")
+                        throw new Exception("Keys did not go to the PC under its new id once it had answered");
+                    Console.WriteLine("PASS: the window on another PC waits, is attached to the same PC under its new id, and sends nothing until it answers");
+                }
+                finally
+                {
+                    pcWindow.Close();
+                    typeof(MainWindow).GetField("_pcView", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(host, null);
+                }
             }
             finally
             {

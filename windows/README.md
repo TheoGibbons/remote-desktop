@@ -195,9 +195,12 @@ restarted (every release does that), the window says so over the last picture
 and sends nothing meanwhile. When the same device is back and approved, the
 window asks for its screen again and goes on. It knows the device by the key
 that was approved, not by its name: another device that calls itself the same
-is never taken for it. A viewer waits a minute for its device after this PC is
-back, then closes and says why. A **Files** window keeps waiting, and files
-that were on their way fail with a **Retry**.
+is never taken for it. The picture counts as live again only when the device
+answers: until then the window says it is asking, and clicks and typing are
+not sent. A viewer waits a minute for its device to come back, and a minute
+for it to answer, then closes and says which it was; it closes at once if the
+device refuses this PC. A **Files** window keeps waiting, and files that were
+on their way fail with a **Retry**.
 
 - Press **View** on a device's row in **Devices** → opens a live view:
   - **another PC** → full desktop control: move/click/scroll with the mouse and
