@@ -174,7 +174,8 @@ object ConnectionManager {
         unwatchNetwork()
         offlineSinceMs = 0L
         admittedSocket = null
-        PhoneScreenCapture.onViewStopped()
+        // Stopped by this phone's owner: whoever views next is announced, also one that says it is only back.
+        PhoneScreenCapture.onViewStopped(forGood = true)
         CaptureOffers.stop()
         enabled = false
         retryScheduled = false
@@ -587,7 +588,8 @@ object ConnectionManager {
                 if (mayControl(from) && PhoneScreenCapture.isViewing(from)) PhoneControls.handle(appContext, from, msg)
 
             "start-view" ->
-                if (mayControl(from)) PhoneScreenCapture.onViewRequested(appContext, from, codecs(msg))
+                if (mayControl(from))
+                    PhoneScreenCapture.onViewRequested(appContext, from, codecs(msg), msg.optBoolean("resume", false))
             "stop-view" ->
                 if (PeerAuth.isTrusted(from)) PhoneScreenCapture.onViewStopped(from, byViewer = true)
 

@@ -150,7 +150,9 @@ class PhoneViewerActivity : AppCompatActivity() {
                 updateNotice()
                 when (msg.optString("status")) {
                     // The start-view sent before approval was dropped.
-                    "trusted" -> startView()
+                    // Asked by itself, with nobody opening a viewer: the other phone need not
+                    // wake or announce it again, if it knows this one as a viewer it cut off.
+                    "trusted" -> startView(resume = true)
                     "denied", "revoked", "disconnected" -> finish()
                 }
             }
@@ -278,7 +280,8 @@ class PhoneViewerActivity : AppCompatActivity() {
         send(JSONObject().put("type", "stop-view"))
     }
 
-    private fun startView() {
+    /** [resume] when nobody opened this viewer just now: it is asking again by itself. */
+    private fun startView(resume: Boolean = false) {
         // Type 5 frames are offered only to a phone this one has approved:
         // the stream's id is believed on that phone's word. Until the next
         // phone can decode video, whole JPEGs are all this viewer draws.
@@ -290,6 +293,7 @@ class PhoneViewerActivity : AppCompatActivity() {
         }
         offered = offer
         val msg = JSONObject().put("type", "start-view")
+        if (resume) msg.put("resume", true)
         if (offer) msg.put("codecs", JSONArray().put(PhoneScreenCapture.JPEG))
         send(msg)
         // The other phone ignores start-view without saying why, e.g. with

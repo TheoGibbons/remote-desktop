@@ -70,17 +70,19 @@ object PhoneScreenCapture {
     /**
      * `start-view` from [peerId], with the `codecs` it offered if it offered
      * any. A viewer may send it again, and each one replaces its list.
+     * [resume] when it says the viewer is asking by itself, after being away.
      */
-    fun onViewRequested(context: Context, peerId: String, codecs: Set<String> = emptySet()) {
+    fun onViewRequested(context: Context, peerId: String, codecs: Set<String> = emptySet(), resume: Boolean = false) {
         init(context)
         if (!Prefs(context).allowControl || !mayView(context, peerId)) return
         // Only a device that was not already viewing wakes the phone and is
         // announced. A viewer may ask again, and that changes nothing here.
         val started = viewers.put(peerId, codecs) == null
         // Nor does a device that is only back: its connection or this phone's
-        // dropped, and it asks again by itself, under a new id (ViewerReturns).
+        // dropped, and it asks again by itself, under a new id, and says so.
+        // It is believed only if this phone remembers cutting it off (ViewerReturns).
         val device = if (started) identityOf(peerId) else null
-        val opened = device != null && !returns.isBack(device, SystemClock.elapsedRealtime())
+        val opened = device != null && !returns.isBack(device, SystemClock.elapsedRealtime(), resume)
         if (device != null) {
             viewerDevice[peerId] = device
             ScreenCaptureService.viewerStarted(device)
@@ -124,8 +126,10 @@ object PhoneScreenCapture {
     /**
      * Clear requests on disconnect/revocation so a later session never resumes an old view.
      * [byViewer] when [peerId] itself said it has stopped, with `stop-view`.
+     * [forGood] when this phone's owner stopped the connection: nobody is
+     * expected back, and whoever views next is announced.
      */
-    fun onViewStopped(peerId: String? = null, byViewer: Boolean = false) {
+    fun onViewStopped(peerId: String? = null, byViewer: Boolean = false, forGood: Boolean = false) {
         for (id in if (peerId == null) viewers.keys.toList() else listOf(peerId)) {
             // A stop-view also counts from a device whose view was already lost with its connection.
             val wasViewing = viewers.remove(id) != null
@@ -134,6 +138,7 @@ object PhoneScreenCapture {
                 ScreenCaptureService.viewerStopped(it, byViewer)
             }
         }
+        if (forGood) returns.forgetAll()
         forgetGone()
         // If it starts again it is told how things stand again, though nothing has changed.
         LockState.forget(peerId)
@@ -143,7 +148,8 @@ object PhoneScreenCapture {
     /** [peerId] may no longer view. Not its own doing, so it is not a view that it closed. */
     private fun onViewEnded(peerId: String) {
         if (viewers.remove(peerId) != null) (viewerDevice.remove(peerId) ?: identityOf(peerId)).let {
-            returns.ended(it, byItself = false, SystemClock.elapsedRealtime())
+            // By this phone's doing: if it views again, that is announced.
+            returns.forget(it)
             ScreenCaptureService.viewerStopped(it, byItself = false)
         }
     }
@@ -158,6 +164,10 @@ object PhoneScreenCapture {
             val context = appContext ?: return@post
             // Approval taken back, or control switched off.
             for (id in viewers.keys.filter { !mayView(context, it) }) onViewEnded(id)
+            // The same for a device that is away just now: with control off, or its
+            // approval gone, it is not one that may come back without a word.
+            if (!Prefs(context).allowControl) returns.forgetAll()
+            else returns.keep(PeerAuth.trustedDevices().map { it.fingerprint })
             forgetGone()
             // A screen turned for a viewer goes back to the phone's own way with the last of them.
             if (viewers.isEmpty()) InputAccessibilityService.instance?.releaseRotation()

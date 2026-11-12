@@ -146,7 +146,7 @@ server-added `from`. Broadcast (no `to`) still goes to all other peers.
 
 | type          | fields | notes |
 |---------------|--------|-------|
-| `start-view`  | `to`, `autoUnprivacy`? (boolean), `codecs`? (array) | Ask peer to start streaming its screen to me. Windows records `autoUnprivacy: true` for an approved viewer and restores the physical desktop when that viewing session ends (stop-view, peer/relay disconnect, or loss of approval). Defaults to false; each start-view replaces that viewer's policy. Older hosts ignore it. `codecs` is for a phone: the formats the viewer can draw inside type `5` frames, `"jpeg"` and `"h264"`, in no order. Every viewer that sends it lists `"jpeg"`; a PC adds `"h264"` when its Windows has an H.264 decoder and that decoder has not failed (see [Phone video](#phone-video)). Sending it also promises `frame-ack`. See [Phone frames](#phone-frames). PC hosts ignore it. |
+| `start-view`  | `to`, `autoUnprivacy`? (boolean), `codecs`? (array), `resume`? (boolean) | Ask peer to start streaming its screen to me. `resume: true` says that nobody opened this viewer just now: it is open already, lost its host through a dropped connection, and is asking again by itself. A phone uses it to decide whether to wake and announce the viewer (see the paragraph on waking, below); PC hosts and older phones ignore it. Windows records `autoUnprivacy: true` for an approved viewer and restores the physical desktop when that viewing session ends (stop-view, peer/relay disconnect, or loss of approval). Defaults to false; each start-view replaces that viewer's policy. Older hosts ignore it. `codecs` is for a phone: the formats the viewer can draw inside type `5` frames, `"jpeg"` and `"h264"`, in no order. Every viewer that sends it lists `"jpeg"`; a PC adds `"h264"` when its Windows has an H.264 decoder and that decoder has not failed (see [Phone video](#phone-video)). Sending it also promises `frame-ack`. See [Phone frames](#phone-frames). PC hosts ignore it. |
 | `stop-view`   | `to`   | Stop streaming. |
 | `privacy-mode` | `to`, `enabled` (boolean) | Windows only: hide physical monitors and block local keyboard/mouse while preserving app-injected remote input. Enabling requires remote-control consent, an approved active viewer, and all peers trusted. Disabling requires remote-control consent and an approved peer. Privacy stays active after viewing stops or peers/relay disconnect unless a departing viewer opted into autoUnprivacy; reconnecting approved viewers receive the current state. |
 | `get-privacy-state` | `to` | Approved peer asks Windows for privacy availability and current state. |
@@ -205,12 +205,19 @@ comes from a device that was not already viewing; a viewer that sends it again
 neither wakes the phone nor is announced on it again. Nor does a viewer that
 is only back. A viewer whose connection dropped, or that sees the phone come
 back after the phone's did, sends `start-view` again by itself, with nobody at
-it, and it is under a new peer id then. So the phone knows each viewer by its
-identity, the key it approved, and takes its `start-view` for a return when
-that device's last view ended without a `stop-view` from it, and no more than
-five minutes ago. After five minutes, or after a `stop-view`, it is a viewer
-that someone opened: the phone wakes and announces it. The lock screen stays
-in place either way.
+it, under a new peer id, and marks it `resume: true`. The phone does not take
+the mark on trust. It knows each viewer by its identity, the key it approved,
+and honours the mark only from a device it remembers as cut off: one whose
+last view ended without a `stop-view` from it, no more than five minutes ago.
+It forgets that when its owner takes the device's approval away, switches
+control off, or stops the connection. A `start-view` without the mark is
+always a viewer that someone opened, and so is a marked one from a device that
+is not remembered: the phone wakes and announces it. So a viewer sets `resume`
+only on the requests it makes by itself after finding its host again, until
+the host answers, and never on one that follows a person opening it. Viewers
+that do not know the mark (the Windows app up to v1.0.53 sends none) are
+announced every time they ask after a drop, which is true if repetitive. The
+lock screen stays in place either way.
 
 The phone answers `volume`, `rotate` and `get-phone-state`, to the device that sent them, with:
 
@@ -380,9 +387,9 @@ again by itself then, with nobody at it. The phone takes a `start-view` for
 such a return unless that device, by its identity and not its peer id, ended
 its last view with `stop-view`. So a viewer sends `stop-view` when the person
 at it stops viewing, and not when its connection drops. No length of absence
-makes a return count here, unlike for waking the phone (above), where a return
-is believed for five minutes. Accessibility viewing does not keep the phone
-awake.
+makes a return count here, and no mark is asked for, unlike for waking the
+phone (above), where a return has to be marked and is believed for five
+minutes. Accessibility viewing does not keep the phone awake.
 
 **File system** (`path` uses the native separators of the target device)
 

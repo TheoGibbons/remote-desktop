@@ -59,6 +59,10 @@ class LockStateTest {
     @Suppress("UNCHECKED_CAST")
     private val fingerprints get() = authField("peerFingerprint").get(PeerAuth) as MutableMap<String, String>
 
+    /** The devices this phone has approved, by the fingerprint of their key. */
+    @Suppress("UNCHECKED_CAST")
+    private val approvedDevices get() = authField("trusted").get(PeerAuth) as MutableMap<String, PeerAuth.TrustedDevice>
+
     private val captureContext = PhoneScreenCapture::class.java.getDeclaredField("appContext")
         .apply { isAccessible = true }
 
@@ -82,6 +86,10 @@ class LockStateTest {
         trustedPeers.addAll(listOf("pc", "other-pc", "phone"))
         previous["allPeersTrusted"] = authField("allPeersTrusted").get(PeerAuth)
         authField("allPeersTrusted").set(PeerAuth, true)
+        // Where it keeps its approvals, for a test that takes one away as the app does.
+        previous["authContext"] = authField("appContext").get(PeerAuth)
+        authField("appContext").set(PeerAuth, context)
+        approvedDevices.clear()
         // It keeps the context of whichever test first set it up; this test's switches live in this one's.
         previous["capture"] = captureContext.get(PhoneScreenCapture)
         captureContext.set(PhoneScreenCapture, null)
@@ -112,6 +120,8 @@ class LockStateTest {
         idle()
         captureContext.set(PhoneScreenCapture, previous.remove("capture"))
         authField("allPeersTrusted").set(PeerAuth, previous.remove("allPeersTrusted"))
+        authField("appContext").set(PeerAuth, previous.remove("authContext"))
+        approvedDevices.clear()
         LockState.readOn = previous.remove("readOn") as Executor
         for ((name, value) in previous) connectionField(name).set(ConnectionManager, value)
         ConnectionManager.peers.clear()
@@ -320,22 +330,39 @@ class LockStateTest {
         assertEquals(3, ShadowToast.shownToastCount())
     }
 
+    /** This phone has approved a device with this key: what a finished handshake and a yes leave behind. */
+    private fun approved(key: String, name: String = "Test PC") {
+        approvedDevices[key] = PeerAuth.TrustedDevice(key, name, "windows", 0L, 0L)
+    }
+
     /** The relay says a device has left, and then that it has joined again: the same key under a new id. */
     private fun rejoins(was: String, id: String, key: String, name: String = "Test PC") {
         handleJson.invoke(ConnectionManager, JSONObject().put("type", "peer-left").put("id", was))
         ConnectionManager.peers.add(ConnectionManager.Peer(id, "windows", name))
-        trustedPeers.add(id)
+        // It proves its key again, and is approved by it.
+        if (approvedDevices.containsKey(key)) trustedPeers.add(id)
         fingerprints[id] = key
         idle()
     }
 
+    /** `start-view` from a viewer that is asking by itself, having found this phone again. */
+    private fun resuming() = JSONObject().put("type", "start-view").put("resume", true)
+
+    private fun woke(): Boolean = (ShadowPowerManager.getLatestWakeLock() != null).also {
+        // Whether it came on is looked at a second later; then the next try starts clean.
+        aSecondLater()
+        ShadowPowerManager.clearWakeLocks()
+    }
+
     /**
      * A PC whose connection dropped comes back under a new id and asks for
-     * the screen again by itself, with nobody at it. Every release of the app
-     * restarts the relay, which does this to every viewer at once.
+     * the screen again by itself, with nobody at it, and says so. Every
+     * release of the app restarts the relay, which does this to every viewer
+     * at once.
      */
     @Test
     fun aViewerThatIsOnlyBackNeitherWakesThePhoneNorIsAnnouncedAgain() {
+        approved("the pc's key")
         fingerprints["pc"] = "the pc's key"
         receive("pc", "start-view")
         assertEquals(1, ShadowToast.shownToastCount())
@@ -343,8 +370,8 @@ class LockStateTest {
 
         rejoins(was = "pc", id = "pc-2", key = "the pc's key")
         socket.messages.clear()
-        receive("pc-2", "start-view")
-        assertNull("Coming back must not turn the screen on", ShadowPowerManager.getLatestWakeLock())
+        receive("pc-2", resuming())
+        assertFalse("Coming back must not turn the screen on", woke())
         assertEquals(1, ShadowToast.shownToastCount())
         assertTrue(PhoneScreenCapture.isViewing("pc-2"))
         // Its window is told how things stand all the same: it knows nothing under its new id.
@@ -353,35 +380,111 @@ class LockStateTest {
         // The same when it is the phone that lost its connection, and every id is new.
         PhoneScreenCapture.onViewStopped()
         rejoins(was = "pc-2", id = "pc-3", key = "the pc's key")
-        receive("pc-3", "start-view")
-        assertNull(ShadowPowerManager.getLatestWakeLock())
+        receive("pc-3", resuming())
+        assertFalse(woke())
         assertEquals(1, ShadowToast.shownToastCount())
 
-        // Another device that is given the id the PC had is not the PC.
+        // Saying so is not enough. Another approved device, which was not viewing, says
+        // it is only back, under the id the PC had: it is a new viewer.
+        approved("another key", "Other PC")
         rejoins(was = "other-pc", id = "pc", key = "another key", name = "Other PC")
-        receive("pc", "start-view")
-        assertNotNull("A device that was not viewing before wakes the phone", ShadowPowerManager.getLatestWakeLock())
+        receive("pc", resuming())
+        assertTrue("A device that was not viewing before wakes the phone, whatever it says", woke())
         assertEquals(2, ShadowToast.shownToastCount())
-        aSecondLater()
-        ShadowPowerManager.clearWakeLocks()
 
-        // Closed by the person at it and opened again, it is a new viewer, whatever its id.
-        receive("pc-3", "stop-view")
+        // Nor is being cut off enough. The PC's viewer was closed while it could not reach
+        // the phone, so no stop-view came, and someone opens it again: nothing says "resume".
+        // An app from before the mark asks this way every time.
         rejoins(was = "pc-3", id = "pc-4", key = "the pc's key")
         receive("pc-4", "start-view")
-        assertNotNull(ShadowPowerManager.getLatestWakeLock())
+        assertTrue("A viewer that someone opened wakes the phone", woke())
         assertEquals(3, ShadowToast.shownToastCount())
-        aSecondLater()
-        ShadowPowerManager.clearWakeLocks()
 
-        // And so it is when it comes back long after it was cut off: its app
-        // was closed with the viewer open, and someone has opened it again.
-        handleJson.invoke(ConnectionManager, JSONObject().put("type", "peer-left").put("id", "pc-4"))
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ViewerReturns.WITHIN_MS + 1_000))
+        // Closed by the person at it, with a stop-view, it is not back however it asks next.
+        receive("pc-4", "stop-view")
         rejoins(was = "pc-4", id = "pc-5", key = "the pc's key")
-        receive("pc-5", "start-view")
-        assertNotNull(ShadowPowerManager.getLatestWakeLock())
+        receive("pc-5", resuming())
+        assertTrue(woke())
         assertEquals(4, ShadowToast.shownToastCount())
+
+        // And long after it was cut off, it is a new viewer again.
+        handleJson.invoke(ConnectionManager, JSONObject().put("type", "peer-left").put("id", "pc-5"))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(ViewerReturns.WITHIN_MS + 1_000))
+        rejoins(was = "pc-5", id = "pc-6", key = "the pc's key")
+        receive("pc-6", resuming())
+        assertTrue(woke())
+        assertEquals(5, ShadowToast.shownToastCount())
+    }
+
+    /**
+     * What this phone's owner does about its viewers ends anyone's coming
+     * back unannounced: taking a device's approval away, switching control
+     * off, stopping the connection. Each is done here as the app does it.
+     */
+    @Test
+    fun aViewerIsAnnouncedAgainAfterThePhonesOwnerSentItAway() {
+        val key = "the pc's key"
+        approved(key)
+        fingerprints["pc"] = key
+        receive("pc", "start-view")
+        assertEquals(1, ShadowToast.shownToastCount())
+        screen(on = false, locked = true, Intent.ACTION_SCREEN_OFF)
+
+        // Its approval is taken away while it views, and given back: it starts over.
+        PeerAuth.revoke(key)
+        idle()
+        assertFalse(PhoneScreenCapture.isViewing("pc"))
+        assertFalse(PeerAuth.isTrusted("pc"))
+        approved(key)
+        rejoins(was = "pc", id = "pc-2", key = key)
+        receive("pc-2", resuming())
+        assertTrue("A device whose approval was taken away came back unannounced", woke())
+        assertEquals(2, ShadowToast.shownToastCount())
+
+        // Its approval is taken away while its connection is down.
+        handleJson.invoke(ConnectionManager, JSONObject().put("type", "peer-left").put("id", "pc-2"))
+        idle()
+        PeerAuth.revoke(key)
+        idle()
+        approved(key)
+        rejoins(was = "pc-2", id = "pc-3", key = key)
+        receive("pc-3", resuming())
+        assertTrue("A device revoked while it was away came back unannounced", woke())
+        assertEquals(3, ShadowToast.shownToastCount())
+
+        // Control is switched off under it, and on again.
+        Prefs(context).allowControl = false
+        idle()
+        assertFalse(PhoneScreenCapture.isViewing("pc-3"))
+        Prefs(context).allowControl = true
+        receive("pc-3", resuming())
+        assertTrue("A viewer that control was switched off under came back unannounced", woke())
+        assertEquals(4, ShadowToast.shownToastCount())
+
+        // Control is switched off while its connection is down.
+        handleJson.invoke(ConnectionManager, JSONObject().put("type", "peer-left").put("id", "pc-3"))
+        idle()
+        Prefs(context).allowControl = false
+        PhoneScreenCapture.refresh()
+        idle()
+        Prefs(context).allowControl = true
+        rejoins(was = "pc-3", id = "pc-4", key = key)
+        receive("pc-4", resuming())
+        assertTrue(woke())
+        assertEquals(5, ShadowToast.shownToastCount())
+
+        // The phone's owner stops the connection, and starts it again.
+        ConnectionManager.stop()
+        idle()
+        connectionField("ws").set(ConnectionManager, socket)
+        connectionField("state").set(ConnectionManager, "connected")
+        ConnectionManager.peers.add(ConnectionManager.Peer("pc-5", "windows", "Test PC"))
+        trustedPeers.add("pc-5")
+        fingerprints["pc-5"] = key
+        authField("allPeersTrusted").set(PeerAuth, true)
+        receive("pc-5", resuming())
+        assertTrue("A viewer came back unannounced after the phone's owner stopped the connection", woke())
+        assertEquals(6, ShadowToast.shownToastCount())
     }
 
     @Test

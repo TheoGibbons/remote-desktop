@@ -345,10 +345,14 @@ phone sleeps again on its usual timeout. Setting the volume, turning the
 screen and locking are not input and leave a sleeping phone asleep. So does a
 viewer that is already viewing and asks for the picture again, and one that
 is only back: when a connection drops, or the relay is restarted, a viewer
-that was open carries on by itself, and the phone neither wakes for it nor
-shows "started viewing" again. It knows the device by the key it approved.
-A viewer that comes back more than five minutes later is treated as newly
-opened.
+that was open carries on by itself and says so, and the phone neither wakes
+for it nor shows "started viewing" again. The phone believes that only from a
+device whose view it saw cut off in the last five minutes, which it knows by
+the key it approved. Whenever someone opens a viewer, the phone wakes and
+shows "started viewing", also right after a dropped connection. It does so
+too for the first view after you revoke a device, switch control off, or
+stop the connection. A PC on an app up to v1.0.53 does not say when it is
+only back, so it is announced each time it reconnects.
 
 A Samsung phone turns its screen on for an app only while that app's
 notifications are allowed. That is why **Notifications** is one of the rows

@@ -12,22 +12,31 @@ package co.remotedesktop
  * phone left asleep would be woken and told "started viewing" at every
  * hiccup of the network.
  *
- * So a device is taken to be coming back, not starting, when its last view
- * ended some other way than by its own `stop-view`, which is what closing a
- * viewer sends, and no longer than [withinMs] ago. Devices are told apart by
- * their identity, the key this phone approved, which survives a
- * reconnection; the id the relay gives them does not.
+ * A viewer that asks by itself says so: its `start-view` carries
+ * `resume: true`. That alone is not believed. It counts only from a device
+ * this phone remembers as cut off: one whose last view ended some other way
+ * than by its own `stop-view`, no longer than [withinMs] ago. Devices are
+ * told apart by their identity, the key this phone approved, which survives
+ * a reconnection; the id the relay gives them does not.
  *
- * [KeepAwake] tells the two apart the same way, for the ten idle minutes of
- * smooth sharing, but with no limit of time. The difference is which
- * mistake costs something. A view also ends without a `stop-view` when
- * someone is done with it: the viewer's app was closed, or it stopped
- * waiting for this phone to come back. Taking the next view for a return
- * then costs [KeepAwake] nothing, since the first tap starts its ten
- * minutes. Here it would leave a person who opens a viewer hours later
- * looking at a phone that did not wake, and the person holding the phone
- * not told that it is being viewed again. So here a return is believed only
- * for a while.
+ * A `start-view` without the mark is always a new viewing. So is the next
+ * one after this phone's owner did something about its viewers: took the
+ * device's approval away, switched control off, or stopped the connection.
+ * What is remembered is dropped then, and nobody comes back unannounced
+ * after that.
+ *
+ * The mark is needed because a missing `stop-view` does not mean the viewer
+ * is still open. It is also missing when the viewer was closed while it
+ * could reach nobody, when its app was closed, and when it gave up waiting
+ * for this phone. As first built, any `start-view` from a device that was
+ * cut off counted as a return, and a person who opened a viewer within five
+ * minutes of any of those was not announced on the phone.
+ *
+ * [KeepAwake] tells a return from a start for the ten idle minutes of smooth
+ * sharing, by the missing `stop-view` alone and with no limit of time. There
+ * a view wrongly taken for a return costs nothing: the first tap starts the
+ * ten minutes. Here it would leave the phone's owner not told that they are
+ * being viewed.
  *
  * Used from the network thread and the main one.
  */
@@ -37,25 +46,42 @@ internal class ViewerReturns(private val withinMs: Long = WITHIN_MS) {
 
     /**
      * [device] begins to view: its `start-view` was accepted, and it was not
-     * viewing before.
+     * viewing before. Whatever is remembered of it is used up by this.
+     * @param resume whether its `start-view` said it was asking by itself.
      * @return whether it is only back from a view that was cut off.
      */
     @Synchronized
-    fun isBack(device: String, now: Long): Boolean {
+    fun isBack(device: String, now: Long, resume: Boolean): Boolean {
         val at = cutOffAt.remove(device) ?: return false
-        return now - at in 0..withinMs
+        return resume && now - at in 0..withinMs
     }
 
     /**
      * [device] is no longer viewing. [byItself] when it said so with
-     * `stop-view`; false when it left the session, the connection dropped on
-     * either side, or it lost its approval.
+     * `stop-view`; false when it left the session or the connection dropped
+     * on either side.
      */
     @Synchronized
     fun ended(device: String, byItself: Boolean, now: Long) {
         // Nothing is kept of a device that has been gone too long to come back.
         cutOffAt.values.removeAll { now - it !in 0..withinMs }
         if (byItself) cutOffAt.remove(device) else cutOffAt[device] = now
+    }
+
+    /** [device] may no longer view, by this phone's doing. Its next view is announced. */
+    @Synchronized
+    fun forget(device: String) {
+        cutOffAt.remove(device)
+    }
+
+    /** Control was switched off, or the connection stopped, on this phone: every next view is announced. */
+    @Synchronized
+    fun forgetAll() = cutOffAt.clear()
+
+    /** Only [approved] devices are remembered: one whose approval was taken away while it was gone is not. */
+    @Synchronized
+    fun keep(approved: Collection<String>) {
+        cutOffAt.keys.retainAll(approved.toSet())
     }
 
     companion object {
