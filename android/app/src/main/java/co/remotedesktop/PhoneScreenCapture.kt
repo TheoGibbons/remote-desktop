@@ -427,6 +427,16 @@ object PhoneScreenCapture {
         synchronized(streamLock) { return stream == 0L || inFlight.hasRoom(SystemClock.uptimeMillis()) }
     }
 
+    /**
+     * Whether a viewer is behind: one of them has left a frame of the
+     * stream unacknowledged for longer than is usual for it ([InFlight]).
+     * It is half of [hasRoom], and the half that tells of the link. The
+     * other, the app's own queue, fills whenever a file is fetched from the
+     * phone, and says nothing of what the link could carry of pictures.
+     */
+    fun viewersBehind(): Boolean =
+        synchronized(streamLock) { stream != 0L && !inFlight.hasRoom(SystemClock.uptimeMillis()) }
+
     /** Looks again when the newest picture would be due to be sent again, if it is still unacknowledged then. */
     private fun scheduleResend(now: Long) {
         main.removeCallbacks(resend)

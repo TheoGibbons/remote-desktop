@@ -474,6 +474,35 @@ class PhoneH264StreamTest {
             captureMs = 1234), header(socket.frames.single()))
     }
 
+    // ---------------- what the bitrate goes by ----------------
+
+    @Test
+    fun aFullQueueIsNoRoomForAPictureAndNoViewerBehind() {
+        // With nothing being sent, nobody is behind.
+        assertFalse(PhoneScreenCapture.viewersBehind())
+        startView("pc")
+        announce()
+        video(keyframe = true)
+        ack("pc", id(1), 0)
+        assertTrue(PhoneScreenCapture.hasRoom())
+        assertFalse(PhoneScreenCapture.viewersBehind())
+
+        // A file is fetched from the phone: its pieces fill the app's queue.
+        socket.queued = 50 * ConnectionManager.VIDEO_QUEUE_LIMIT
+        assertFalse(PhoneScreenCapture.hasRoom())
+        assertFalse(PhoneScreenCapture.viewersBehind())
+        socket.queued = 0
+
+        // A picture goes, and its acknowledgement is late.
+        video()
+        later(300)
+        assertFalse(PhoneScreenCapture.hasRoom())
+        assertTrue(PhoneScreenCapture.viewersBehind())
+        ack("pc", id(1), 1)
+        assertTrue(PhoneScreenCapture.hasRoom())
+        assertFalse(PhoneScreenCapture.viewersBehind())
+    }
+
     // ---------------- from the encoder to the wire, through the capture service's own wiring ----------------
 
     /**

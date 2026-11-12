@@ -29,6 +29,12 @@ class VideoBitrateTest {
     private var room = true
     private var sent = 0
 
+    /** Whether a viewer's acknowledgements are late. Where a test does not say, they are whenever there is no room. */
+    private var behind: Boolean? = null
+
+    /** Whether the app's own queue is full: a file is on its way out of the phone. */
+    private var queueFull = false
+
     private fun video(fed: Boolean = false) = PhoneVideo(
         encoders = { listOf(VideoSetup.Encoder("hardware", hardware = true, constantBitrate = true) { _, _ -> true }) },
         open = { attempt, _, _, events ->
@@ -44,6 +50,8 @@ class VideoBitrateTest {
         onFailed = { reason, _ -> failures += reason },
         spare = { it() },
         fed = fed,
+        viewersBehind = { behind ?: !room },
+        ownQueueFull = { queueFull },
     )
 
     private val video = video()
@@ -158,6 +166,29 @@ class VideoBitrateTest {
         scroll(1, heldMs = 500)
         scroll(3)
         assertTrue("${pipe.bitrates}", neverBroughtDown())
+    }
+
+    @Test
+    fun aFileBeingFetchedFromThePhoneDoesNotBringTheRateDown() {
+        running()
+        scroll(1)
+        // The file fills the app's own queue for a minute. There is no room for a picture all that
+        // time, and no viewer is behind: none has been sent anything to be behind with.
+        queueFull = true
+        behind = false
+        scroll(60, heldMs = 1_000)
+        assertTrue("${pipe.bitrates}", pipe.bitrates.isEmpty())
+        assertEquals(START, video.bitrate)
+        // One picture does get out between two pieces of the file, and its acknowledgement is slow.
+        behind = true
+        scroll(5, heldMs = 1_000)
+        assertTrue("${pipe.bitrates}", pipe.bitrates.isEmpty())
+
+        // The same wait when it is the viewer that is behind, and no file, is a slow link.
+        queueFull = false
+        behind = null
+        scroll(4, heldMs = 1_000)
+        assertTrue(video.bitrate!! < START)
     }
 
     @Test

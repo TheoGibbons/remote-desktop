@@ -191,6 +191,8 @@ class ScreenCaptureService : Service() {
         },
         clock = SystemClock::uptimeMillis,
         hasRoom = PhoneScreenCapture::hasRoom,
+        viewersBehind = PhoneScreenCapture::viewersBehind,
+        ownQueueFull = { !ConnectionManager.hasRoomForVideo() },
         send = { frame ->
             videoSink?.invoke(frame)
                 // Sharing has ended, and the encoder has not been let go of yet. The Accessibility

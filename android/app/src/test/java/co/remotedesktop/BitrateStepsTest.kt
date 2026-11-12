@@ -41,12 +41,13 @@ class BitrateStepsTest {
      * @param size how large each was.
      * @return whether the rate changed.
      */
-    private fun second(heldMs: Long = 0, pictures: Int = 30, size: Int = scrolled(), of: BitrateSteps = steps): Boolean {
+    private fun second(heldMs: Long = 0, pictures: Int = 30, size: Int = scrolled(), of: BitrateSteps = steps,
+                       fileGoingOut: Boolean = false): Boolean {
         var changed = false
         val from = now
         var out = 0
         while (now - from < 1_000) {
-            of.look(now, waiting = now - from < heldMs)
+            of.look(now, waiting = now - from < heldMs, elsewhere = fileGoingOut)
             changed = of.step(now) || changed
             // The pictures come out spread over the second.
             while (out < pictures && (now - from) * pictures >= out * 1_000L) {
@@ -163,6 +164,26 @@ class BitrateStepsTest {
         second(heldMs = 900)
         second()
         assertEquals(START, steps.bitrate)
+    }
+
+    @Test
+    fun aFileBeingFetchedFromThePhoneIsNotASlowLink() {
+        running()
+        second()
+        // A minute of a download. The app's own queue is full throughout, so pictures wait, and
+        // a viewer's acknowledgements of the few that go are late too: they share the link with the file.
+        repeat(60) { second(heldMs = 900, pictures = 2, fileGoingOut = true) }
+        assertEquals(START, steps.bitrate)
+        // A bad second before it and one after are not two in a row.
+        second(heldMs = 900)
+        second(fileGoingOut = true)
+        second(heldMs = 900)
+        repeat(2) { second() }
+        assertEquals(START, steps.bitrate)
+        // With the file gone, the link is judged as ever.
+        tooSlow(2)
+        second()
+        assertTrue(steps.bitrate < START)
     }
 
     // ---------------- down ----------------

@@ -162,8 +162,10 @@ internal class VideoLedger {
  * **The bitrate**, for a mirrored screen, is moved by [BitrateSteps]: down
  * when pictures are kept waiting for room second after second, and up again
  * when they are not. It goes by what this class sees: how long a picture
- * that was due had no room, when a keyframe was made, and how large the
- * pictures were that came out. A viewer's request for a keyframe counts
+ * that was due waited for a viewer's acknowledgements, when a keyframe was
+ * made, and how large the pictures were that came out. Waiting for the
+ * app's own queue to empty does not count: that is a file going out, not a
+ * slow link. A viewer's request for a keyframe counts
  * there too. The rate outlives an encoder: one started straight after
  * another (a turn, a failure) carries on where that one was. Screenshots
  * that are handed over keep the rate their encoder starts with: at 2.5 a
@@ -221,6 +223,14 @@ internal class PhoneVideo(
     private val fed: Boolean = false,
     /** How long after the last failure a size that failed is tried again; by default never. */
     private val sizesForgottenAfterMs: Long = Long.MAX_VALUE,
+    /**
+     * Whether a viewer's acknowledgements are late ([InFlight]). It is one
+     * of the two things [hasRoom] goes by, and the only one the bitrate goes
+     * by: the other is the app's own queue, which a file fills.
+     */
+    private val viewersBehind: () -> Boolean = { !hasRoom() },
+    /** Whether the app's own send queue is over its limit for pictures. */
+    private val ownQueueFull: () -> Boolean = { false },
 ) {
     interface Timer {
         fun post(task: Runnable)
@@ -560,7 +570,7 @@ internal class PhoneVideo(
         val now = clock()
         val room = hasRoom()
         if (steps != null) {
-            steps.look(now, waiting = !room && pacer.due(now))
+            steps.look(now, waiting = !room && pacer.due(now) && viewersBehind(), elsewhere = ownQueueFull())
             steps.step(now)
             if (!rate(session, steps.bitrate)) return
         }

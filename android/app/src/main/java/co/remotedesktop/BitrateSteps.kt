@@ -37,6 +37,9 @@ package co.remotedesktop
  *   one after, up to [ceiling]. Other seconds neither count nor start the
  *   count again.
  * - A second in which nothing was encoded proves nothing about the link.
+ *   Nor does one in which the app's own send queue was full: that is a file
+ *   being fetched from the phone, which fills the queue for as long as it
+ *   lasts. Pictures wait then, and not for the link's sake.
  * - Two requests for a keyframe within [KEY_ASKS_WITHIN_MS] mean the relay
  *   is dropping frames for a viewer that is backed up: a step down, at most
  *   one every [GRACE_MS].
@@ -66,6 +69,7 @@ internal class BitrateSteps(
     private var heldMs = 0L
     private var pictures = 0
     private var bytes = 0L
+    private var busyElsewhere = false
 
     /** Bad seconds in a row, up to the one that last closed. */
     private var bad = 0
@@ -126,16 +130,20 @@ internal class BitrateSteps(
         heldMs = 0
         pictures = 0
         bytes = 0
+        busyElsewhere = false
         bad = 0
     }
 
     /**
      * Called whenever the encoder is looked at: [waiting] says whether a
      * picture is due to be encoded and is being kept back because a viewer's
-     * acknowledgements are late.
+     * acknowledgements are late. [elsewhere] says the app's own send queue
+     * is full, which is a file on its way out of the phone: that second
+     * then says nothing about what the link could carry of pictures.
      */
-    @Synchronized fun look(now: Long, waiting: Boolean) {
+    @Synchronized fun look(now: Long, waiting: Boolean, elsewhere: Boolean = false) {
         if (secondFrom == NEVER) secondFrom = now
+        if (elsewhere) busyElsewhere = true
         // Looked at every few milliseconds while a picture waits. A longer gap is not waiting.
         if (heldSince != NEVER) heldMs += (now - heldSince).coerceIn(0, MOST_BETWEEN_LOOKS_MS)
         heldSince = if (waiting) now else NEVER
@@ -169,10 +177,17 @@ internal class BitrateSteps(
         val held = heldMs
         val count = pictures
         val size = bytes
+        val elsewhere = busyElsewhere
         secondFrom = now
         heldMs = 0
         pictures = 0
         bytes = 0
+        busyElsewhere = false
+        if (elsewhere) {
+            // The link was carrying a file. Neither a bad second nor a good one.
+            bad = 0
+            return false
+        }
         val before = rate(factor)
         if (held > HELD_TOO_LONG_MS) {
             // After a keyframe, a step down or an encoder's start, waiting is their doing.
