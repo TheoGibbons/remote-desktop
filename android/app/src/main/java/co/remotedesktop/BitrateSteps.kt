@@ -1,27 +1,45 @@
 package co.remotedesktop
 
 /**
- * How many bits a second the phone's video encoder is given: fewer when the
- * link cannot carry what is sent, more again when it can. On a slow link the
- * picture then gets softer instead of slower.
+ * How many bits a second the video encoder is given in smooth sharing:
+ * fewer when the link cannot carry what is sent, more again when it can. On
+ * a slow link the picture then gets softer instead of slower.
  *
- * What it goes by is how long pictures had to wait for room ([InFlight]: a
- * viewer's acknowledgements were late, or the app's own queue was not
- * empty), second by second:
- * - A picture was kept waiting for more than [HELD_TOO_LONG_MS] of a second:
- *   the rate is multiplied by [DOWN], but not below [floor].
- * - There was room throughout, and the encoder used most of what it was
- *   given, for [CLEAR_SECONDS] such seconds: the rate is multiplied by [UP],
- *   and again after every [CLIMB_BACK_EVERY] more while it is below what the
- *   encoder started at, and every [CLIMB_EVERY] above that, up to the most
- *   allowed.
- * - A second in which nothing was encoded proves nothing about the link, and
- *   nor does one whose pictures needed few bits. They count for neither.
+ * It is not used for Accessibility pictures. They come 2.5 a second, so one
+ * late acknowledgement or one large picture is most of a second's evidence,
+ * and a rate that could only be taken away would be taken away for the
+ * session. Their encoder keeps the rate it starts with.
+ *
+ * What it goes by is how long pictures that were due had to wait because a
+ * viewer's acknowledgements were late ([InFlight]), second by second. A
+ * real link is uneven, so one bad moment proves nothing:
+ * - A **bad second** is one in which pictures waited more than
+ *   [HELD_TOO_LONG_MS]. Two bad seconds in a row bring the rate down: it is
+ *   multiplied by [DOWN], but not below [floor]. One alone (a viewer that was
+ *   busy for a moment) counts for nothing, either way.
+ * - A keyframe is the largest picture there is, and on an ordinary upload
+ *   takes a good part of a second to arrive whatever the rate. So for
+ *   [GRACE_MS] after every keyframe, whatever it was made for, waiting does
+ *   not make a second bad. The same after an encoder starts, and for
+ *   [DOWN_GRACE_MS] after a step down, while what was sent at the old rate
+ *   is still arriving. So on a link that stays too slow, steps down come
+ *   three seconds apart.
+ * - Every other second in which pictures went is a **good second**, with
+ *   however much ordinary waiting.
+ * - Below the rate an encoder starts at, [BACK_SECONDS] good seconds bring
+ *   the rate up, multiplied by [UP], and every good second after that does
+ *   so again: that rate is where any encoder starts with nothing known, so
+ *   getting back to it needs only a link that is not full.
+ * - Above it, the link has to show that more is worth sending: only seconds
+ *   count in which the pictures used most of what the encoder was given
+ *   ([USED_SHARE]) and waited no more than [MUCH_WAITING_MS];
+ *   [CLEAR_SECONDS] of them for the first step and [CLIMB_EVERY] for each
+ *   one after, up to [ceiling]. Other seconds neither count nor start the
+ *   count again.
+ * - A second in which nothing was encoded proves nothing about the link.
  * - Two requests for a keyframe within [KEY_ASKS_WITHIN_MS] mean the relay
- *   is dropping frames for a viewer that is backed up: a step down.
- * - After a step down, [SETTLE_MS] pass before pictures kept waiting count
- *   again: what was on its way at the old rate is still arriving. The same
- *   after an encoder starts, whose first picture is its largest.
+ *   is dropping frames for a viewer that is backed up: a step down, at most
+ *   one every [GRACE_MS].
  * - A step up that has to be taken back within [PROBE_MS] was one too many.
  *   The next is not tried for [FIRST_WAIT_MS], and twice as long each time
  *   it happens again, up to [MOST_WAIT_MS]: on a link that stays slow the
@@ -38,13 +56,6 @@ package co.remotedesktop
 internal class BitrateSteps(
     private val floor: Int = VideoSetup.MIN_BITRATE,
     private val ceiling: Int = VideoSetup.MAX_BITRATE,
-    /**
-     * Whether the rate an encoder starts at is also the most it is given.
-     * So for Accessibility pictures, which come 2.5 a second: each already
-     * gets many times the bits of one picture in thirty, and more would make
-     * it as large as the JPEG it replaced.
-     */
-    private val startIsMost: Boolean = false,
 ) {
     private var base = floor
     private var factor = 1.0
@@ -56,9 +67,13 @@ internal class BitrateSteps(
     private var pictures = 0
     private var bytes = 0L
 
-    private var clear = 0
+    /** Bad seconds in a row, up to the one that last closed. */
+    private var bad = 0
+    /** Good seconds since the last step, or since the count was last begun again. */
+    private var good = 0
     private var climbing = false
-    private var settledAt = NEVER
+    private var graceUntil = NEVER
+    private var lastDownAt = NEVER
     private var climbWaitMs = 0L
     private var noClimbBefore = NEVER
     private var lastUpAt = NEVER
@@ -69,7 +84,7 @@ internal class BitrateSteps(
     val bitrate: Int
         @Synchronized get() = rate(factor)
 
-    private val most: Int get() = if (startIsMost) base else maxOf(ceiling, base)
+    private val most: Int get() = maxOf(ceiling, base)
 
     private fun rate(share: Double): Int = (base * share).toLong().coerceIn(floor.toLong(), most.toLong()).toInt()
 
@@ -85,12 +100,13 @@ internal class BitrateSteps(
             noClimbBefore = NEVER
             lastUpAt = NEVER
             lastKeyAskAt = NEVER
+            lastDownAt = NEVER
         }
         endedAt = NEVER
         base = maxOf(startRate, floor)
-        clear = 0
+        good = 0
         climbing = false
-        settledAt = now + SETTLE_MS
+        graceUntil = now + GRACE_MS
         forgetSecond()
         return rate(factor)
     }
@@ -110,11 +126,13 @@ internal class BitrateSteps(
         heldMs = 0
         pictures = 0
         bytes = 0
+        bad = 0
     }
 
     /**
      * Called whenever the encoder is looked at: [waiting] says whether a
-     * picture is due to be encoded and is being kept back for lack of room.
+     * picture is due to be encoded and is being kept back because a viewer's
+     * acknowledgements are late.
      */
     @Synchronized fun look(now: Long, waiting: Boolean) {
         if (secondFrom == NEVER) secondFrom = now
@@ -129,11 +147,16 @@ internal class BitrateSteps(
         bytes += size
     }
 
+    /** A keyframe is being made, for whatever reason: what waits behind it for a while is its doing. */
+    @Synchronized fun keyframe(now: Long) {
+        graceUntil = maxOf(graceUntil, now + GRACE_MS)
+    }
+
     /** A viewer asked for a keyframe, and the request was not one that crossed a keyframe on its way. */
     @Synchronized fun keyframeAsked(now: Long) {
         val again = lastKeyAskAt != NEVER && now - lastKeyAskAt <= KEY_ASKS_WITHIN_MS
         lastKeyAskAt = now
-        if (again && settled(now)) down(now)
+        if (again && (lastDownAt == NEVER || now - lastDownAt >= GRACE_MS)) down(now)
     }
 
     /**
@@ -150,29 +173,35 @@ internal class BitrateSteps(
         heldMs = 0
         pictures = 0
         bytes = 0
-        // In a second that began before things had settled, pictures that were kept
-        // waiting tell of the rate before. Room throughout counts in any second.
-        val judged = settled(began)
         val before = rate(factor)
-        if (judged && held > HELD_TOO_LONG_MS) {
-            down(now)
-            return rate(factor) != before
-        }
-        if (held > CLEAR_MS) {
-            // Not room throughout.
-            if (judged) {
-                clear = 0
-                climbing = false
+        if (held > HELD_TOO_LONG_MS) {
+            // After a keyframe, a step down or an encoder's start, waiting is their doing.
+            if (graceUntil != NEVER && began < graceUntil) {
+                bad = 0
+                return false
             }
-        } else if (count > 0 && size * 8 * VideoSetup.FPS >= USED_SHARE * before * count) clear++
-        // The way back to where an encoder starts is taken faster than the way on from there:
-        // that rate is known to be worth having, and what lies above it is only tried.
-        val needed = if (!climbing) CLEAR_SECONDS else if (factor < 1.0) CLIMB_BACK_EVERY else CLIMB_EVERY
-        if (clear >= needed && (noClimbBefore == NEVER || now >= noClimbBefore)) up(now)
+            if (++bad >= BAD_SECONDS) {
+                down(now)
+                return rate(factor) != before
+            }
+            // If the screen then stayed still for a while, the next bad second does not follow on this one.
+            if (now - began >= 2 * SECOND_MS) bad = 0
+            return false
+        }
+        bad = 0
+        if (count == 0) return false
+        val below = factor < 1.0
+        // Getting back to where an encoder starts needs only a link that is not full. Going
+        // on from there needs pictures that used what they were given, and little waiting.
+        if (below || (held <= MUCH_WAITING_MS && size * 8 * VideoSetup.FPS >= USED_SHARE * before * count)) good++
+        val needed = when {
+            climbing -> if (below) 1 else CLIMB_EVERY
+            below -> BACK_SECONDS
+            else -> CLEAR_SECONDS
+        }
+        if (good >= needed && (noClimbBefore == NEVER || now >= noClimbBefore)) up(now)
         return rate(factor) != before
     }
-
-    private fun settled(now: Long) = settledAt == NEVER || now >= settledAt
 
     private fun down(now: Long) {
         // A step up that did not hold: the next one waits, and longer each time.
@@ -180,9 +209,11 @@ internal class BitrateSteps(
         climbWaitMs = if (probeFailed) (climbWaitMs * 2).coerceIn(FIRST_WAIT_MS, MOST_WAIT_MS) else 0
         noClimbBefore = now + climbWaitMs
         lastUpAt = NEVER
-        clear = 0
+        lastDownAt = now
+        bad = 0
+        good = 0
         climbing = false
-        settledAt = now + SETTLE_MS
+        graceUntil = maxOf(graceUntil, now + DOWN_GRACE_MS)
         // Not below the floor, and no further down in name than the rate really goes.
         factor = maxOf(factor * DOWN, floor.toDouble() / base)
     }
@@ -190,9 +221,9 @@ internal class BitrateSteps(
     private fun up(now: Long) {
         val before = rate(factor)
         factor = minOf(factor * UP, most.toDouble() / base)
-        clear = 0
+        good = 0
         climbing = true
-        // Nothing to wait out after a step up: if it was one too many, the next second shows it.
+        // Nothing to wait out after a step up: if it was one too many, the seconds that follow show it.
         if (rate(factor) != before) lastUpAt = now
     }
 
@@ -201,14 +232,15 @@ internal class BitrateSteps(
         const val UP = 1.25
         const val SECOND_MS = 1_000L
         const val HELD_TOO_LONG_MS = 300L
-        /** A second with no more waiting than this had room throughout. */
-        const val CLEAR_MS = 50L
+        const val MUCH_WAITING_MS = 150L
+        const val BAD_SECONDS = 2
+        const val BACK_SECONDS = 3
         const val CLEAR_SECONDS = 5
         const val CLIMB_EVERY = 2
-        const val CLIMB_BACK_EVERY = 1
         /** Pictures that came to this share of what the encoder was given, or more, used most of it. */
         const val USED_SHARE = 0.6
-        const val SETTLE_MS = 2_000L
+        const val GRACE_MS = 2_000L
+        const val DOWN_GRACE_MS = 1_000L
         const val KEY_ASKS_WITHIN_MS = 5_000L
         const val PROBE_MS = 10_000L
         const val FIRST_WAIT_MS = 10_000L

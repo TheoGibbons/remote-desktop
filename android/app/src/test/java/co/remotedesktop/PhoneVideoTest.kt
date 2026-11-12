@@ -120,13 +120,17 @@ internal class FakeVideoPipe(val attempt: VideoSetup.Attempt, val events: VideoP
     /** The encoder gives its parameter sets, as it does once before its first picture. */
     fun config() = events.encoded(SETS, 0, config = true)
 
-    /** How many bytes each picture the encoder gives is made up to, where that is more than it has. */
+    /** How many bytes each ordinary picture the encoder gives is made up to, where that is more than it has. */
     var padTo = 0
+
+    /** The same for a keyframe; where it is not set, [padTo]. */
+    var keyPadTo = 0
 
     /** The encoder gives the picture for one draw: a keyframe if it was asked for one, unless told otherwise. */
     fun answer(draw: Drawn, keyframe: Boolean = draw.keyframe) {
         val unit = if (keyframe) KEY else PICTURE
-        events.encoded(if (padTo > unit.size) unit + ByteArray(padTo - unit.size) { 0x55 } else unit, draw.ptsUs,
+        val size = if (keyframe && keyPadTo > 0) keyPadTo else padTo
+        events.encoded(if (size > unit.size) unit + ByteArray(size - unit.size) { 0x55 } else unit, draw.ptsUs,
             config = false)
     }
 

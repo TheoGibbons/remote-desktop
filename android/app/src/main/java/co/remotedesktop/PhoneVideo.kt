@@ -159,13 +159,15 @@ internal class VideoLedger {
  *   ordinary picture came out in its place;
  * - the encoder throws when it is given a new bitrate.
  *
- * **The bitrate** is moved by [BitrateSteps], down when pictures are kept
- * waiting for room and up again when they are not. It goes by what this
- * class sees: how long a picture that was due had no room, and how large
- * the pictures were that came out. A viewer's request for a keyframe counts
+ * **The bitrate**, for a mirrored screen, is moved by [BitrateSteps]: down
+ * when pictures are kept waiting for room second after second, and up again
+ * when they are not. It goes by what this class sees: how long a picture
+ * that was due had no room, when a keyframe was made, and how large the
+ * pictures were that came out. A viewer's request for a keyframe counts
  * there too. The rate outlives an encoder: one started straight after
- * another (a turn, a failure) carries on where that one was. Screenshots are
- * never given more than they start with.
+ * another (a turn, a failure) carries on where that one was. Screenshots
+ * that are handed over keep the rate their encoder starts with: at 2.5 a
+ * second there is too little to go by ([BitrateSteps] says why).
  *
  * **When video is tried again.** The picture is tried at full size, then at
  * three quarters, then at half ([VideoSetup]). An encoder that will not
@@ -278,7 +280,7 @@ internal class PhoneVideo(
                 failed(IllegalStateException("A keyframe came with no parameter sets"))
                 return
             }
-            steps.encoded(picture.bytes.size)
+            steps?.encoded(picture.bytes.size)
             var missed = false
             if (picture.keyframe) keyMisses = 0
             else if (entry?.draw?.keyframe == true) {
@@ -312,7 +314,7 @@ internal class PhoneVideo(
 
     @Volatile private var current: Session? = null
     private val pacer = VideoPacer()
-    private val steps = BitrateSteps(startIsMost = fed)
+    private val steps: BitrateSteps? = if (fed) null else BitrateSteps()
     private var sending = false
     @Volatile private var shutDown = false
 
@@ -414,7 +416,7 @@ internal class PhoneVideo(
         }
         for (attempt in attempts) {
             // Where the last encoder left the rate, if it ended a moment ago; else what the size starts at.
-            val rate = steps.begin(attempt.bitrate, clock())
+            val rate = steps?.begin(attempt.bitrate, clock()) ?: attempt.bitrate
             val session = Session(attempt.step, rate)
             try {
                 session.pipe = timed { open(attempt.copy(bitrate = rate), sourceWidth, sourceHeight, session) }
@@ -446,7 +448,7 @@ internal class PhoneVideo(
         if (sending == on) return
         sending = on
         timer.remove(tickTask)
-        if (!on) steps.paused()
+        if (!on) steps?.paused()
         // What follows a pause is a new stream, and a stream starts with a keyframe.
         if (on && !abandoned) {
             // A mirrored screen went on reaching the texture through the pause. Screenshots
@@ -460,7 +462,7 @@ internal class PhoneVideo(
     fun keyframe(byViewer: Boolean) {
         if (current == null || abandoned) return
         // Asked twice in a few seconds, frames are being lost on the way: the rate comes down.
-        if (byViewer) steps.keyframeAsked(clock())
+        if (byViewer) steps?.keyframeAsked(clock())
         pacer.wantKeyframe(byViewer)
         tick()
     }
@@ -515,7 +517,7 @@ internal class PhoneVideo(
         closeQuietly(session)
         session.shown?.let(::closeQuietly)
         session.shown = null
-        steps.ended(clock())
+        steps?.ended(clock())
     }
 
     private fun closeQuietly(picture: ScreenPicture) {
@@ -557,10 +559,14 @@ internal class PhoneVideo(
         if (!sending || abandoned) return
         val now = clock()
         val room = hasRoom()
-        steps.look(now, waiting = !room && pacer.due(now))
-        steps.step(now)
-        if (!rate(session)) return
+        if (steps != null) {
+            steps.look(now, waiting = !room && pacer.due(now))
+            steps.step(now)
+            if (!rate(session, steps.bitrate)) return
+        }
         pacer.next(now, room)?.let { draw ->
+            // Whatever it is made for, what waits behind it for a while is no sign of a slow link.
+            if (draw.keyframe) steps?.keyframe(now)
             // Stamps only ever go up, whatever the clock the screen's pictures are stamped with does.
             val ptsUs = maxOf(draw.capturedAt * 1000, lastPtsUs + 1)
             lastPtsUs = ptsUs
@@ -585,8 +591,7 @@ internal class PhoneVideo(
      * it has.
      * @return false when the encoder would not take it, which has ended video.
      */
-    private fun rate(session: Session): Boolean {
-        val wanted = steps.bitrate
+    private fun rate(session: Session, wanted: Int): Boolean {
         if (wanted == session.bitrate) return true
         try {
             timed { session.pipe.setBitrate(wanted) }
