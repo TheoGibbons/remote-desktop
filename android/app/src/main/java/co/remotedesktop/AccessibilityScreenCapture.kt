@@ -4,7 +4,9 @@ import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorSpace
 import android.graphics.Paint
+import android.hardware.HardwareBuffer
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -112,6 +114,14 @@ internal class VideoParts(
 internal class AccessibilityScreenCapture(
     private val service: AccessibilityService,
     private val parts: VideoParts = VideoParts.onThisPhone(),
+    /**
+     * Makes a bitmap over the graphics memory a screenshot comes in, or
+     * null where Android will not. A test, which has no graphics memory,
+     * brings its own.
+     */
+    private val wrap: (HardwareBuffer, ColorSpace) -> Bitmap? = { buffer, colours ->
+        Bitmap.wrapHardwareBuffer(buffer, colours)
+    },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val thread = HandlerThread("accessibility-capture").also { it.start() }
@@ -281,7 +291,7 @@ internal class AccessibilityScreenCapture(
                     var taken = false
                     try {
                         if (!isCurrent(token)) return
-                        hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
+                        hardware = wrap(buffer, result.colorSpace)
                         bitmap = hardware?.copy(Bitmap.Config.ARGB_8888, false)
                         // Android stamps the screenshot on the uptime clock.
                         if (hardware != null && bitmap != null)

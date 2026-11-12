@@ -4,8 +4,11 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ColorSpace
+import android.hardware.HardwareBuffer
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -130,7 +133,7 @@ class AccessibilityVideoTest {
         // The Accessibility service, switched on, with this test's capture in place of its own:
         // viewers coming and going, and requests for keyframes, reach the capture the app's own way.
         service = Robolectric.buildService(CaptureTestService::class.java).create().get()
-        capture = AccessibilityScreenCapture(service, parts)
+        capture = AccessibilityScreenCapture(service, parts) { buffer, _ -> wrap(buffer) }
         input = Robolectric.buildService(InputAccessibilityService::class.java).create()
         InputAccessibilityService::class.java.getDeclaredField("screenCapture")
             .apply { isAccessible = true }.set(input.get(), capture)
@@ -192,6 +195,43 @@ class AccessibilityVideoTest {
     private fun id(n: Int) = PhoneFrame.streamHex(0xA0L + n)
     private val pipe get() = pipes.last()
     private val openPipes get() = pipes.count { it.closed == 0 }
+
+    // What stands for the bitmap Android makes over a screenshot's graphics memory. Robolectric has none.
+    private val wrapped = HashMap<HardwareBuffer, Bitmap>()
+    private val colours = HashMap<HardwareBuffer, Int>()
+    private var wrapFails = false
+
+    private fun wrap(buffer: HardwareBuffer): Bitmap? {
+        if (wrapFails) return null
+        return Bitmap.createBitmap(WIDTH, HEIGHT, Bitmap.Config.ARGB_8888).also {
+            it.eraseColor(colours.getValue(buffer))
+            wrapped[buffer] = it
+        }
+    }
+
+    private fun result(buffer: HardwareBuffer): AccessibilityService.ScreenshotResult =
+        AccessibilityService.ScreenshotResult::class.java.getDeclaredConstructor(HardwareBuffer::class.java,
+            ColorSpace::class.java, java.lang.Long.TYPE).apply { isAccessible = true }
+            .newInstance(buffer, ColorSpace.get(ColorSpace.Named.SRGB), SystemClock.uptimeMillis())
+
+    private fun graphicsMemory(colour: Int): HardwareBuffer =
+        HardwareBuffer.create(WIDTH, HEIGHT, HardwareBuffer.RGBA_8888, 1, HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE)
+            .also { colours[it] = colour }
+
+    /**
+     * Android answers the capture's request with a screenshot, in graphics
+     * memory, through the callback the capture gave it: the whole way a
+     * screenshot takes on a phone. Returns the memory, which whoever has the
+     * screenshot last must close.
+     */
+    private fun androidGives(colour: Int): HardwareBuffer {
+        // Past the 400 ms Android asks for between screenshots, so that one has been asked for.
+        later(400)
+        val buffer = graphicsMemory(colour)
+        service.callback.onSuccess(result(buffer))
+        settle()
+        return buffer
+    }
 
     /** A screenshot reaches the capture, as Android would hand it over. A colour stands for what the screen shows. */
     private fun screenshot(colour: Int, width: Int = WIDTH, height: Int = HEIGHT, capturedAt: Long = timer.now) {
@@ -726,6 +766,121 @@ class AccessibilityVideoTest {
         screenshot(RED)
         assertEquals(1, pipes.size)
         assertEquals(PhoneFrame.JPEG, header(socket.frames.last()).format)
+    }
+
+    // ---------------- who closes a screenshot ----------------
+
+    @Test
+    fun aScreenshotThatGoesAsVideoIsTheEncodersUntilTheNextHasTakenItsPlace() {
+        startView("pc")
+        val first = androidGives(RED)
+        encode()
+        // The encoder was handed the screenshot itself, not a copy, and it is still open: it may be drawn from.
+        assertSame(wrapped.getValue(first), (pipe.shown.single() as BitmapPicture).bitmap)
+        assertFalse(first.isClosed)
+        assertFalse(wrapped.getValue(first).isRecycled)
+        assertTrue(header(socket.frames.last { it.type == Crypto.CH_PHONE }).keyframe)
+        encode(1_000)
+
+        // The screen has not changed: this one goes nowhere, and is closed there and then.
+        val same = androidGives(RED)
+        assertEquals(1, pipe.shown.size)
+        assertTrue(same.isClosed)
+        assertTrue(wrapped.getValue(same).isRecycled)
+        assertFalse(first.isClosed)
+
+        // It changes: the new one takes the first one's place, and the first is closed.
+        val second = androidGives(BLUE)
+        encode()
+        assertEquals(2, pipe.shown.size)
+        assertTrue(first.isClosed)
+        assertTrue(wrapped.getValue(first).isRecycled)
+        assertFalse(second.isClosed)
+
+        // The last one goes with the encoder, five seconds after the last viewer.
+        screenshotRequestEnds()
+        stopView("pc")
+        assertFalse(second.isClosed)
+        later(5_000)
+        assertEquals(1, pipe.closed)
+        assertTrue(second.isClosed)
+        assertTrue(wrapped.getValue(second).isRecycled)
+        assertTrue(colours.keys.all { it.isClosed })
+    }
+
+    @Test
+    fun aScreenshotThatGoesAsAJpegIsClosedAsSoonAsTheJpegIsMade() {
+        startView("pc", "jpeg")
+        socket.clear()
+        val shot = androidGives(RED)
+        assertEquals(PhoneFrame.JPEG, header(socket.frames.single()).format)
+        assertTrue(shot.isClosed)
+        assertTrue(wrapped.getValue(shot).isRecycled)
+        assertTrue(pipes.isEmpty())
+        // And so is one that showed nothing new.
+        val same = androidGives(RED)
+        assertEquals(1, socket.frames.size)
+        assertTrue(same.isClosed)
+    }
+
+    @Test
+    fun aScreenshotNobodyIsWaitingForAnyMoreIsClosedUnseen() {
+        startView("pc")
+        // Android is still taking it when the viewer closes its window.
+        val callback = service.callback
+        stopView("pc")
+        socket.clear()
+        val late = graphicsMemory(RED)
+        callback.onSuccess(result(late))
+        settle()
+        assertTrue(late.isClosed)
+        assertTrue(wrapped.isEmpty())
+        assertTrue(pipes.isEmpty())
+        assertTrue(socket.frames.isEmpty())
+    }
+
+    @Test
+    fun aScreenshotAndroidWillNotMakeABitmapOfIsClosedAndTheNextIsAskedFor() {
+        startView("pc")
+        socket.clear()
+        wrapFails = true
+        val requests = service.requests
+        val lost = androidGives(RED)
+        assertTrue(lost.isClosed)
+        assertTrue(socket.frames.isEmpty())
+        // The capture has not got stuck on it.
+        wrapFails = false
+        val next = androidGives(RED)
+        encode()
+        assertTrue(service.requests > requests)
+        assertFalse(next.isClosed)
+        assertEquals(PhoneFrame.H264, header(socket.frames.single()).format)
+    }
+
+    @Test
+    fun aScreenshotTheEncoderCannotDrawIsClosedAndTheNextGoesAsAJpeg() {
+        startView("pc")
+        val first = androidGives(RED)
+        encode()
+        encode(1_000)
+        socket.clear()
+
+        // The surface will not give its canvas: what `lockHardwareCanvas` does when it has gone wrong.
+        pipe.failShows = IllegalStateException("Surface has already been released.")
+        val second = androidGives(BLUE)
+        assertTrue(second.isClosed)
+        assertTrue(wrapped.getValue(second).isRecycled)
+        // The encoder is let go of, and with it the screenshot it still had.
+        assertEquals(1, pipe.closed)
+        assertTrue(first.isClosed)
+        assertEquals("The video encoder stopped working.", ConnectionLog.entries().first().reason)
+        assertEquals("jpeg", infos().last().getString("codec"))
+
+        // The screen is still as that screenshot showed it. The viewer never got it, so it goes now, as a JPEG.
+        val third = androidGives(BLUE)
+        assertEquals(PhoneFrame.JPEG, header(socket.frames.single()).format)
+        assertTrue(third.isClosed)
+        assertTrue(colours.keys.all { it.isClosed })
     }
 
     // ---------------- a phone that is asleep ----------------

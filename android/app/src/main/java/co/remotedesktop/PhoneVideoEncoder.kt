@@ -1,6 +1,7 @@
 package co.remotedesktop
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.hardware.HardwareBuffer
@@ -24,6 +25,34 @@ internal class BitmapPicture(val bitmap: Bitmap, private val buffer: HardwareBuf
     override fun close() {
         bitmap.recycle()
         buffer?.close()
+    }
+}
+
+/**
+ * The drawing of a screenshot onto the canvas of the surface that feeds the
+ * encoder's texture. Apart from the encoder, so that it can be tried on a
+ * canvas of the ordinary kind: what it draws, and that a canvas that was
+ * taken is always handed back.
+ */
+internal object ScreenshotDrawing {
+    // Smooths a screenshot that is larger than the picture sent.
+    private val scaling = Paint(Paint.FILTER_BITMAP_FLAG)
+
+    /**
+     * Draws [bitmap] over the whole of the canvas [lock] gives, whatever
+     * the two sizes are, and hands the canvas to [post], which is what puts
+     * the picture on its way. The canvas is handed back also when the
+     * drawing throws (a bitmap that was closed under it): a surface whose
+     * canvas is never given back takes no other, ever. What was thrown goes
+     * on to the caller.
+     */
+    fun draw(bitmap: Bitmap, lock: () -> Canvas, post: (Canvas) -> Unit) {
+        val canvas = lock()
+        try {
+            canvas.drawBitmap(bitmap, null, Rect(0, 0, canvas.width, canvas.height), scaling)
+        } finally {
+            post(canvas)
+        }
     }
 }
 
@@ -115,9 +144,7 @@ internal class PhoneVideoEncoder(
     /** What the screen is to be mirrored into. */
     val surface: Surface get() = checkNotNull(gl).surface
 
-    // Smooths a screenshot that is larger than the picture sent.
-    private val scaling = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val whole = Rect()
+
 
     init {
         try {
@@ -180,16 +207,10 @@ internal class PhoneVideoEncoder(
      */
     override fun show(picture: ScreenPicture) {
         check(!closed) { "Closed" }
-        val bitmap = (picture as BitmapPicture).bitmap
         val into = surface
         // A screenshot lives in graphics memory, and only this kind of canvas can draw one.
-        val canvas = into.lockHardwareCanvas()
-        try {
-            whole.set(0, 0, canvas.width, canvas.height)
-            canvas.drawBitmap(bitmap, null, whole, scaling)
-        } finally {
-            into.unlockCanvasAndPost(canvas)
-        }
+        ScreenshotDrawing.draw((picture as BitmapPicture).bitmap, { into.lockHardwareCanvas() },
+            { into.unlockCanvasAndPost(it) })
     }
 
     /**
