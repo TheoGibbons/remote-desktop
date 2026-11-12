@@ -182,6 +182,8 @@ object PhoneScreenCapture {
                 ScreenCaptureService.setStreaming(false)
                 InputAccessibilityService.instance?.setScreenStreaming(active)
             }
+            // Whether smooth sharing can be stopped or asked for may have changed with nothing else.
+            tellSmooth()
             stateListeners.forEach { it() }
         }
     }
@@ -216,8 +218,9 @@ object PhoneScreenCapture {
     private var lastKeySeq = -1L
     private var lastKeyAt = 0L
 
-    /** What each viewer that offered `codecs` was last told about the stream. */
-    private val told = HashMap<String, String>()
+    /** What each viewer that offered `codecs` was last told about the stream, and about smooth sharing. */
+    private data class Told(val word: String, val capture: String?, val smooth: String?)
+    private val told = HashMap<String, Told>()
 
     /** What has been sent of the current stream and what each viewer says has arrived. */
     private val inFlight = InFlight()
@@ -533,13 +536,16 @@ object PhoneScreenCapture {
         val offered = !viewers[viewer].isNullOrEmpty()
         // Whether smooth sharing is on, or can be asked for: a viewer's menu row goes by it.
         val smooth = appContext?.let { SmoothPrompt.offer(it) }
-        val key = "$word $capture $smooth"
-        if (!always && (!offered || told[viewer] == key)) return
+        val now = Told(word, capture, smooth)
+        val was = told[viewer]
+        if (!always && (!offered || was == now)) return
         // A viewer that comes to an H.264 stream part of the way through cannot draw
-        // anything until a keyframe comes, so one is made for it.
-        if (offered && told[viewer] != key && word != TYPE_1 && word != PAUSED && codec == H264 && nextSeq > 0)
+        // anything until a keyframe comes, so one is made for it. Not for one that is
+        // only told something new about smooth sharing: it has the stream already.
+        if (offered && (was?.word != word || was.capture != capture) && word != TYPE_1 && word != PAUSED &&
+            codec == H264 && nextSeq > 0)
             askKeyframe(false)
-        if (offered) told[viewer] = key
+        if (offered) told[viewer] = now
         val msg = JSONObject().put("type", "screen-info")
         size?.let { (width, height) -> msg.put("width", width).put("height", height) }
         msg.put("typing", InputAccessibilityService.canType)
@@ -553,6 +559,36 @@ object PhoneScreenCapture {
             }
         }
         ConnectionManager.sendJson(msg.put("to", viewer))
+    }
+
+    /**
+     * Tells viewers how smooth sharing stands when that alone has changed.
+     * `smooth` goes out with every `screen-info`, and those are sent when
+     * something about the stream changes. But switching the Accessibility
+     * service on or off changes `smooth` and may change nothing else: with
+     * smooth sharing on, it decides whether a viewer may stop it (`on`) or
+     * may not, because the phone could then show nothing (`only`); with it
+     * off, whether the phone can put up the prompt at all. A viewer left
+     * with the old word offers a stop the phone will refuse, or does not
+     * offer one it would carry out.
+     *
+     * Each viewer that was told otherwise is sent the `screen-info` it had
+     * last, with the new word in it. One that has been told nothing yet
+     * hears it with the rest, and so does one whose stream has ended and
+     * whose next has not been announced.
+     */
+    private fun tellSmooth() = synchronized(streamLock) {
+        val smooth = appContext?.let { SmoothPrompt.offer(it) } ?: return
+        for (viewer in recipients()) {
+            val was = told[viewer] ?: continue
+            if (was.smooth == smooth) continue
+            val word = when {
+                stream != 0L -> PhoneFrame.streamHex(stream)
+                was.word == TYPE_1 || was.word == PAUSED -> was.word
+                else -> continue
+            }
+            tell(viewer, word, always = false)
+        }
     }
 
     /**

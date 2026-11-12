@@ -595,6 +595,73 @@ class SmoothRequestTest {
         assertFalse(info("other-pc").has("smooth"))
     }
 
+    private fun screenInfos() = socket.messages.filter { it.getString("type") == "screen-info" }
+
+    /** The Accessibility service is switched on again in Android's settings. */
+    private fun serviceOn() {
+        instanceField.set(null, service)
+        otherPicture(true)
+        PhoneScreenCapture.refresh()
+        idle()
+    }
+
+    /**
+     * The Accessibility service is switched off, or on, while a PC views in
+     * smooth sharing. Nothing about the stream changes, but whether the PC
+     * may stop smooth sharing does: with the service off it is the only
+     * picture there is. The PC's menu row goes by what it was last told.
+     */
+    @Test
+    fun aViewerIsToldWhenOnlyTheAccessibilityServiceGoesOffOrOn() {
+        view("pc")
+        sharing()
+        val before = screenInfo("pc")
+        assertEquals("on", before.getString("smooth"))
+        socket.messages.clear()
+
+        service.onDestroy()
+        idle()
+        assertTrue("The viewer was told nothing when the service went off", screenInfos().isNotEmpty())
+        assertEquals("only", screenInfo("pc").getString("smooth"))
+        // The same stream as before: it goes on.
+        assertEquals(before.optString("stream"), screenInfo("pc").optString("stream"))
+        assertEquals(before.optString("capture"), screenInfo("pc").optString("capture"))
+
+        socket.messages.clear()
+        serviceOn()
+        assertTrue("The viewer was told nothing when the service came back", screenInfos().isNotEmpty())
+        assertEquals("on", screenInfo("pc").getString("smooth"))
+    }
+
+    /** Without smooth sharing the same switch decides whether the phone can put up the prompt at all. */
+    @Test
+    fun aViewerIsToldWhenThePhoneCanNoLongerBeAskedAndAnOlderViewerIsNot() {
+        // With notifications off, the service is the only way the prompt can be shown.
+        notifications.setNotificationsEnabled(false)
+        view("pc")
+        // An app from before type 5 frames sizes its window on every screen-info, and is sent no more of them.
+        receive("other-pc", "start-view")
+        assertTrue(PhoneScreenCapture.sendScreenInfo(context, 1080, 2340, PhoneScreenCapture.ACCESSIBILITY))
+        assertEquals("available", screenInfo("pc").getString("smooth"))
+        socket.messages.clear()
+
+        service.onDestroy()
+        idle()
+        assertEquals(listOf("pc"), screenInfos().map { it.getString("to") })
+        assertEquals("unavailable", screenInfo("pc").getString("smooth"))
+        assertEquals(1080, screenInfo("pc").getInt("width"))
+
+        // Said once: nothing more goes while nothing changes.
+        socket.messages.clear()
+        PhoneScreenCapture.refresh()
+        idle()
+        assertEquals(emptyList<JSONObject>(), screenInfos())
+
+        serviceOn()
+        assertEquals(listOf("pc"), screenInfos().map { it.getString("to") })
+        assertEquals("available", screenInfo("pc").getString("smooth"))
+    }
+
     /**
      * The ten idle minutes after which the screen is let go in smooth
      * sharing. A PC whose connection dropped comes back under a new id and

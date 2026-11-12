@@ -361,7 +361,12 @@ the phone.
 A viewer offers this only to a phone whose `screen-info` carries `smooth`.
 Apps before these messages never send it, and ignore the requests. `smooth`
 changes with `capture`, so it arrives with the `screen-info` that announces
-the new stream. A viewer ignores a `state` or a `smooth` it does not know.
+the new stream. It also changes when the phone's Accessibility service is
+switched on or off, which may change nothing else: `on` becomes `only` and
+back, and `available` may become `unavailable`. The phone then sends each
+viewer that offered `codecs` a `screen-info` for that alone, the same as the
+last one but for `smooth`, so a viewer never offers a stop that would be
+refused. A viewer ignores a `state` or a `smooth` it does not know.
 
 While a device is viewing a phone in smooth sharing, the phone keeps its
 screen on (it may dim): on Android 15 and later a phone that sleeps and locks
