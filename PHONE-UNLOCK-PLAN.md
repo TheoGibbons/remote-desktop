@@ -227,7 +227,7 @@ Step 0 of `PHONE-PLANS-ORDER.md` gives the debug build a permanent `.debug` app 
 
 ## Still open
 
-1. **Before or after the video plan?** Before, by my choice and not yet confirmed by Theo; `PHONE-PLANS-ORDER.md` gives the reasons. After the menu plan either way.
+1. **Before or after the video plan?** Before, by my choice and not yet confirmed by Theo. It was built that way (this plan's three phases, then the video plan's); `PHONE-PLANS-ORDER.md` gives the reasons. After the menu plan either way.
 
 Answered by Theo on 2026-11-10:
 

@@ -839,8 +839,8 @@ Read with some care: the first answer was taken to mean that the mode which work
 
 Still open:
 
-1. **Order of Phase 1 and Phase 2.** Phase 1 is first unless Theo says otherwise.
-2. **Rate.** 30 pictures a second as the default, with 60 as a later option?
+1. **Order of Phase 1 and Phase 2.** Phase 1 was built first (2026-11-11), and Theo has not said otherwise.
+2. **Rate.** 30 pictures a second is the default, as built (`VideoSetup.FPS`), with 60 left as the optional step 4.3. Theo has not confirmed it.
 
 No longer open here:
 
@@ -910,7 +910,7 @@ PC decoder (Media Foundation), as built in `H264Decoder.cs`:
 | Area | Files |
 |---|---|
 | Phone, changed | `Crypto.kt`, `ConnectionManager.kt`, `PhoneScreenCapture.kt`, `ScreenCaptureService.kt`, `AccessibilityScreenCapture.kt`, `InputAccessibilityService.kt`, `PhoneViewerActivity.kt`, `PermissionsActivity.kt`, `AndroidManifest.xml`, `strings.xml`, `app/build.gradle.kts` |
-| Phone, new | `PhoneFrame.kt`, `PhoneVideoStream.kt` (the viewer's side, for a phone viewing a phone), `NoDelaySocketFactory.kt`, `InFlight.kt`, `PhoneVideoEncoder.kt` and its GL class, `BitrateSteps.kt`, `ScreenShareRequestActivity.kt` |
+| Phone, new | `PhoneFrame.kt`, `PhoneVideoStream.kt` (the viewer's side, for a phone viewing a phone), `NoDelaySocketFactory.kt`, `InFlight.kt`, `PhoneVideo.kt`, `PhoneVideoEncoder.kt`, `VideoGl.kt` (the GL class), `VideoLane.kt`, `VideoSetup.kt`, `BitrateSteps.kt`, `SmoothSharing.kt`, `SmoothPrompt.kt` (which holds `ScreenShareRequestActivity`) |
 | PC, changed | `Crypto.cs`, `MainWindow.xaml.cs`, `PhoneViewWindow.xaml`, `PhoneViewWindow.xaml.cs`, `H264Encoder.cs` (shared Media Foundation start-up) |
 | PC, new | `PhoneFrame.cs`, `PhoneVideoStream.cs`, `PhoneFeed.cs`, `PhoneStats.cs`, `H264Decoder.cs`, `Nv12Converter.cs`, `MediaFoundationStartup.cs`, `PhoneVideoPictures.cs`, cases added to the menu plan's test project `RemoteDesktopWin.PhoneViewTests` |
 | Relay | `server/test.mjs`, and the channel `5` vector in `server/test-e2ee.mjs` |

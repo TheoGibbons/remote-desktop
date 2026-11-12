@@ -78,7 +78,7 @@ Not verified, because it can't be on this PC:
 
 Fallback if Windows 10 misbehaves: `UseAeroCaptionButtons = False`, `GlassFrameThickness = 0,0,0,1`, and draw three buttons ourselves (Segoe MDL2 `E921`, `E922`/`E923`, `E8BB`, wired to `SystemCommands`). About 40 lines, and it loses the snap flyout.
 
-### Rotation (possible)
+### Rotation (built in Phase 3)
 
 A normal app can't turn the screen for other apps, but an accessibility service can, and the phone app already has one. The service adds an invisible window that asks for an orientation; Android turns the whole display to suit the topmost window that asks. No new permission, nothing new for Google Play to review.
 
@@ -227,7 +227,7 @@ Phase 1 can be checked against the released phone app. Phases 2 and 3 need a bui
 
 1. Volume: slider moves the phone's media volume and the phone's panel shows; mute and unmute; menu reopened shows the real level. Done on the S26, except dragging with a real mouse.
 2. Screenshot: the capture card pops up on the PC. Done on the S26.
-3. Lock: the phone locks, and the next click in the viewer wakes it. Getting back in is blind until `PHONE-UNLOCK-PLAN.md` is built. Not done: it is first tried in that plan's Phase 1.
+3. Lock: the phone locks, and the next click in the viewer wakes it. `PHONE-UNLOCK-PLAN.md` is built since, so the viewer can now draw the way back in, but nobody has tried either on a locked phone. Not done: it waits for the lock session.
 4. Rotation on the S26: home screen, a portrait-only app, a video app. Taps land where clicked after turning. The S20 at release. Done for the home screen and Settings; the apps and the taps are still to do by hand.
 5. Rotation, then lock the phone: the override is gone and the lock screen is the phone's usual one. Not done: first tried in the unlock plan's Phase 1.
 6. Rotation, then close the viewer window, and separately kill the PC app: the phone returns to its own orientation both times. Done on the S26.
