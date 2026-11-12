@@ -362,7 +362,7 @@ class ScreenshotVideoTest {
 
     @Test
     fun aVideoThatWasGivenUpClosesWhatItIsHanded() {
-        val wedged = VideoLane(video, post = { it.run() }, clock = { timer.now }, wedge = AtomicBoolean(true))
+        val wedged = VideoLane(video, post = { it.run() }, clock = { timer.now }, wedge = VideoWedge({ timer.now }).apply { mark() })
         val shot = Shot("late")
         wedged.show(shot, 1)
         assertEquals(1, shot.closed)
@@ -372,7 +372,7 @@ class ScreenshotVideoTest {
     @Test
     fun aScreenshotStillWaitingWhenTheVideoIsGivenUpIsClosed() {
         val posted = ArrayList<Runnable>()
-        val wedge = AtomicBoolean()
+        val wedge = VideoWedge({ timer.now })
         val lane = VideoLane(video, post = { posted += it }, clock = { timer.now }, wedge = wedge, patienceMs = 2_000)
         started()
         val shot = Shot("waiting")
@@ -385,6 +385,71 @@ class ScreenshotVideoTest {
         // Whatever the lost thread still does, the screenshot is not drawn.
         posted.forEach { it.run() }
         assertEquals(listOf("stuck"), pipe.shown.map { (it as Shot).name })
+    }
+
+    // ---------------- an encoder that stopped answering, a day on ----------------
+
+    @Test
+    fun anEncoderThatStoppedAnsweringIsNotHeldAgainstTheNextDay() {
+        var longClock = 5_000_000L
+        val wedge = VideoWedge({ longClock })
+        assertFalse(wedge.get())
+        val lane = VideoLane(video, post = { it.run() }, clock = { timer.now }, wedge = wedge, patienceMs = 2_000)
+        assertTrue(lane.start(1080, 2340))
+        video.setSending(true)
+        pipe.config()
+
+        // A draw never comes back.
+        pipe.whileDrawing = { timer.now += 2_000; assertTrue(lane.wedgedJustNow()) }
+        screenshot("stuck")
+        assertTrue(wedge.get())
+        assertTrue(video.lost)
+        assertFalse(lane.usable)
+        // Known already: marking it again is no news, and does not start the day over.
+        longClock += DAY / 2
+        assertFalse(wedge.mark())
+
+        // Until the day is up, a lane made for the same way of capturing does not try, with whatever video.
+        longClock += DAY / 2 - 1
+        val fresh = PhoneVideo({ emptyList() }, { _, _, _, _ -> error("unreachable") }, timer, { timer.now }, { true },
+            { VideoSent.SENT }, { _, _ -> }, spare = { it() }, fed = true)
+        assertFalse(VideoLane(fresh, { it.run() }, { timer.now }, wedge).usable)
+        longClock += 1
+        assertFalse(wedge.get())
+        assertTrue(VideoLane(fresh, { it.run() }, { timer.now }, wedge).usable)
+
+        // The video that was lost stays lost, and looking at it again does not bring the wedge back:
+        // its thread is as stuck as it was, and that is not a second encoder that stopped answering.
+        assertFalse(lane.usable)
+        assertFalse(lane.wedgedJustNow())
+        assertFalse(lane.start(1080, 2340))
+        assertFalse(wedge.get())
+        // One that wedges after that is a new one, and is marked.
+        assertTrue(wedge.mark())
+        assertTrue(wedge.get())
+    }
+
+    @Test
+    fun aSizeThatFailedIsForgottenByAClockThatGoesOnWhileThePhoneSleeps() {
+        var longClock = 5_000_000L
+        val sleepy = PhoneVideo(
+            encoders = { listOf(VideoSetup.Encoder("hardware", hardware = true, constantBitrate = true) { _, _ -> true }) },
+            open = { attempt, _, _, events -> FakeVideoPipe(attempt, events).also { pipes += it } },
+            timer = timer, clock = { timer.now }, hasRoom = { true }, send = { VideoSent.SENT },
+            onFailed = { reason, detail -> failures += reason to detail }, spare = { it() }, fed = true,
+            sizesForgottenAfterMs = DAY, longClock = { longClock })
+        assertTrue(sleepy.start(1080, 2340))
+        pipe.events.failed(IllegalStateException("codec error"))
+        timer.advance()
+        // The phone sleeps through the day: the clock the encoder is timed by hardly moves.
+        timer.advance(60_000)
+        longClock += DAY - 1
+        assertTrue(sleepy.start(1080, 2340))
+        assertEquals(810 to 1754, sleepy.size)
+        sleepy.stop()
+        longClock += 1
+        assertTrue(sleepy.start(1080, 2340))
+        assertEquals(1080 to 2340, sleepy.size)
     }
 
     private companion object {

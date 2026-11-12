@@ -9,6 +9,47 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
+ * That an encoder stopped answering and took the video's thread with it.
+ * One for each way of capturing, kept for as long as the app's process
+ * lives: smooth sharing has its own, and so have the Accessibility
+ * service's screenshots, whose path into the encoder is another and whose
+ * stall should not cost smooth sharing its video.
+ *
+ * It wears off after [lastsMs]. The Accessibility service runs for weeks
+ * without the process restarting, and what stuck once (the camera had the
+ * encoder, the phone's media service was restarting) need not stick again.
+ * A video that is tried again then is made anew, thread and all; the one
+ * that was lost stays lost.
+ *
+ * @param clock one that goes on while the phone sleeps, or a day here would
+ * be a day of the phone being awake.
+ */
+internal class VideoWedge(private val clock: () -> Long, private val lastsMs: Long = LASTS_MS) {
+    private var at = 0L
+    private var marked = false
+
+    /** Whether an encoder wedged and that has not worn off. */
+    @Synchronized fun get(): Boolean = marked && clock() - at < lastsMs
+
+    /** An encoder has wedged. Returns false if that was known already. */
+    @Synchronized fun mark(): Boolean {
+        if (get()) return false
+        marked = true
+        at = clock()
+        return true
+    }
+
+    /** As if it had never happened. For tests. */
+    @Synchronized fun clear() {
+        marked = false
+    }
+
+    companion object {
+        const val LASTS_MS = 24 * 60 * 60_000L
+    }
+}
+
+/**
  * The capture thread's hold on the video ([PhoneVideo]), which lives on a
  * thread of its own.
  *
@@ -25,9 +66,10 @@ import java.util.concurrent.atomic.AtomicReference
  *   and not usable. The caller points the screen back at its reader and
  *   goes on in JPEG, on its own thread, which was never held up for more
  *   than the wait.
- * - [wedge] is shared by every lane the app makes, so an encoder that wedged
- *   once is not tried again until the app's process has restarted. Whatever
- *   wedged is still in there, and a second try would only lose a second thread.
+ * - [wedge] is shared by every lane made for the same way of capturing, so
+ *   an encoder that wedged is not tried again by the next lane either: not
+ *   for a day ([VideoWedge]). Whatever wedged may still be in there, and a
+ *   second try would only lose a second thread.
  *
  * Nothing here touches Android. Any thread may call it; the capture service
  * calls it from the capture thread and the main thread.
@@ -37,7 +79,7 @@ internal class VideoLane(
     /** Runs a task on the video's thread. */
     private val post: (Runnable) -> Unit,
     private val clock: () -> Long,
-    private val wedge: AtomicBoolean = AtomicBoolean(),
+    private val wedge: VideoWedge = VideoWedge(clock),
     private val patienceMs: Long = PATIENCE_MS,
 ) {
     /** Whether the caller has heard of the wedge. One that happened before this lane was made is old news. */
@@ -107,12 +149,13 @@ internal class VideoLane(
      * draw that never came back.
      */
     fun wedgedJustNow(): Boolean {
-        if (!wedged && video.stuckFor(clock()) >= patienceMs) giveUp()
+        // A video that was given up long ago, whose wedge has worn off, is not found wedged a second time.
+        if (!wedged && !video.lost && video.stuckFor(clock()) >= patienceMs) giveUp()
         return wedged && told.compareAndSet(false, true)
     }
 
     private fun giveUp() {
-        if (wedge.compareAndSet(false, true)) told.set(false)
+        if (wedge.mark()) told.set(false)
         video.abandon()
         dropWaiting()
     }
@@ -137,6 +180,8 @@ internal class VideoLane(
                 return answer.get(WAIT_MS, TimeUnit.MILLISECONDS)
             } catch (_: TimeoutException) {
                 val now = clock()
+                // Lost long ago: there is nothing to wait for, and nothing new to report.
+                if (video.lost) return otherwise
                 // Stuck in one call, or not getting to this at all for far too long.
                 if (video.stuckFor(now) >= patienceMs || now - began >= patienceMs * MOST_WAITS) {
                     giveUp()

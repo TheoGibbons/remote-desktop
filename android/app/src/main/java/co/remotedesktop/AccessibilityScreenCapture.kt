@@ -32,6 +32,8 @@ internal class VideoParts(
     /** Runs one thing on the video's thread, for a caller on another thread that may wait for it ([VideoLane]). */
     val post: (Runnable) -> Unit = timer::post,
     val clock: () -> Long,
+    /** A clock that goes on while the phone sleeps, for what is measured in days. */
+    val longClock: () -> Long = clock,
     /** Ends the video's thread. What is asked of it afterwards is done there and then. */
     val quit: () -> Unit,
 ) {
@@ -80,6 +82,7 @@ internal class VideoParts(
                     }
                 },
                 clock = SystemClock::uptimeMillis,
+                longClock = SystemClock::elapsedRealtime,
                 quit = own::quit)
         }
     }
@@ -113,7 +116,8 @@ internal class VideoParts(
 @RequiresApi(30)
 internal class AccessibilityScreenCapture(
     private val service: AccessibilityService,
-    private val parts: VideoParts = VideoParts.onThisPhone(),
+    /** Makes what the encoder needs of the phone. Called again if a video has to be made anew. */
+    private val makeParts: () -> VideoParts = VideoParts::onThisPhone,
     /**
      * Makes a bitmap over the graphics memory a screenshot comes in, or
      * null where Android will not. A test, which has no graphics memory,
@@ -148,56 +152,67 @@ internal class AccessibilityScreenCapture(
     /** Whether the last `screen-info` asked of [outputs] was said. Worker thread only. */
     private var said = false
 
-    private val video = PhoneVideo(
-        encoders = parts.encoders,
-        open = parts.open,
-        timer = parts.timer,
-        clock = parts.clock,
-        hasRoom = PhoneScreenCapture::hasRoom,
-        send = { frame ->
-            // Smooth sharing may have taken over since this picture went in. Its stream is
-            // the one that is running then, and a picture of this one would end it.
-            if (!sending) VideoSent.NOT_SENT
-            else PhoneScreenCapture.sendVideo(service, frame.bytes, frame.keyframe, frame.repeat, frame.resend,
-                frame.width, frame.height, frame.capturedAtMs, PhoneScreenCapture.ACCESSIBILITY)
-        },
-        // It says so on its own thread; what follows is the worker's to do.
-        onFailed = { reason, detail -> executor.execute { outputs.failed(reason, detail) } },
-        fed = true,
-        sizesForgottenAfterMs = SIZES_FORGOTTEN_MS,
-    )
-    private val lane = VideoLane(video, post = parts.post, clock = parts.clock,
-        wedge = ScreenCaptureService.videoWedged)
-    private val outputs: ScreenOutputs<Unit> = ScreenOutputs(
-        // There is no reader and no mirror: a screenshot is handed to whichever of the two is in use.
-        CaptureTarget({ _, _ -> }, { }), lane, wish,
-        object : ScreenOutputs.Display<Unit> {
-            override fun toReader(reader: Unit?) = Unit
-            override fun toVideo(pipe: VideoPipe) = Unit
-        },
-        object : ScreenOutputs.Host {
-            override val sending: Boolean get() = this@AccessibilityScreenCapture.sending
-            override fun size(): Pair<Int, Int> = source ?: (0 to 0)
-            override fun dropWaiting() = Unit
+    /**
+     * The video encoder's side of things, made as one: the video, this
+     * thread's hold on it, and what decides between it and JPEGs. It is made
+     * anew, thread and all, when the one before was lost to an encoder that
+     * stopped answering and that has since worn off ([VideoWedge]).
+     */
+    private inner class Encoding(val parts: VideoParts) {
+        val video = PhoneVideo(
+            encoders = parts.encoders,
+            open = parts.open,
+            timer = parts.timer,
+            clock = parts.clock,
+            hasRoom = PhoneScreenCapture::hasRoom,
+            send = { frame ->
+                // Smooth sharing may have taken over since this picture went in. Its stream is
+                // the one that is running then, and a picture of this one would end it.
+                if (!sending) VideoSent.NOT_SENT
+                else PhoneScreenCapture.sendVideo(service, frame.bytes, frame.keyframe, frame.repeat, frame.resend,
+                    frame.width, frame.height, frame.capturedAtMs, PhoneScreenCapture.ACCESSIBILITY)
+            },
+            // It says so on its own thread; what follows is the worker's to do.
+            onFailed = { reason, detail -> executor.execute { if (encoding === this@Encoding) outputs.failed(reason, detail) } },
+            fed = true,
+            sizesForgottenAfterMs = SIZES_FORGOTTEN_MS,
+            longClock = parts.longClock,
+        )
+        val lane = VideoLane(video, post = parts.post, clock = parts.clock,
+            wedge = wedged)
+        val outputs: ScreenOutputs<Unit> = ScreenOutputs(
+            // There is no reader and no mirror: a screenshot is handed to whichever of the two is in use.
+            CaptureTarget({ _, _ -> }, { }), lane, wish,
+            object : ScreenOutputs.Display<Unit> {
+                override fun toReader(reader: Unit?) = Unit
+                override fun toVideo(pipe: VideoPipe) = Unit
+            },
+            object : ScreenOutputs.Host {
+                override val sending: Boolean get() = this@AccessibilityScreenCapture.sending
+                override fun size(): Pair<Int, Int> = source ?: (0 to 0)
+                override fun dropWaiting() = Unit
 
-            override fun announce(width: Int, height: Int, video: Boolean, always: Boolean) {
-                said = PhoneScreenCapture.sendScreenInfo(service, width, height, PhoneScreenCapture.ACCESSIBILITY,
-                    video, always)
-            }
+                override fun announce(width: Int, height: Int, video: Boolean, always: Boolean) {
+                    said = PhoneScreenCapture.sendScreenInfo(service, width, height, PhoneScreenCapture.ACCESSIBILITY,
+                        video, always)
+                }
 
-            override fun videoFailed(reason: String, detail: String?) {
-                Log.w("AccessibilityCapture", "Video failed: $reason ${detail.orEmpty()}")
-                ConnectionLog.add(ConnectionLog.Entry(ConnectionLog.Kind.VIDEO, System.currentTimeMillis(), reason, detail))
-                // The viewers' last picture was video, and may never have arrived. Nothing here
-                // makes Android draw the screen again, so the next screenshot goes as a JPEG
-                // whatever it shows.
-                forgetSent()
-            }
+                override fun videoFailed(reason: String, detail: String?) {
+                    Log.w("AccessibilityCapture", "Video failed: $reason ${detail.orEmpty()}")
+                    ConnectionLog.add(ConnectionLog.Entry(ConnectionLog.Kind.VIDEO, System.currentTimeMillis(), reason, detail))
+                    // The viewers' last picture was video, and may never have arrived. Nothing here
+                    // makes Android draw the screen again, so the next screenshot goes as a JPEG
+                    // whatever it shows.
+                    forgetSent()
+                }
 
-            override fun later(task: Runnable, delayMs: Long) {
-                worker.postDelayed(task, delayMs)
-            }
-        })
+                override fun later(task: Runnable, delayMs: Long) {
+                    worker.postDelayed(task, delayMs)
+                }
+            })
+    }
+
+    @Volatile private var encoding = Encoding(makeParts())
 
     /** Whether this is the phone's source of pictures now: it is asked for them, and smooth sharing is not on. */
     private val sending: Boolean get() = streaming && !ScreenCaptureService.isRunning
@@ -205,21 +220,21 @@ internal class AccessibilityScreenCapture(
     // Worker thread. A pause in the pictures: the encoder, if there is one, is kept, with nothing drawn into it.
     private val pause = Runnable {
         // Not when smooth sharing has taken over. It has an encoder of its own, and a phone has few.
-        if (ScreenCaptureService.isRunning) outputs.mirror(false) else outputs.point()
+        if (ScreenCaptureService.isRunning) encoding.outputs.mirror(false) else encoding.outputs.point()
     }
     // Worker thread. Nobody has been viewing for a while: the encoder is let go of.
-    private val idle = Runnable { if (!streaming) outputs.mirror(false) }
+    private val idle = Runnable { if (!streaming) encoding.outputs.mirror(false) }
 
     fun resendScreenInfo() { infoRequested.set(true) }
 
     /** The next H.264 picture should be a keyframe: [byViewer] when a viewer asked. Any thread. */
-    fun keyframeWanted(byViewer: Boolean) = lane.keyframe(byViewer)
+    fun keyframeWanted(byViewer: Boolean) = encoding.lane.keyframe(byViewer)
 
     /** The last H.264 picture went unacknowledged: the screen goes again, as a keyframe. Any thread. */
-    fun resendWanted() = lane.resend()
+    fun resendWanted() = encoding.lane.resend()
 
     /** Bits a second the video encoder is aiming at, while it runs. */
-    val videoBitrate: Int? get() = lane.bitrate
+    val videoBitrate: Int? get() = encoding.lane.bitrate
 
     private fun isCurrent(token: Long): Boolean =
         streaming && generation == token && !ScreenCaptureService.isRunning &&
@@ -264,8 +279,8 @@ internal class AccessibilityScreenCapture(
         closed = true
         // The encoder is let go of from the thread that asks things of it, and its own thread then ends.
         worker.post {
-            outputs.close()
-            parts.quit()
+            encoding.outputs.close()
+            encoding.parts.quit()
         }
         thread.quitSafely()
     }
@@ -410,13 +425,21 @@ internal class AccessibilityScreenCapture(
      * stream by now ([ScreenOutputs.failed]).
      */
     private fun videoFor(size: Pair<Int, Int>): Boolean {
+        if (encoding.video.lost && !wedged.get()) {
+            // An encoder stopped answering, long enough ago for video to be tried again. Its
+            // thread went with it, so everything is made anew. If that thread ever does
+            // come back, it closes what it had and ends.
+            val gone = encoding
+            encoding = Encoding(makeParts())
+            gone.parts.quit()
+        }
         if (size != source) {
             // An encoder has one size for life: after a turn the old one ends here, and another is started.
-            outputs.turning(size.first, size.second)
+            encoding.outputs.turning(size.first, size.second)
             source = size
         }
-        outputs.mirror(true)
-        return outputs.asVideo && lane.running
+        encoding.outputs.mirror(true)
+        return encoding.outputs.asVideo && encoding.lane.running
     }
 
     /**
@@ -437,7 +460,7 @@ internal class AccessibilityScreenCapture(
             infoRequested.set(false)
             // The size said is the encoder's, which may be smaller than the screenshot's.
             said = false
-            outputs.announce()
+            encoding.outputs.announce()
             if (said) {
                 sentSize = size
                 sentGeneration = token
@@ -449,7 +472,7 @@ internal class AccessibilityScreenCapture(
         if (!isCurrent(token)) return false
         // A picture with no graphics memory behind it is handed over as a copy: this one is kept to compare with.
         val picture = shot ?: BitmapPicture(bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return false)
-        lane.show(picture, capturedAt)
+        encoding.lane.show(picture, capturedAt)
         keep(bitmap, SystemClock.uptimeMillis())
         return shot != null
     }
@@ -505,14 +528,24 @@ internal class AccessibilityScreenCapture(
         }
     }
 
-    private companion object {
+    companion object {
         /** How often an unchanged screen is still sent to viewers that cannot acknowledge. */
-        const val UNCHANGED_EVERY_MS = 3_000L
+        private const val UNCHANGED_EVERY_MS = 3_000L
 
         /** How long nobody has to have been viewing before the encoder is let go of. Smooth sharing's figure. */
-        const val IDLE_MS = 5_000L
+        private const val IDLE_MS = 5_000L
 
         /** How long after the encoder last failed a size that failed is tried again. */
-        const val SIZES_FORGOTTEN_MS = 24 * 60 * 60_000L
+        private const val SIZES_FORGOTTEN_MS = 24 * 60 * 60_000L
+
+        /**
+         * An encoder stopped answering while screenshots were going through
+         * it. Video is not tried for them again for a day, whichever capture
+         * object asks (the Accessibility service makes a new one whenever it
+         * is switched on). Smooth sharing has a flag of its own
+         * ([ScreenCaptureService.videoWedged]): the two reach the encoder by
+         * different ways, and what stalls one need not stall the other.
+         */
+        @Volatile internal var wedged = VideoWedge(SystemClock::elapsedRealtime)
     }
 }

@@ -231,6 +231,11 @@ internal class PhoneVideo(
     private val viewersBehind: () -> Boolean = { !hasRoom() },
     /** Whether the app's own send queue is over its limit for pictures. */
     private val ownQueueFull: () -> Boolean = { false },
+    /**
+     * The clock [sizesForgottenAfterMs] is measured on. Where that is a day,
+     * it has to be one that goes on while the phone sleeps.
+     */
+    private val longClock: () -> Long = clock,
 ) {
     interface Timer {
         fun post(task: Runnable)
@@ -371,11 +376,15 @@ internal class PhoneVideo(
     /** The first size still to be tried ([VideoSetup.Attempt.step]), and when video last failed. */
     @Volatile private var step = 0
     @Volatile private var failedAt = 0L
+    @Volatile private var failedAtLong = 0L
     /** Whether [watchTask] is due to run. */
     private var watching = false
 
     /** Any thread. */
     val running: Boolean get() = current != null && !abandoned
+
+    /** Whether this object was given up because its thread never came back from the encoder ([abandon]). Any thread. */
+    val lost: Boolean get() = abandoned
 
     /** The encoded picture's size, while video is running. Any thread. */
     val size: Pair<Int, Int>? get() = current?.pipe?.let { it.width to it.height }
@@ -415,7 +424,7 @@ internal class PhoneVideo(
         // Given up long enough ago: everything is forgotten, and full size is tried again.
         if (step >= VideoSetup.STEPS && clock() - failedAt >= FORGET_MS) step = 0
         // A size failed long ago: it may have been that moment's trouble and not the size's.
-        else if (step > 0 && clock() - failedAt >= sizesForgottenAfterMs) step = 0
+        else if (step > 0 && longClock() - failedAtLong >= sizesForgottenAfterMs) step = 0
         if (!usable) return false
         var error: Throwable? = null
         val attempts = try {
@@ -681,6 +690,7 @@ internal class PhoneVideo(
     private fun failedAt(next: Int) {
         step = maxOf(step, next)
         failedAt = clock()
+        failedAtLong = longClock()
     }
 
     companion object {

@@ -30,7 +30,6 @@ import android.view.Display
 import android.view.WindowManager
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Foreground service holding the MediaProjection. The projection consent is
@@ -151,11 +150,12 @@ class ScreenCaptureService : Service() {
         val videoBitrate: Int? get() = instance?.lane?.bitrate
 
         /**
-         * An encoder stopped answering and took the video's thread with it.
-         * Video is not tried again while this process lives: whatever stuck
-         * is still in it. The Accessibility service's video goes by it too.
+         * An encoder stopped answering and took the video's thread with it,
+         * in smooth sharing. Video is not tried in smooth sharing again for
+         * a day: whatever stuck may still be in there. The Accessibility
+         * service's screenshots have a flag of their own.
          */
-        internal val videoWedged = AtomicBoolean()
+        internal val videoWedged = VideoWedge(SystemClock::elapsedRealtime)
 
         /**
          * Where encoded pictures go in place of the viewers, for a check on

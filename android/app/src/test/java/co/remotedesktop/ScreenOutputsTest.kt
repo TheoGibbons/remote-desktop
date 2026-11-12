@@ -39,7 +39,7 @@ class ScreenOutputsTest {
     private val later = ArrayList<Pair<Long, Runnable>>()
 
     private val wish = VideoWish()
-    private val wedge = AtomicBoolean()
+    private val wedge = VideoWedge({ timer.now })
     private val target = CaptureTarget({ w, h -> "reader ${w}x$h".also { readersMade += it } }) { readersClosed += it }
     private lateinit var outputs: ScreenOutputs<String>
     private val video = PhoneVideo(

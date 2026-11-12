@@ -48,7 +48,11 @@ class AccessibilityVideoTest {
     private val context get() = RuntimeEnvironment.getApplication()
     private val previous = mutableMapOf<String, Any?>()
     private lateinit var previousIds: () -> Long
+    private lateinit var previousWedge: VideoWedge
     private var ids = 0xA0L
+
+    /** The clock a stalled encoder is remembered by: one that goes on while the phone sleeps. */
+    private var wedgeClock = 1_000_000L
 
     // The phone's encoder, made up.
     private val timer = FakeVideoTimer()
@@ -128,12 +132,14 @@ class AccessibilityVideoTest {
             .get(PhoneScreenCapture) as MutableCollection<*>).clear()
         previousIds = PhoneScreenCapture.newStreamId
         PhoneScreenCapture.newStreamId = { ++ids }
-        ScreenCaptureService.videoWedged.set(false)
+        ScreenCaptureService.videoWedged.clear()
 
         // The Accessibility service, switched on, with this test's capture in place of its own:
         // viewers coming and going, and requests for keyframes, reach the capture the app's own way.
         service = Robolectric.buildService(CaptureTestService::class.java).create().get()
-        capture = AccessibilityScreenCapture(service, parts) { buffer, _ -> wrap(buffer) }
+        previousWedge = AccessibilityScreenCapture.wedged
+        AccessibilityScreenCapture.wedged = VideoWedge({ wedgeClock })
+        capture = AccessibilityScreenCapture(service, { parts }) { buffer, _ -> wrap(buffer) }
         input = Robolectric.buildService(InputAccessibilityService::class.java).create()
         InputAccessibilityService::class.java.getDeclaredField("screenCapture")
             .apply { isAccessible = true }.set(input.get(), capture)
@@ -150,12 +156,13 @@ class AccessibilityVideoTest {
         capture.close()
         inputInstance.set(null, null)
         PhoneScreenCapture.newStreamId = previousIds
+        AccessibilityScreenCapture.wedged = previousWedge
         captureContext.set(PhoneScreenCapture, previous.remove("capture"))
         authField("allPeersTrusted").set(PeerAuth, previous.remove("allPeersTrusted"))
         for ((name, value) in previous) connectionField(name).set(ConnectionManager, value)
         ConnectionManager.peers.clear()
         trustedPeers.clear()
-        ScreenCaptureService.videoWedged.set(false)
+        ScreenCaptureService.videoWedged.clear()
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
@@ -751,7 +758,9 @@ class AccessibilityVideoTest {
         screenshot(BLUE)
         timer.advance(0)
         settle()
-        assertTrue(ScreenCaptureService.videoWedged.get())
+        assertTrue(AccessibilityScreenCapture.wedged.get())
+        // It was the screenshots' way into the encoder that stalled. Smooth sharing's video is not given up with it.
+        assertFalse(ScreenCaptureService.videoWedged.get())
         assertEquals(ScreenOutputs.WEDGED, ConnectionLog.entries().first().reason)
         assertEquals("jpeg", infos().last().getString("codec"))
         socket.frames.single().let {
@@ -760,12 +769,42 @@ class AccessibilityVideoTest {
         }
         acknowledge()
 
-        // Video is not tried again while the app runs, whoever views.
+        // Video is not tried again that day, whoever views.
         stopView("pc")
         startView("pc")
         screenshot(RED)
         assertEquals(1, pipes.size)
         assertEquals(PhoneFrame.JPEG, header(socket.frames.last()).format)
+        acknowledge()
+        wedgeClock += VideoWedge.LASTS_MS - 1
+        stopView("pc")
+        startView("pc")
+        screenshot(BLUE)
+        assertEquals(1, pipes.size)
+        assertEquals(PhoneFrame.JPEG, header(socket.frames.last()).format)
+        acknowledge()
+        assertEquals(0, quit)
+
+        // A day after it happened the Accessibility service is still running, as it does for weeks.
+        // Video is tried again, with everything made anew: the thread that was lost is not waited for.
+        wedgeClock += 1
+        stopView("pc")
+        startView("pc")
+        socket.clear()
+        screenshot(RED)
+        encode(40)
+        assertEquals(2, pipes.size)
+        assertEquals(1, quit)
+        assertEquals("h264", infos().last().getString("codec"))
+        header(socket.frames.single()).let {
+            assertEquals(PhoneFrame.H264, it.format)
+            assertTrue(it.keyframe)
+        }
+        // And it goes on working.
+        screenshot(GREEN)
+        encode(40)
+        assertEquals(PhoneFrame.H264, header(socket.frames.last()).format)
+        assertFalse(AccessibilityScreenCapture.wedged.get())
     }
 
     // ---------------- who closes a screenshot ----------------

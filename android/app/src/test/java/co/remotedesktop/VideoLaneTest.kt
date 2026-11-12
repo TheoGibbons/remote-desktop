@@ -70,7 +70,7 @@ class VideoLaneTest {
         send = { sent.incrementAndGet(); VideoSent.SENT },
         onFailed = { reason, _ -> failures += reason },
     )
-    private val wedge = AtomicBoolean()
+    private val wedge = VideoWedge(::now)
     private val lane = VideoLane(video, post = { thread.execute(it) }, clock = ::now, wedge = wedge, patienceMs = PATIENCE)
 
     @After
@@ -259,6 +259,6 @@ class VideoLaneTest {
         assertFalse(next.wedgedJustNow())
         assertTrue(now() - began < PATIENCE / 2)
         // A process of its own starts clean.
-        assertFalse(VideoLane(video, { it.run() }, ::now, AtomicBoolean(), PATIENCE).wedged)
+        assertFalse(VideoLane(video, { it.run() }, ::now, VideoWedge(::now), PATIENCE).wedged)
     }
 }
