@@ -684,7 +684,8 @@ for that. A viewer that comes into a running stream is sent a keyframe.
   viewers next come to agree on video, it tries video again at three quarters
   size, then at half; with no size left it stays on JPEG, whatever viewers
   offer, for ten minutes. An encoder that stopped answering altogether is not
-  tried again until the app restarts.
+  tried again for a day, in that way of viewing: smooth sharing and
+  Accessibility viewing each remember their own.
 - A frame that was encoded and not sent gets no `seq`, and the next frame
   sent in that stream is a keyframe. That is a frame the socket itself would
   not take, and one encoded in a moment when no pictures might go (a device
@@ -692,19 +693,20 @@ for that. A viewer that comes into a running stream is sent a keyframe.
   again before the phone has paused it).
 - `diagnostic-pong` says `codec: "h264"` and adds `bitrate`, the encoder's
   target in bits a second, only while video is being sent.
-- That target moves with the link. When pictures are kept waiting for room
-  (see "Holding back" above) for more than about a third of a second in a
-  second, the phone lowers it by three tenths, down to 300,000, and again
-  three seconds later if that was not enough. When there has been room
-  throughout for five seconds of a changing screen, it raises it by a
-  quarter, and goes on raising it while that lasts: back to what the picture's
-  size starts at (3,000,000 for 1080 × 2400, others by their number of
-  pixels), and in smooth sharing on to 8,000,000. Screenshots in
-  Accessibility viewing are never given more than they start with. A still
-  screen changes nothing. Two honoured `request-keyframe`s within five
-  seconds also lower it: frames are being dropped on the way. A change of
-  rate brings no keyframe and no new stream; a viewer sees it only in the
-  picture's sharpness and in `bitrate`.
+- That target is what the picture's size starts at: 3,000,000 for
+  1080 × 2400, others by their number of pixels. The app can also move it
+  with the link in smooth sharing, and ships with that switched off until
+  it has been measured on a slow link. Switched on: two seconds in a row in
+  which pictures waited more than about a third of a second for a viewer's
+  acknowledgements (see "Holding back" above) lower it by three tenths, down
+  to 300,000, and so do two honoured `request-keyframe`s within five
+  seconds. Waiting behind a keyframe, or behind a file being fetched from
+  the phone, is not counted. When pictures get through again it goes back
+  up by a quarter at a time, within about ten seconds to where it started,
+  and on to 8,000,000 while the pictures use what they are given. A still
+  screen changes nothing. A change of rate brings no keyframe and no new
+  stream; a viewer sees it only in the picture's sharpness and in `bitrate`.
+  Screenshots in Accessibility viewing keep the rate they start with.
 
 **Accessibility viewing as video.** Android gives the phone a screenshot at
 most every 400 ms, and that sets the rate, as it does for JPEGs:

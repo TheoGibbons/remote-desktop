@@ -105,21 +105,23 @@ which is less work for the phone and a fraction of the data. Everyone else
 gets JPEGs as before (up to 10 a second in smooth sharing): a PC on an older
 app, a PC whose Windows has no H.264 decoder, another phone, and every viewer
 while one of those is viewing too. Either way a still screen sends nothing.
-On a slow connection the phone gives the video fewer bits a second, so the
-picture gets softer instead of slower, and gives them back when the connection
-can take them; a still picture is sharpened either way.
+On a slow connection the phone sends fewer pictures, each on time. (It can
+also give smooth sharing's video fewer bits a second, so that the picture
+gets softer instead of slower. That is built and switched off, until it has
+been measured on a slow connection.)
 If the phone's encoder cannot be started, stops working or stops answering,
 the phone goes back to JPEGs by itself and the viewer keeps its picture. The
 next time a viewer opens, video is tried at three quarters size, and after
 another failure at half size. A size that failed is not tried again while
 smooth sharing stays on, and in Accessibility viewing not for a day. When no
 size is left the phone stays with JPEGs for ten minutes and then starts over.
-(An encoder that stopped answering altogether is not tried again until the app
-has been restarted.) **Connection history** (below) has a line for each
-failure, "Video went back to pictures", with the reason. No encoder is held
-while nobody is viewing, and the two ways of viewing never share one: when
-smooth sharing starts or stops, the viewer gets a new stream that begins with
-a full picture.
+(An encoder that stopped answering altogether is not tried again for a day, in
+the way of viewing it happened in; the other way keeps its video.)
+**Connection history** (below) has a line for each failure, "Video went back
+to pictures", with the reason. No encoder is held while nobody is viewing, and
+the two ways of viewing never share one: when smooth sharing starts or stops,
+one encoder is let go of before the other is started, and the viewer gets a
+new stream that begins with a full picture.
 
 A PC that is viewing the phone can ask for it too: **Smooth video** in the
 menu of its phone window. Android's prompt then appears on the phone, and
