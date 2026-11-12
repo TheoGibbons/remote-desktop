@@ -201,6 +201,25 @@ class PhoneVideoTest {
     // ---------------- starting ----------------
 
     @Test
+    fun aMirroredScreenGetsItsSafetyKeyframeThirtySecondsAfterTheLast() {
+        // Screenshots wait five minutes for theirs (ScreenshotVideoTest); a mirrored screen, which
+        // may be giving thirty pictures a second, does not.
+        running()
+        timer.advance(29_000 - 700)
+        screenChanges()
+        pipe.answerAll()
+        assertFalse(sent.first().keyframe)
+        timer.advance(1_100)
+        pipe.answerAll()
+        sent.clear()
+        screenChanges()
+        pipe.answerAll()
+        assertTrue(sent.first().keyframe)
+        assertFalse(sent.first().repeat)
+        assertEquals(30_000L, VideoPacer.SAFETY_KEY_MS)
+    }
+
+    @Test
     fun theFirstPictureIsAKeyframeWithItsParameterSetsAndTheStillScreenIsSharpened() {
         assertTrue(video.start(1080, 2340))
         video.setSending(true)

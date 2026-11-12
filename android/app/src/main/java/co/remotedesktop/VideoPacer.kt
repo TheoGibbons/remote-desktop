@@ -20,7 +20,10 @@ package co.remotedesktop
  *   could not be sent. It is made even if the screen has not changed, from
  *   the picture the texture holds.
  * - As a safety net a changed picture becomes a keyframe when the last
- *   keyframe is [safetyKeyMs] old. Never on a still screen.
+ *   keyframe is [safetyKeyMs] old. Never on a still screen. Thirty seconds
+ *   for a mirrored screen ([SAFETY_KEY_MS]); five minutes for screenshots
+ *   ([SAFETY_KEY_SCREENSHOTS_MS]), which change seldom, so that with thirty
+ *   seconds nearly every change would be a keyframe.
  * - On a **still** screen the picture is encoded again [sharpenAfterMs]
  *   after the last one that was not such a repeat, and then nothing more.
  *   That sharpens a picture that was encoded in the middle of a movement,
@@ -33,9 +36,24 @@ internal class VideoPacer(
     /** How soon to look again while there is no room. */
     private val retryMs: Long = 15,
     private val sharpenAfterMs: List<Long> = listOf(150, 600),
-    private val safetyKeyMs: Long = 30_000,
+    private val safetyKeyMs: Long = SAFETY_KEY_MS,
     private val viewerKeyEveryMs: Long = 1_000,
 ) {
+    companion object {
+        /** A mirrored screen: one keyframe in thirty seconds of moving pictures is a few hundredths of them. */
+        const val SAFETY_KEY_MS = 30_000L
+
+        /**
+         * Screenshots, which come one at a time when the screen has changed.
+         * A phone that is being looked at changes now and then: a tap, or
+         * the clock in the status bar once a minute. With thirty seconds
+         * each of those was a keyframe, and on the S26 a keyframe of a
+         * screen that has been still is 105 to 157 KB, where the change
+         * itself is 2 to 5 KB and a JPEG of the screen was 70.
+         */
+        const val SAFETY_KEY_SCREENSHOTS_MS = 5 * 60_000L
+    }
+
     /**
      * One picture to encode now.
      * @param keyframe ask the encoder for a keyframe.

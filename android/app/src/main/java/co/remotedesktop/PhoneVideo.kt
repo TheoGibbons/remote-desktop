@@ -331,7 +331,8 @@ internal class PhoneVideo(
     }
 
     @Volatile private var current: Session? = null
-    private val pacer = VideoPacer()
+    private val pacer = VideoPacer(
+        safetyKeyMs = if (fed) VideoPacer.SAFETY_KEY_SCREENSHOTS_MS else VideoPacer.SAFETY_KEY_MS)
     private val steps: BitrateSteps? = if (fed || !bitrateSteps) null else BitrateSteps()
     private var sending = false
     @Volatile private var shutDown = false

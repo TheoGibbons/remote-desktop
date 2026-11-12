@@ -150,6 +150,65 @@ class ScreenshotVideoTest {
     }
 
     @Test
+    fun aChangeAfterAStillMinuteIsAnOrdinaryPictureAndNotAKeyframe() {
+        // What a phone that is being looked at does: nothing for a while, then the clock in the
+        // status bar turns, or somebody taps. On the S26 a keyframe of a still screen came to 105
+        // to 157 KB and the change itself to 2 to 5 KB. With the mirrored screen's thirty seconds
+        // every one of these was a keyframe.
+        started()
+        screenshot("first")
+        timer.advance(1_000)
+        pipe.answerAll()
+        for (minute in 1..4) {
+            timer.advance(60_000)
+            pipe.answerAll()
+            sent.clear()
+            screenshot("minute $minute")
+            timer.advance(1_000)
+            pipe.answerAll()
+            // The picture and the two repeats that sharpen it, none of them a keyframe.
+            assertEquals("minute $minute", listOf(false, false, false), sent.map { it.keyframe })
+            assertEquals("minute $minute", listOf(false, true, true), sent.map { it.repeat })
+        }
+        assertTrue(failures.isEmpty())
+    }
+
+    @Test
+    fun theSafetyKeyframeOfScreenshotsComesAfterFiveMinutesWithTheNextChange() {
+        started()
+        screenshot("first")
+        timer.advance(1_000)
+        pipe.answerAll()
+        // One second short of five minutes after the stream's keyframe: still an ordinary picture.
+        timer.advance(VideoPacer.SAFETY_KEY_SCREENSHOTS_MS - 2_000)
+        pipe.answerAll()
+        sent.clear()
+        screenshot("just before")
+        pipe.answerAll()
+        assertFalse(sent.first().keyframe)
+        // Past it, the screen is still: nothing is made for the sake of it.
+        timer.advance(10_000)
+        pipe.answerAll()
+        sent.clear()
+        val drawn = pipe.drawn.size
+        timer.advance(60_000)
+        assertEquals(drawn, pipe.drawn.size)
+        // The next change is the keyframe, and a picture of the screen as it is now.
+        screenshot("after")
+        pipe.answerAll()
+        assertTrue(sent.first().keyframe)
+        assertFalse(sent.first().repeat)
+        // And the one after it is ordinary again.
+        timer.advance(1_000)
+        pipe.answerAll()
+        sent.clear()
+        screenshot("next")
+        pipe.answerAll()
+        assertFalse(sent.first().keyframe)
+        assertEquals(5 * 60_000L, VideoPacer.SAFETY_KEY_SCREENSHOTS_MS)
+    }
+
+    @Test
     fun aScreenshotWaitsForRoomAndTheNewestIsTheOneThatGoes() {
         started()
         screenshot("first")

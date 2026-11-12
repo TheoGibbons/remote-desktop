@@ -155,6 +155,7 @@ The connection is TCP, so a frame is only lost when the relay drops one for a ba
 - the viewer sees the gap in the sequence numbers and sends `request-keyframe`, which phones will now honour, at most once a second in total;
 - if the lost frame was the last one sent, no gap ever shows, but the phone sees its acknowledgement missing and sends the picture again as a keyframe;
 - as a safety net against a decoder that has gone wrong without noticing, the phone asks for a keyframe when 30 s have passed since the last one and a changed picture is about to be encoded anyway. The encoder's own interval setting can't do this: it counts frames, not seconds.
+  For Accessibility pictures (4.1) it is five minutes, not 30 s (2026-11-11, after the first session on the S26). A phone that is being looked at changes now and then: the clock in the status bar each minute, a tap after a pause. With 30 s nearly every one of those changes was a keyframe, and a keyframe of a screen that had been still came to 105 to 157 KB, where the change itself is 2 to 5 KB as an ordinary picture and a JPEG of the screen was 70 KB. So a watched, idle phone cost twice what it did with JPEGs. With five minutes, 131 s of use sent keyframes only at the start, at a turn and when one was asked for.
 
 A still screen sends nothing.
 
