@@ -250,8 +250,8 @@ on their way fail with a **Retry**.
     service is off) the row is ticked and greyed: it can be stopped on the
     phone, not from here, where it would leave no picture. A toast says what happened: the prompt
     was declined, nobody answered it within a minute, the phone must be
-    unlocked first, or why smooth video ended (Android 15 and later end it
-    when the phone locks). While you view in smooth video the phone keeps its
+    unlocked first, or why smooth video ended (some phones on Android 15 and
+    later end it when the phone locks). While you view in smooth video the phone keeps its
     screen on, until ten minutes pass without a click or a key from you. The
     row is missing for a phone whose app is older.
 - **Browse files** → a file explorer to download from / upload to the selected

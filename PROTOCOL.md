@@ -333,7 +333,7 @@ What a viewer that asked is told:
 | `started` | Smooth sharing is running: the prompt was approved, or it was running already, or it was turned on at the phone while the prompt was up (the prompt is then taken away). |
 | `declined` | The prompt was refused (no `reason`), nobody answered it within a minute, or the phone's screen turned off under it. |
 | `unavailable` | No prompt was shown, and `reason` says why: the phone is locked or asleep ("Unlock the phone first."), it is holding pictures back while a device waits to be approved, a prompt went without a yes a moment ago (below), or it could not show one: Android gave it no prompt, or would not show it and the notification that asks instead is switched off on the phone. Also the answer to a `stop-smooth` the phone refuses. |
-| `ended` | Smooth sharing has stopped. Sent to every device viewing at that moment that sent `codecs`, whether or not it asked. `reason` says whether a viewer stopped it (and which), it was stopped on the phone, or the phone was locked: Android 15 and later end screen sharing when the phone locks. |
+| `ended` | Smooth sharing has stopped. Sent to every device viewing at that moment that sent `codecs`, whether or not it asked. `reason` says whether a viewer stopped it (and which), it was stopped on the phone, or the phone was locked. That last one is for phones where Android ends screen sharing at a lock, as its notes for Android 15 and later say; an S26 on Android 17 kept sharing through a lock. |
 
 The prompt is Android's own, and only a person answers it: whoever holds the
 phone, or whoever is at a viewer, where the prompt is in the picture and its

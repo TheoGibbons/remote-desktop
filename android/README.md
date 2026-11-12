@@ -142,7 +142,8 @@ phone, or the phone was locked. A PC cannot stop it where it is the only way
 the phone can show its screen (Android 8 to 10, or the Accessibility service
 is off): the PC would be left with no picture. Stop it on the phone then.
 
-Android 15 and later end smooth sharing when the phone locks, and blank
+Android 15 and later may end smooth sharing when the phone locks (an S26 on
+Android 17 kept it), and blank
 password fields and one-time codes while it is on. So while a device is
 viewing in smooth sharing the phone keeps its screen on (it may dim). It lets
 go when the last viewer leaves, when a viewer chooses Lock screen, and after

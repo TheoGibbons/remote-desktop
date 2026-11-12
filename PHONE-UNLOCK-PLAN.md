@@ -125,7 +125,7 @@ Tests: `LockStateTest` on the `AllowOtherPhonesTest` pattern (`RecordingSocket`,
 
 ### Phase 2: find the unlock area, draw it (Windows viewer)
 
-Built 2026-11-11. Not tried on a locked phone: the S26 can't be reopened by an agent once it is locked, so everything below that needs a real unlock screen waits for the one session at the end of the build and for Theo's own hand (checks 2 to 4).
+Built 2026-11-11. Tried on the locked S26 on 2026-11-12, in the one session at the end of the build ("The lock session", under "Checks that need a real phone"): the grid is found, read and drawn over. Drawing a pattern, right or wrong, is left for Theo's own hand (checks 2 to 4).
 
 Phone:
 
@@ -208,10 +208,10 @@ Phase U has been removed from the video plan; this table is the record of what i
 
 Step 0 of `PHONE-PLANS-ORDER.md` gives the debug build a permanent `.debug` app id, so it installs beside the release app. Paired as an extra device, it covers these checks end to end with a viewer. Where a check is easier driven over adb, as the 2026-11-10 run was, add the probe receiver to that build without committing it. All of this is on the S26 only; nothing is installed on the S20.
 
-1. Phase 1: phone asleep, open the viewer: it wakes. Notifications off: it doesn't, and the viewer says why. Not run yet: the S26 can't be reopened by an agent once it is locked, so this and the asleep, locked and unlock-screen captions wait for the one session at the end of the build.
+1. Phase 1: phone asleep, open the viewer: it wakes. Notifications off: it doesn't, and the viewer says why. Run on 2026-11-12: "The lock session" below.
 2. Phase 2 on the S26: draw the real pattern on the drawn grid. This settles whether the dots are on an even grid; adjust the inset if not. **For Theo's hand**: only he knows the pattern. The session at the end can check, without it, that the reader finds the grid and that the drawn square is where the phone reports it.
 3. Switch the S26 to a PIN, then a password: read the node list (a debug build logs it under `LockScreenReader`), confirm the keys are found, unlock by clicking and by typing. **For Theo's hand.** Not run. Samsung's key ids are a guess until then, and whether typed text reaches a password lock's field is unknown.
-4. Wrong pattern five times: the lockout message and countdown appear in the viewer. One wrong try, and its message, is in the session at the end; five in a row locks the phone out for a while and is for Theo to choose.
+4. Wrong pattern five times: the lockout message and countdown appear in the viewer. The session at the end drew nothing, by instruction, so one wrong try and its message are still unseen; five in a row locks the phone out for a while and is for Theo to choose.
 5. Updating an installed app to the Phase 2 build: does Android switch the Accessibility service off? **Run on the S26 on 2026-11-11: no.** The debug app (`co.remotedesktop.debug`) was installed from the build before Phase 2, with its service switched on and bound, and was updated in place with `adb install -r` to a build whose only difference was the new capability and `flagReportViewIds`.
 
    | | Before | 3 s, 15 s and 75 s after the update |
@@ -224,6 +224,34 @@ Step 0 of `PHONE-PLANS-ORDER.md` gives the debug build a permanent `.debug` app 
    Nothing was shown on the phone and nothing had to be re-enabled. What this does not cover: the app was signed with the debug key and updated over adb, not by Google Play or by opening a downloaded APK, though switching a service off is the system's doing and not the installer's; the S26 runs Android 17, and the S20 (Android 13) or another maker's phone may differ; and it was one run. So the release that carries this should still go out when the phones are within reach. The readings are in the scratch folder of the run (`step-6\gate-*.txt`); the "before" build is kept there as `before.apk`, so the run can be repeated.
 6. The S20 (Android 13), on a release.
 7. Phone viewing a phone: the overlay lines up on a different screen shape.
+
+### The lock session, 2026-11-12
+
+S26 (Android 17), the debug build of `main` at `4b02856`, on the rig, with the relay's trace on. The PC got its pictures as H.264 throughout. The phone began unlocked and was locked from the viewer's menu; no pattern was drawn or guessed at any point, so it ended locked.
+
+| Check | What was seen |
+|---|---|
+| Nothing is read while unlocked | Notifications pulled down and closed from the menu: no `LockScreenReader` line, `lock-state` without `entry` or `message`, the service listening for `TYPE_WINDOW_STATE_CHANGED` only. |
+| A tap marked `onlyIfLocked` on an unlocked phone | Dropped: the same tap without the mark landed on what was under it. |
+| *Lock screen* from the menu, phone unlocked, Landscape held | `lock-state` with `screenOn` false and `locked` true 0.8 s after `lock`; the keyguard up; no rotation overlay left; `phone-state` says `auto` and has no `rotate`. Smooth sharing, which was on, did not end (video plan, end of Phase 1). |
+| Asleep, viewer open | Caption "The phone is asleep. Click to wake it." The picture is the phone's always-on screen, 2 % of it lit; the window keeps its size. |
+| `start-view` sent again; `rotate` sent | Still asleep three seconds later, no toast, no new `lock-state`; nothing turned. |
+| Back from the menu | Awake in 0.35 s, still locked; `lock-state` on and locked; no caption; the lock screen in the picture, upright. |
+| The lock screen is read | "Walked 70 views: entry=null message=false"; no `entry` sent; the service now listens for content changes too. |
+| The menu on a locked phone | The three Rotation rows are not there; *Smooth video* answers "Unlock the phone first."; `rotate` sent anyway changes nothing. |
+| The unlock screen (a swipe up) | `lock-state` with `entry` `pattern`, `area` `[0.1454,0.3679,0.7083,0.3269]` and `message` "Draw unlock pattern", 1.25 s after the swipe began, about 0.9 s after the screen was up. The reader's line: `lockPatternView [157,861][922,1626] clickable`, which is that area to four places. The picture is black but for the Back arrow (0.5 % lit). |
+| What the PC drew | No caption; "Draw unlock pattern" above nine dots. Their centres, in a picture 541.5 px wide that begins 44 px down the window: 142.8, 270.7 and 398.7 px across, 540.3, 668.4 and 796.3 px down. That is within 0.002 of the picture of `x + w/6`, `x + w/2`, `x + 5w/6` and the same down. |
+| Back from the unlock screen | `lock-state` without `entry`; the dots gone; the lock screen back in the picture. |
+| Unlock screen up, viewer closed | Back and the swipe again over adb: no new `LockScreenReader` line; the service listens for window changes only. |
+| Unlock screen up and drawn, then asleep | `lock-state` off with no `entry`; the asleep caption; no dots; nothing read while it slept. |
+| A viewer opens on the sleeping phone | Awake in 0.3 s; exactly one `lock-state` (on, locked), 54 ms after `start-view`, none with `screenOn` false before it; no caption; the phone shows "started viewing". |
+| The same with the app's notifications off | Still asleep three seconds later. `lock-state` with `wakeFailed` `notifications` 1.01 s after `start-view`. Caption "The phone didn't wake. Allow notifications for Remote Desktop on the phone." Samsung's log: "Screen__On : Cancel (notifications are disabled : co.remotedesktop.debug)". Back: still asleep, no new `lock-state`. Notifications allowed again: the next viewer woke it. |
+| *Lock screen* from the menu on the lock screen, then a key | Screen off 0.3 s after `lock`; a key from the viewer woke it in 0.3 s. |
+| The relay restarted under a viewer, phone asleep | It stayed asleep and showed no toast; the viewer said it had lost its connection and then showed the asleep caption again; the PC's `start-view` carried `resume`. |
+
+The grid was at a different height from 2026-11-10 (`y` 0.3679, then 0.5141): Samsung places it by what else is on the unlock screen. The reader follows it.
+
+Not run: one wrong try and the message that answers it; the real pattern; a PIN and a password lock; the caption for a wake that fails with notifications on; the grid over a picture encoded smaller. They are on Theo's list above.
 
 ## Still open
 

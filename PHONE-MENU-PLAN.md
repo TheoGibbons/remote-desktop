@@ -227,9 +227,9 @@ Phase 1 can be checked against the released phone app. Phases 2 and 3 need a bui
 
 1. Volume: slider moves the phone's media volume and the phone's panel shows; mute and unmute; menu reopened shows the real level. Done on the S26, except dragging with a real mouse.
 2. Screenshot: the capture card pops up on the PC. Done on the S26.
-3. Lock: the phone locks, and the next click in the viewer wakes it. `PHONE-UNLOCK-PLAN.md` is built since, so the viewer can now draw the way back in, but nobody has tried either on a locked phone. Not done: it waits for the lock session.
+3. Lock: the phone locks, and the next click in the viewer wakes it. `PHONE-UNLOCK-PLAN.md` is built since, so the viewer can now draw the way back in, Done on the S26 on 2026-11-12: *Lock screen* locked it (screen off, keyguard up, `lock-state` 0.8 s after `lock`), from an unlocked phone and again from the lock screen, and the next key from the viewer woke it in 0.3 s. A click was not tried: the rig has no mouse.
 4. Rotation on the S26: home screen, a portrait-only app, a video app. Taps land where clicked after turning. The S20 at release. Done for the home screen and Settings; the apps and the taps are still to do by hand.
-5. Rotation, then lock the phone: the override is gone and the lock screen is the phone's usual one. Not done: first tried in the unlock plan's Phase 1.
+5. Rotation, then lock the phone: the override is gone and the lock screen is the phone's usual one. Done on the S26 on 2026-11-12: with Landscape held, *Lock screen* left no overlay, `phone-state` says `auto` and has no `rotate`, the lock screen is upright, and the Rotation rows are not in the menu while the phone is locked.
 6. Rotation, then close the viewer window, and separately kill the PC app: the phone returns to its own orientation both times. Done on the S26.
 7. Smooth mode (MediaProjection) on, then rotate: the picture fills the window and taps land right. The picture: done on the S26. The taps: by hand.
 8. Windows 10, if one can be found: buttons draw and work.
