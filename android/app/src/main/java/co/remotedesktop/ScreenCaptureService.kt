@@ -157,6 +157,22 @@ class ScreenCaptureService : Service() {
          */
         internal val videoWedged = VideoWedge(SystemClock::elapsedRealtime)
 
+        /** The video of a run of sharing that has ended, until its encoder has been let go of. */
+        @Volatile private var ending: VideoLane? = null
+
+        /**
+         * Has the encoder of a run of smooth sharing that has just ended let
+         * go of, and returns when it is gone. The Accessibility service's
+         * screenshots call it before they start an encoder of their own: a
+         * phone may have only one to give, and the second would then fail
+         * to start for no fault of its own. Not for the main thread.
+         */
+        internal fun letGoOfVideo() {
+            val lane = ending ?: return
+            lane.shutDown()
+            if (ending === lane) ending = null
+        }
+
         /**
          * Where encoded pictures go in place of the viewers, for a check on
          * a real phone that writes the stream to a file. Null in the app.
@@ -268,7 +284,12 @@ class ScreenCaptureService : Service() {
     // away. So the mirror is let go of, but not at once: pictures pause for a
     // moment whenever any device joins the session.
     private val idle = Runnable { if (!streaming) outputs.mirror(false) }
-    private val resume = Runnable { outputs.mirror(true) }
+    private val resume = Runnable {
+        // Screenshots may have been going through an encoder of the Accessibility service's
+        // until this moment. It goes before this one is started: a phone may have only one.
+        InputAccessibilityService.instance?.endVideo()
+        outputs.mirror(true)
+    }
     // A pause in the pictures: the encoder, if there is one, is kept and nothing is drawn into it.
     private val pause = Runnable { outputs.point() }
 
@@ -323,6 +344,8 @@ class ScreenCaptureService : Service() {
     override fun onDestroy() {
         val wasRunning = instance === this
         instance = null
+        // Whoever shows the screen next may ask for this encoder to be gone before it starts its own.
+        if (captureHandler != null) ending = lane
         if (wasRunning) awake.sharing(false, SystemClock.uptimeMillis())
         releaseScreen()
         notifyStateChanged(this)
@@ -337,6 +360,7 @@ class ScreenCaptureService : Service() {
         // never came back from its encoder cannot be ended, and is all that is left behind.
         captureHandler?.post {
             outputs.close()
+            if (ending === lane) ending = null
             videoThread?.quitSafely()
         }
         projection?.stop()

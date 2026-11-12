@@ -651,6 +651,46 @@ class AccessibilityVideoTest {
             height = HEIGHT, captureMs = takenAt), header(socket.frames.single()))
     }
 
+    @Test
+    fun atTheHandOverOneEncoderIsGoneBeforeTheOtherIsStarted() {
+        // Smooth sharing has just ended. Its encoder is still open: letting go of it was
+        // left to its own thread, which has not got to it yet.
+        val smoothTimer = FakeVideoTimer()
+        val smoothPipes = ArrayList<FakeVideoPipe>()
+        val smooth = PhoneVideo(
+            encoders = { listOf(VideoSetup.Encoder("hardware", hardware = true, constantBitrate = true) { _, _ -> true }) },
+            open = { attempt, _, _, events -> FakeVideoPipe(attempt, events).also { smoothPipes += it } },
+            timer = smoothTimer, clock = { smoothTimer.now }, hasRoom = { true }, send = { VideoSent.SENT },
+            onFailed = { _, _ -> }, spare = { it() })
+        val smoothLane = VideoLane(smooth, post = { it.run() }, clock = { smoothTimer.now })
+        assertTrue(smoothLane.start(WIDTH, HEIGHT))
+        val ending = ScreenCaptureService::class.java.getDeclaredField("ending").apply { isAccessible = true }
+        ending.set(null, smoothLane)
+        try {
+            // A phone with one encoder to give: a second will not start while the first is open.
+            refuse = { smoothPipes.any { it.closed == 0 } }
+            startView("pc")
+            socket.clear()
+            screenshot(RED)
+            encode()
+            // The screenshots' encoder started, which it could only do with the other one gone.
+            assertEquals(1, smoothPipes.single().closed)
+            assertEquals(1, pipes.size)
+            assertEquals("h264", infos().last().getString("codec"))
+            assertEquals(PhoneFrame.H264, header(socket.frames.single()).format)
+            // What smooth sharing left behind is let go of once, and not asked for again.
+            assertNull(ending.get(null))
+            assertFalse(smooth.usable)
+
+            // The other way: smooth sharing is about to start its encoder, and has this one let go of first.
+            assertEquals(0, pipe.closed)
+            input.get().endVideo()
+            assertEquals(1, pipe.closed)
+        } finally {
+            ending.set(null, null)
+        }
+    }
+
     // ---------------- when the encoder fails ----------------
 
     @Test

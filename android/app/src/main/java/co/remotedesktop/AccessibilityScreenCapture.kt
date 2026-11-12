@@ -236,6 +236,16 @@ internal class AccessibilityScreenCapture(
     /** Bits a second the video encoder is aiming at, while it runs. */
     val videoBitrate: Int? get() = encoding.lane.bitrate
 
+    /**
+     * Smooth sharing is about to start an encoder: this one is let go of
+     * first, and is gone when this returns. A phone may have only one to
+     * give. Any thread but the main one, since it waits for the encoder.
+     */
+    fun endVideo() {
+        val lane = encoding.lane
+        if (lane.running) lane.stop()
+    }
+
     private fun isCurrent(token: Long): Boolean =
         streaming && generation == token && !ScreenCaptureService.isRunning &&
             PhoneScreenCapture.maySendFrames(service)
@@ -438,6 +448,9 @@ internal class AccessibilityScreenCapture(
             encoding.outputs.turning(size.first, size.second)
             source = size
         }
+        // Smooth sharing may have ended a moment ago, with its encoder still being let go
+        // of. That one goes before this one is started.
+        if (!encoding.lane.running) ScreenCaptureService.letGoOfVideo()
         encoding.outputs.mirror(true)
         return encoding.outputs.asVideo && encoding.lane.running
     }

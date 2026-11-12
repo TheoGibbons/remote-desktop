@@ -140,6 +140,14 @@ class InputAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= 30) screenCapture?.resendWanted()
     }
 
+    /**
+     * Smooth sharing is about to start its video encoder: the one
+     * screenshots were going through is let go of first. Not for the main thread.
+     */
+    fun endVideo() {
+        if (Build.VERSION.SDK_INT >= 30) screenCapture?.endVideo()
+    }
+
     /** Bits a second the video encoder is aiming at, while screenshots go out as video. */
     val videoBitrate: Int? get() = if (Build.VERSION.SDK_INT >= 30) screenCapture?.videoBitrate else null
 
