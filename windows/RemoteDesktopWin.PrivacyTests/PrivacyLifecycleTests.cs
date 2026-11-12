@@ -683,6 +683,12 @@ internal static class PrivacyLifecycleTests
                 if (leaked.Count != 0) throw new Exception("Something was sent while the phone was away: " + leaked[0].ToJsonString());
                 if (!ReferenceEquals(lastPicture, shownAt.Source) || caption.Visibility == Visibility.Visible)
                     throw new Exception("A device that has the phone's old id was drawn or believed in the phone's window");
+                // Nor are that device's transfers the phone's, to be shown in the phone's files window.
+                string fileStatusBefore = fileStatus.Text;
+                Invoke(files, "OnTransferChanged", new TransferUpdate(77, "p1", Sending: false, "Not this window's.jpg", 10, TransferState.Running));
+                Pump(20);
+                if (fileStatus.Text != fileStatusBefore)
+                    throw new Exception("The files window showed the transfer of another device that has the phone's old id: " + fileStatus.Text);
 
                 // The phone itself is back, under a new id, and proves its key.
                 Proves("p9", phoneKey);
@@ -706,6 +712,11 @@ internal static class PrivacyLifecycleTests
                 // Only the phone's connection drops: it leaves, and joins again under another id.
                 Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-left", ["id"] = "p9" });
                 if (closed || follower.PeerId != null) throw new Exception("The viewer did not wait for a phone that left");
+                // What was under way with the phone as it left still says how it ended, in its files window.
+                Invoke(files, "OnTransferChanged", new TransferUpdate(78, "p9", Sending: false, "Holiday.jpg", 10, TransferState.Failed, Error: "Test phone went offline"));
+                Pump(20);
+                if (fileStatus.Text != "Receive failed: Test phone went offline")
+                    throw new Exception("The files window did not show how a transfer ended when its phone left: " + fileStatus.Text);
                 if (awayText.Text != "Test phone has lost its connection. Waiting for it to come back…")
                     throw new Exception("The viewer does not say that the phone has lost its connection: " + awayText.Text);
                 Invoke(host, "OnJson", new JsonObject { ["type"] = "peer-joined", ["peer"] = Peer("p12", "Test phone") });

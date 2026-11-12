@@ -20,8 +20,12 @@ public partial class FileExplorerWindow : Window, IDeviceWindow
     // DeviceLink). While it is away nothing is asked of it or sent to it: the
     // id it had is dead, and may be another device's when this PC is back.
     private readonly DeviceLink _link;
-    // The id the device has, or had last: its transfers are known by it.
-    private string _phoneId;
+    // The id the device's transfers are known by: the one it has, or the one
+    // it had until it left, since what was under way then still has to say how
+    // it ended. Forgotten once this PC has itself been off the relay and is
+    // back: by then the relay may have given that id to another device, whose
+    // transfers are not this window's.
+    private string? _phoneId;
     private readonly string _phoneName;
     private readonly Action _showTransfers;
     private readonly Action<string> _downloaded;
@@ -115,6 +119,8 @@ public partial class FileExplorerWindow : Window, IDeviceWindow
     {
         if (_link.PeerId is not { } id)
         {
+            // Back on the relay without the device: its old id is anybody's now.
+            if (!_link.Offline && was == null) _phoneId = null;
             // A transfer under way is about to say that it failed, and why.
             if (!Busy) SetStatus(_link.Notice(_phoneName)!);
             return;
@@ -217,7 +223,7 @@ public partial class FileExplorerWindow : Window, IDeviceWindow
         _ws.SendJson(new JsonObject
         {
             ["type"] = "fs-list",
-            ["to"] = _phoneId,
+            ["to"] = _link.PeerId,
             ["path"] = path,
             ["reqId"] = (++_reqCounter).ToString(),
         });
@@ -475,14 +481,14 @@ public partial class FileExplorerWindow : Window, IDeviceWindow
             return;
         }
         // It may have gone while the folders were counted or the question was up.
-        if (AwayNow()) return;
+        if (AwayNow() || _link.PeerId is not { } device) return;
         _downloadTotal += files.Count;
         foreach (var file in files)
         {
             var xferId = _fs.NextXferId();
             var root = file.Top == null ? null : roots[file.Top];
             _downloadIds.Add(xferId);
-            _fs.QueueDownload(xferId, _phoneId, file.RemotePath, file.Name,
+            _fs.QueueDownload(xferId, device, file.RemotePath, file.Name,
                 root == null ? _fs.IncomingDir : System.IO.Path.Combine(root, file.Folder),
                 path => Dispatcher.BeginInvoke(() => DownloadSaved(xferId, path, root ?? path)),
                 err => Dispatcher.BeginInvoke(() => DownloadEnded(xferId, null, err)));
