@@ -171,6 +171,44 @@ class AppUpdateTest {
     }
 
     @Test
+    fun theHomeScreenOffersTheDownloadToo() {
+        welcome("99.0.0")
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val notice = activity.findViewById<TextView>(R.id.appUpdateNotice)
+            assertEquals(View.VISIBLE, notice.visibility)
+            assertEquals("Update available: 99.0.0 · Tap to download", notice.text.toString())
+            // The same download as Settings'.
+            notice.performClick()
+            val started = shadowOf(activity).nextStartedActivity
+            assertEquals(Intent.ACTION_VIEW, started.action)
+            assertEquals("https://github.com/TheoGibbons/remote-desktop/releases/download/v99.0.0/RemoteDesktop-Android.apk",
+                started.dataString)
+
+            // Once this phone has the newest, the notice goes.
+            welcome(BuildConfig.VERSION_NAME)
+            assertEquals(View.GONE, notice.visibility)
+
+            // A release while the home screen is open brings it straight back.
+            receive("""{"type":"latest","version":"99.0.1"}""")
+            assertEquals(View.VISIBLE, notice.visibility)
+            assertEquals("Update available: 99.0.1 · Tap to download", notice.text.toString())
+        } finally {
+            controller.pause().stop().destroy()
+        }
+
+        // Installs from Play update through Play, and builds that aren't releases are never told.
+        AppUpdate.enabledOverride = false
+        val quiet = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            assertEquals(View.GONE, quiet.get().findViewById<View>(R.id.appUpdateNotice).visibility)
+        } finally {
+            quiet.pause().stop().destroy()
+        }
+    }
+
+    @Test
     fun aPcThatIsBehindCanBeUpdatedFromTheHomeScreen() {
         welcome("1.0.53", pc("1.0.50"))
         trustedPeers.add("pc")

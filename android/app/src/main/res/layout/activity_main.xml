@@ -102,6 +102,21 @@
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical" />
+
+                    <!-- This phone's app is older than the newest release.
+                         Tapping it downloads the release, as the version row
+                         in Settings does. -->
+                    <TextView
+                        android:id="@+id/appUpdateNotice"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:background="?attr/selectableItemBackground"
+                        android:gravity="center_vertical"
+                        android:minHeight="32dp"
+                        android:textAppearance="?attr/textAppearanceBodySmall"
+                        android:textColor="@color/rd_warn"
+                        android:visibility="gone" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

@@ -30,6 +30,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var retryBtn: ImageButton
     private lateinit var permissionsSubtitle: TextView
     private lateinit var thisPhoneName: TextView
+    private lateinit var appUpdateNotice: TextView
 
     private val stateListener: (String) -> Unit = { refreshStatus() }
     private val trustListener: () -> Unit = { refreshStatus() }
@@ -79,6 +80,8 @@ class MainActivity : AppCompatActivity() {
         retryBtn = findViewById(R.id.retryNow)
         permissionsSubtitle = findViewById(R.id.permissionsSubtitle)
         thisPhoneName = findViewById(R.id.thisPhoneName)
+        appUpdateNotice = findViewById(R.id.appUpdateNotice)
+        appUpdateNotice.setOnClickListener { AppUpdate.latest(this)?.let { AppUpdate.openDownload(this, it) } }
 
         findViewById<MaterialCardView>(R.id.sessionIdCard).setOnClickListener {
             startActivity(Intent(this, SessionIdActivity::class.java))
@@ -176,6 +179,11 @@ class MainActivity : AppCompatActivity() {
         statusSubtitle.text = subtitle
         statusSubtitle.visibility = if (subtitle == null) View.GONE else View.VISIBLE
         showPeers(peers)
+
+        // This phone is behind the newest release the relay named.
+        val update = AppUpdate.latest(this)?.takeIf { AppUpdate.updateAvailable(this) }
+        appUpdateNotice.visibility = if (update == null) View.GONE else View.VISIBLE
+        if (update != null) appUpdateNotice.text = getString(R.string.home_update_available, update)
 
         val required = PermissionsActivity.required(this)
         val granted = required.count { it }

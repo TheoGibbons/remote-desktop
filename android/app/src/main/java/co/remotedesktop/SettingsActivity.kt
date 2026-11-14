@@ -88,13 +88,7 @@ class SettingsActivity : AppCompatActivity() {
         if (AppUpdate.updateAvailable(this) && latest != null) {
             versionValue.text = getString(R.string.version_update_available, AppUpdate.current, latest)
             versionValue.setTextColor(getColor(R.color.rd_warn))
-            versionRow.setOnClickListener {
-                try {
-                    startActivity(AppUpdate.downloadIntent(latest))
-                } catch (e: Exception) {
-                    android.widget.Toast.makeText(this, "No browser to download it with", android.widget.Toast.LENGTH_LONG).show()
-                }
-            }
+            versionRow.setOnClickListener { AppUpdate.openDownload(this, latest) }
         } else {
             versionValue.text = AppUpdate.current
             versionRow.setOnClickListener(null)

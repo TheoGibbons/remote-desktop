@@ -12,6 +12,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import android.widget.Toast
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 
@@ -49,6 +50,16 @@ object AppUpdate {
     fun downloadIntent(version: String): Intent = Intent(Intent.ACTION_VIEW, Uri.parse(
         "https://github.com/TheoGibbons/remote-desktop/releases/download/v$version/RemoteDesktop-Android.apk"))
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** Downloads [version]'s APK in the browser. The version row in Settings
+     *  and the notice on the home screen both do this. */
+    fun openDownload(context: Context, version: String) {
+        try {
+            context.startActivity(downloadIntent(version))
+        } catch (e: Exception) {
+            Toast.makeText(context, "No browser to download it with", Toast.LENGTH_LONG).show()
+        }
+    }
 
     /** The relay named the newest release. */
     fun onLatest(context: Context, version: String?) {

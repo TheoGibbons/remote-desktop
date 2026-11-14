@@ -114,6 +114,7 @@
     <string name="update_notification_title">Remote Desktop %1$s is available</string>
     <string name="update_notification_text">This phone has %1$s. Tap to download the update.</string>
     <string name="version_update_available">%1$s · %2$s available</string>
+    <string name="home_update_available">Update available: %1$s · Tap to download</string>
     <string name="viewer_awaiting_approval">Approve this phone on %1$s.\nCode: %2$s</string>
     <string name="allow_phones">Allow other phones</string>
     <string name="allow_phones_description">Let approved phones view, control and browse this phone</string>
