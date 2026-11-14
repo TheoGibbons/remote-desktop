@@ -201,7 +201,7 @@ class MainActivity : AppCompatActivity() {
         val online = peers.map { it.id }.toSet()
         phonesAllowed.keys.retainAll(online)
         askedAt.keys.retainAll(online)
-        for (peer in peers) {
+        for (peer in DeviceOrder.peers(peers)) {
             val row = layoutInflater.inflate(R.layout.item_session_peer, peerRows, false)
             val status = phoneStatus(peer, peerStatus(peer))
             val kind = when (peer.device) {

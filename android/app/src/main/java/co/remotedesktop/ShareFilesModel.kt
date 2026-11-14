@@ -29,7 +29,7 @@ internal class ConnectionShareGateway(private val app: Application) : ShareGatew
     override val configured get() = Prefs(app).sessionKey.length >= 16
     override val connected get() = ConnectionManager.state == "connected"
     override val allTrusted get() = PeerAuth.allPeersTrusted
-    override val desktops get() = ConnectionManager.peers.filter { it.device == "windows" }.map {
+    override val desktops get() = DeviceOrder.peers(ConnectionManager.peers.filter { it.device == "windows" }).map {
         ShareDesktop(it.id, it.name, PeerAuth.fingerprintOfPeer(it.id)?.let(PeerAuth::shortCode), PeerAuth.isTrusted(it.id))
     }
     private var changed: (() -> Unit)? = null

@@ -148,23 +148,24 @@ class PairingStatusTest {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             val activity = controller.get()
+            // PCs above phones, each kind by name, whatever order they joined in.
             assertEquals(listOf(
+                Row("Office PC · PC", "Waiting for approval", "Approve this phone on Office PC. Code: $code", offered = false),
                 Row("Test PC · PC", "Paired", offered = true),
                 // A phone gets buttons too, usable once it approves this one and allows phones.
                 Row("Tablet · phone", "Checking…", offered = false),
-                Row("Office PC · PC", "Waiting for approval", "Approve this phone on Office PC. Code: $code", offered = false),
             ), rows(activity))
 
             // Each PC's buttons open that PC.
-            val first = activity.findViewById<LinearLayout>(R.id.peerRows).getChildAt(0)
-            val view = first.findViewById<MaterialButton>(R.id.peerView)
+            val testPc = activity.findViewById<LinearLayout>(R.id.peerRows).getChildAt(1)
+            val view = testPc.findViewById<MaterialButton>(R.id.peerView)
             assertEquals("View Test PC", view.contentDescription)
             view.performClick()
             shadowOf(activity).nextStartedActivity.let {
                 assertEquals(ViewerActivity::class.java.name, it.component!!.className)
                 assertEquals("pc", it.getStringExtra(ConnectionManager.EXTRA_PEER_ID))
             }
-            first.findViewById<MaterialButton>(R.id.peerBrowse).performClick()
+            testPc.findViewById<MaterialButton>(R.id.peerBrowse).performClick()
             shadowOf(activity).nextStartedActivity.let {
                 assertEquals(FileExplorerActivity::class.java.name, it.component!!.className)
                 assertEquals("pc", it.getStringExtra(ConnectionManager.EXTRA_PEER_ID))
@@ -175,11 +176,11 @@ class PairingStatusTest {
             pending.add(PeerAuth.PendingRequest("pc", "0123456789abcdef", "Test PC", "windows"))
             pcSays("trusted")
             assertEquals(Row("Test PC · PC", "Needs your approval", "Tap here to approve or deny it", offered = false),
-                rows(activity)[0])
+                rows(activity)[1])
 
             pending.clear()
             pcSays("trusted")
-            assertEquals(Row("Test PC · PC", "Denied on this phone", offered = false), rows(activity)[0])
+            assertEquals(Row("Test PC · PC", "Denied on this phone", offered = false), rows(activity)[1])
         } finally {
             controller.pause().stop().destroy()
         }

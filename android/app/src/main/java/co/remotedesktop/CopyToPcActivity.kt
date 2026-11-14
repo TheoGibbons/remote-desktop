@@ -68,7 +68,7 @@ class CopyToPcActivity : Activity() {
     }
 
     private fun approvedPcs() =
-        ConnectionManager.peers.filter { it.device == "windows" && PeerAuth.isTrusted(it.id) }
+        DeviceOrder.peers(ConnectionManager.peers.filter { it.device == "windows" && PeerAuth.isTrusted(it.id) })
 
     /** PCs approved on both ends: a PC drops what an unapproved phone sends. */
     private fun readyPcs() = approvedPcs().filter { PeerAuth.trustedBy(it.id) }

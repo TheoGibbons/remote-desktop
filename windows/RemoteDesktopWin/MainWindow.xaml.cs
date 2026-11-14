@@ -55,6 +55,8 @@ public partial class MainWindow : Window
         public string? PeerId { get; init; }
         public string? Fingerprint { get; init; }
         public string Name { get; init; } = "";
+        /// <summary>"windows" or "android": PCs are listed above phones.</summary>
+        public string Device { get; init; } = "";
         public string Title { get; init; } = "";
         public string Subtitle { get; init; } = "";
         /// <summary>The app version, shown fainter after the subtitle. Empty for
@@ -750,7 +752,8 @@ public partial class MainWindow : Window
             StatusDot.Fill = (System.Windows.Media.Brush)FindResource("RdGoodBrush");
             StatusSubtitle.Text = _peers.Count == 0
                 ? "No paired devices online"
-                : "Paired: " + string.Join(", ", _peers.Select(p => $"{p.Name} ({p.Device})"));
+                : "Paired: " + string.Join(", ", DeviceOrder.Sort(_peers, p => p.Device, _ => true, p => p.Name,
+                    p => _auth.FingerprintOf(p.Id) ?? p.Id).Select(p => $"{p.Name} ({p.Device})"));
         }
         else if (s == "connecting")
         {
@@ -1339,6 +1342,7 @@ public partial class MainWindow : Window
                 PeerId = p.Id,
                 Fingerprint = fp,
                 Name = p.Name,
+                Device = p.Device,
                 Title = $"{p.Name} ({p.Device})",
                 Subtitle = subtitle,
                 VersionText = p.Version == null ? "" : $" · v{p.Version.TrimStart('v')}",
@@ -1362,6 +1366,7 @@ public partial class MainWindow : Window
                 {
                     Fingerprint = d.Fingerprint,
                     Name = d.Name,
+                    Device = d.Device,
                     Title = $"{d.Name} ({d.Device})",
                     Subtitle = $"Code {DeviceIdentity.ShortCode(d.Fingerprint)} — " +
                                $"offline, trusted (last seen {d.LastSeen.ToLocalTime():g})",
@@ -1370,7 +1375,8 @@ public partial class MainWindow : Window
                     ShowRevoke = true,
                 });
 
-        DevicesList.ItemsSource = rows;
+        DevicesList.ItemsSource = DeviceOrder.Sort(rows, r => r.Device, r => r.PeerId != null, r => r.Name,
+            r => r.Fingerprint ?? r.PeerId);
         DevicesEmptyText.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateStatusCard();
     }

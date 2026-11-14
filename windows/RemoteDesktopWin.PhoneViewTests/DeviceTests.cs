@@ -17,6 +17,37 @@ internal static class DeviceTests
         CheckLinkNeverTakesAnotherDevice();
         CheckLinkGivesUp();
         CheckLinkWhenTheDeviceDoesNotAnswer();
+        CheckListOrder();
+    }
+
+    private sealed record Listed(string Name, string Device, bool Online, string Key);
+
+    private static void CheckListOrder()
+    {
+        // In the order they might have joined or been approved.
+        var devices = new[]
+        {
+            new Listed("Pixel", "android", Online: true, "k1"),
+            new Listed("office", "windows", Online: false, "k2"),
+            new Listed("S26", "android", Online: false, "k3"),
+            new Listed("Laptop", "windows", Online: true, "k4"),
+            new Listed("Desktop", "windows", Online: true, "k5"),
+            new Listed("Tablet", "ipad", Online: true, "k6"),
+            new Listed("galaxy", "android", Online: true, "k7"),
+            new Listed("Attic", "windows", Online: false, "k8"),
+        };
+        string Names(IEnumerable<Listed> list) => string.Join(", ", list.Select(d => d.Name));
+        var sorted = Names(DeviceOrder.Sort(devices, d => d.Device, d => d.Online, d => d.Name, d => d.Key));
+        Check(sorted == "Desktop, Laptop, Attic, office, galaxy, Pixel, S26, Tablet",
+            $"PCs come before phones, online before offline, then by name whatever its case (got {sorted})");
+
+        // Two devices with one name keep their places whichever joined first.
+        var a = new Listed("Phone", "android", true, "aaa");
+        var b = new Listed("Phone", "android", true, "bbb");
+        Check(DeviceOrder.Sort(new[] { b, a }, d => d.Device, d => d.Online, d => d.Name, d => d.Key)[0] == a &&
+              DeviceOrder.Sort(new[] { a, b }, d => d.Device, d => d.Online, d => d.Name, d => d.Key)[0] == a,
+            "devices of one name keep their places");
+        Console.WriteLine("PASS: devices are listed PCs first, then phones; online first, then by name");
     }
 
     private const string Key = "the phone's key", OtherKey = "another key";

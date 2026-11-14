@@ -145,7 +145,7 @@ class DevicesActivity : AppCompatActivity() {
         pendingGroup.removeAllViews()
         trustedGroup.removeAllViews()
 
-        val pending = PeerAuth.pendingRequests()
+        val pending = DeviceOrder.sort(PeerAuth.pendingRequests(), { it.device }, { true }, { it.name }, { it.fingerprint })
         pendingHeader.visibility = if (pending.isEmpty()) View.GONE else View.VISIBLE
         pendingCard.visibility = pendingHeader.visibility
         for (req in pending) {
@@ -168,10 +168,13 @@ class DevicesActivity : AppCompatActivity() {
             return
         }
 
-        for (d in trusted) {
-            val onlinePeerId = ConnectionManager.peers
+        val onlinePeerIds = trusted.associate { d ->
+            d.fingerprint to ConnectionManager.peers
                 .firstOrNull { PeerAuth.isTrusted(it.id) && PeerAuth.fingerprintOfPeer(it.id) == d.fingerprint }
                 ?.id
+        }
+        for (d in DeviceOrder.sort(trusted, { it.device }, { onlinePeerIds[it.fingerprint] != null }, { it.name }, { it.fingerprint })) {
+            val onlinePeerId = onlinePeerIds[d.fingerprint]
             row(
                 trustedGroup,
                 "${d.name} (${d.device})",
