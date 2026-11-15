@@ -66,6 +66,11 @@ nothing. Drafts and prereleases are ignored. Versions compare numerically
   of its windows in front), the running exe is renamed to `.old`, the new one
   takes its name and starts with `--restart --updated`, and the old one exits.
   The new copy deletes `.old`. Unsigned development builds never update.
+  The privacy screen ends with the app, so a PC with it up never updates by
+  itself. When someone says to update anyway (`update-now` with
+  `evenIfPrivate`, or Restart now on the PC), the new copy is also given
+  `--privacy` and puts the privacy screen back up as it starts, before it
+  connects. The screen is uncovered in between, for a few seconds.
 - **Android** posts one notification per version that opens the APK download in
   the browser, and Settings → App version offers the same. Installs from Google
   Play, and builds that aren't tagged releases, aren't told.
@@ -420,8 +425,8 @@ now, without waiting for it to be idle (see [Updates](#updates)).
 
 | type            | fields | notes |
 |-----------------|--------|-------|
-| `update-now`    | `to` | Ask a Windows host to install the newest release now. It acts only for an approved device, and restarts at once, so its viewers reconnect. Only sent to peers that announced a `version`; older apps don't know it. |
-| `update-status` | `to`, `state`, `version`?, `error`? | The host's answer. `state` is `updating` (downloading, then restarting into `version`), `current` (already the newest), or `failed` with a human-readable `error`, e.g. the relay hasn't named a release yet, or the download didn't verify. |
+| `update-now`    | `to`, `evenIfPrivate`? | Ask a Windows host to install the newest release now. It acts only for an approved device, and restarts at once, so its viewers reconnect. Only sent to peers that announced a `version`; older apps don't know it. `evenIfPrivate: true` means the asker's user said to update even though the host's privacy screen is up; hosts before it ignore it. |
+| `update-status` | `to`, `state`, `version`?, `error`? | The host's answer. `state` is `updating` (downloading, then restarting into `version`), `current` (already the newest), or `failed` with a human-readable `error`, e.g. the relay hasn't named a release yet, or the download didn't verify. A host that won't update only because its privacy screen is up adds `reason: "privacy"`; the asker then asks its user and, on yes, sends `update-now` again with `evenIfPrivate`. Askers before it show the `error`. |
 
 ### New captures
 

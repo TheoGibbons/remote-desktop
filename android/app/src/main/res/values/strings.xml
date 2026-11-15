@@ -108,6 +108,10 @@
     <string name="peer_pc_update">Update PC to %1$s</string>
     <string name="peer_pc_updating">Updating…</string>
     <string name="peer_pc_update_description">Update %1$s to version %2$s</string>
+    <string name="peer_pc_update_private_title">Update %1$s?</string>
+    <string name="peer_pc_update_private_message">%1$s\'s privacy screen is on. Updating restarts the app there, which uncovers its screen for a few seconds, until the new version puts the privacy screen back up.</string>
+    <string name="peer_pc_update_private_confirm">Update</string>
+    <string name="peer_pc_update_gone">%1$s is no longer online</string>
     <string name="update_status_updating">%1$s is updating to version %2$s. It reconnects when it restarts.</string>
     <string name="update_status_current">%1$s is already up to date</string>
     <string name="update_status_failed">%1$s couldn\'t update: %2$s</string>

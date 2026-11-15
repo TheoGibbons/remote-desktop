@@ -246,6 +246,19 @@ public partial class MainWindow : Window
         if (_settings.StartWithWindows)
             Task.Run(ApplyStartupRegistration);
 
+        // The copy this one replaced had its privacy screen up when it updated,
+        // so it goes straight back up, before any viewer reconnects. Privacy
+        // only ever covers a PC that allows remote control.
+        if (App.RestorePrivacy && _settings.AllowRemoteControl)
+        {
+            try { _privacy.Enable(); }
+            catch (Exception ex)
+            {
+                Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+                    Toast.Show("Couldn't put the privacy screen back up after updating: " + ex.Message, 10000));
+            }
+        }
+
         if (_settings.AutoConnect && !string.IsNullOrWhiteSpace(_settings.SessionKey))
             Connect();
     }
@@ -369,8 +382,18 @@ public partial class MainWindow : Window
 
     private void UpdateButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_updater.ReadyToInstall) InstallUpdate();
-        else OpenReleasesPage();
+        if (!_updater.ReadyToInstall)
+        {
+            OpenReleasesPage();
+            return;
+        }
+        // The screen is covered here, so this is someone viewing the PC.
+        if (_privacy.IsEnabled && MessageBox.Show(this,
+                "The privacy screen is on. Restarting uncovers this PC's screen for a few seconds, " +
+                "until the new version puts the privacy screen back up.\n\nRestart now anyway?",
+                "Restart to update", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+            != MessageBoxResult.Yes) return;
+        InstallUpdate();
     }
 
     private static void OpenReleasesPage()
@@ -400,7 +423,8 @@ public partial class MainWindow : Window
 
     /// <summary>Restarting now would interrupt nobody: no one is viewing this
     /// PC or moving files, and none of this app's windows is being used. Nor is
-    /// the privacy screen up: it ends with the app, uncovering the screen.</summary>
+    /// the privacy screen up: it ends with the app, uncovering the screen until
+    /// the new copy puts it back, and nobody has said that is all right.</summary>
     private bool IsIdleForUpdate() =>
         !_privacy.IsEnabled &&
         !_streamer.IsStreaming &&
@@ -414,7 +438,7 @@ public partial class MainWindow : Window
     /// failed, in which case this copy keeps running.</summary>
     private bool InstallUpdate()
     {
-        var args = $"{App.RestartSwitch} {App.UpdatedSwitch}" + (IsVisible ? "" : " " + App.MinimizedSwitch);
+        var args = RestartArguments(minimized: !IsVisible, privacy: _privacy.IsEnabled);
         try
         {
             _updater.Install(exe => System.Diagnostics.Process.Start(
@@ -429,13 +453,28 @@ public partial class MainWindow : Window
         return true;
     }
 
+    /// <summary>What the updated copy starts with: it waits for this one to
+    /// exit, says it was updated, stays in the tray if this one was there, and
+    /// puts the privacy screen back up if this one had it up.</summary>
+    internal static string RestartArguments(bool minimized, bool privacy) =>
+        $"{App.RestartSwitch} {App.UpdatedSwitch}" +
+        (minimized ? " " + App.MinimizedSwitch : "") +
+        (privacy ? " " + App.PrivacySwitch : "");
+
+    /// <summary>The <c>reason</c> of an update-status that failed only because
+    /// the privacy screen is up. The device that asked can ask again with
+    /// <c>evenIfPrivate</c>, once its user has said yes.</summary>
+    internal const string PrivacyReason = "privacy";
+
     /// <summary>A trusted device asked this PC to update now, e.g. from the
     /// phone that is viewing it. It answers with update-status as it goes.</summary>
-    private async Task UpdateForPeerAsync(string peerId)
+    /// <param name="evenIfPrivate">Its user said to update even though the
+    /// privacy screen is up, which uncovers the screen while the app restarts.</param>
+    private async Task UpdateForPeerAsync(string peerId, bool evenIfPrivate)
     {
         // Only on the connection the request came in on: after another, the id is not that device's.
         int connection = _ws.Generation;
-        void Reply(string state, string? error = null)
+        void Reply(string state, string? error = null, string? reason = null)
         {
             if (_ws.Generation != connection) return;
             _ws.SendJson(new JsonObject
@@ -445,6 +484,7 @@ public partial class MainWindow : Window
                 ["state"] = state,
                 ["version"] = state == "current" ? Updater.RunningVersion : _updater.Latest,
                 ["error"] = error,
+                ["reason"] = reason,
             });
         }
 
@@ -458,10 +498,11 @@ public partial class MainWindow : Window
             Reply("current");
             return;
         }
+        // Apps before evenIfPrivate show this text; newer ones ask their user instead.
         const string privacyOn = "Its privacy screen is on, and restarting would uncover the screen. Turn privacy off, then update.";
-        if (_privacy.IsEnabled)
+        if (_privacy.IsEnabled && !evenIfPrivate)
         {
-            Reply("failed", privacyOn);
+            Reply("failed", privacyOn, PrivacyReason);
             return;
         }
         Reply("updating");
@@ -471,8 +512,35 @@ public partial class MainWindow : Window
             Reply("failed", _updater.Error ?? "The download failed.");
             return;
         }
-        if (_privacy.IsEnabled) Reply("failed", privacyOn); // turned on during the download
+        if (_privacy.IsEnabled && !evenIfPrivate) Reply("failed", privacyOn, PrivacyReason); // turned on during the download
         else if (!InstallUpdate()) Reply("failed", _updater.Error ?? "Installing it failed.");
+    }
+
+    /// <summary>Asks another PC to update now.</summary>
+    private void AskToUpdate(string peerId, bool evenIfPrivate = false)
+    {
+        var msg = new JsonObject { ["type"] = "update-now", ["to"] = peerId };
+        if (evenIfPrivate) msg["evenIfPrivate"] = true;
+        _ws.SendJson(msg);
+        Toast.Show($"Asked {PeerName(peerId)} to update");
+    }
+
+    /// <summary>A PC this one asked to update has its privacy screen up, so
+    /// it asks the person here whether to update it anyway.</summary>
+    private void ConfirmUpdateDespitePrivacy(string peerId)
+    {
+        var name = PeerName(peerId);
+        if (MessageBox.Show(this,
+                $"{name}'s privacy screen is on. Updating restarts the app there, which uncovers its screen " +
+                "for a few seconds, until the new version puts the privacy screen back up.\n\nUpdate it anyway?",
+                $"Update {name}", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No)
+            != MessageBoxResult.Yes) return;
+        if (_peers.All(p => p.Id != peerId))
+        {
+            Toast.Show($"{name} is no longer online.");
+            return;
+        }
+        AskToUpdate(peerId, evenIfPrivate: true);
     }
 
     /// <summary>How a PC this one asked to update is getting on.</summary>
@@ -487,6 +555,10 @@ public partial class MainWindow : Window
                 break;
             case "current":
                 Toast.Show($"{name} is already up to date");
+                break;
+            case "failed" when ClipboardService.Str(msg["reason"]) == PrivacyReason:
+                // The box is modal, so it opens after this message has been handled.
+                Dispatcher.BeginInvoke(() => ConfirmUpdateDespitePrivacy(peerId));
                 break;
             case "failed":
                 Toast.Show($"{name} couldn't update: {ClipboardService.Str(msg["error"])}", 8000);
@@ -967,7 +1039,8 @@ public partial class MainWindow : Window
 
             case "update-now":
                 // Another device saw this PC is behind and asked it to update now.
-                if (_auth.IsTrusted(from) && from != null) _ = UpdateForPeerAsync(from);
+                if (_auth.IsTrusted(from) && from != null)
+                    _ = UpdateForPeerAsync(from, msg["evenIfPrivate"] is JsonValue v && v.TryGetValue<bool>(out var anyway) && anyway);
                 break;
 
             case "update-status":
@@ -1414,11 +1487,7 @@ public partial class MainWindow : Window
                 Style = (Style)FindResource("RdMenuItem"),
                 ToolTip = "That PC downloads the new version and restarts the app (its viewers reconnect)",
             };
-            item.Click += (_, _) =>
-            {
-                _ws.SendJson(new JsonObject { ["type"] = "update-now", ["to"] = peerId });
-                Toast.Show($"Asked {row.Name} to update");
-            };
+            item.Click += (_, _) => AskToUpdate(peerId);
             menu.Items.Add(item);
         }
         if (row.ShowDisconnect)

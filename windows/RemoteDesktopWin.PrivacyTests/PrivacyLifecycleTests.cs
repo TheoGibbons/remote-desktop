@@ -987,6 +987,54 @@ internal static class PrivacyLifecycleTests
             {
                 Toast.Capture = Quiet;
             }
+
+            // Updating restarts the app, which takes the privacy screen down
+            // until the new copy puts it back. A device that asks for an update
+            // is told that this is the only reason it won't, and may ask again
+            // saying its user knows. The privacy screen is marked as up without
+            // being put on this screen, and nothing is downloaded: the updater
+            // is left as on a copy that can't update itself.
+            var updater = Field<Updater>(host, "_updater");
+            void SetBacking(object o, string property, object? value) => o.GetType()
+                .GetField($"<{property}>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(o, value);
+            const string asker = "update-asker";
+            trusted.Add(asker);
+            updater.OnLatest("99.0.0");
+            SetBacking(updater, "Target", "99.0.0");
+            SetBacking(updater, "State", Updater.Phase.Unsupported);
+            SetBacking(privacy, "IsEnabled", true);
+            try
+            {
+                List<JsonObject> Answers() => Outgoing().Where(m => m["type"]!.GetValue<string>() == "update-status").ToList();
+                Outgoing();
+                Invoke(host, "OnJson", new JsonObject { ["type"] = "update-now", ["from"] = asker });
+                var refusal = Answers();
+                if (refusal.Count != 1 || refusal[0]["to"]?.GetValue<string>() != asker ||
+                    refusal[0]["state"]?.GetValue<string>() != "failed" || refusal[0]["reason"]?.GetValue<string>() != MainWindow.PrivacyReason ||
+                    refusal[0]["error"]?.GetValue<string>() is not { } why || !why.Contains("privacy screen"))
+                    throw new Exception("A PC with its privacy screen up did not say that was why it would not update: " +
+                                        string.Join(" | ", refusal.Select(m => m.ToJsonString())));
+                Invoke(host, "OnJson", new JsonObject { ["type"] = "update-now", ["from"] = asker, ["evenIfPrivate"] = true });
+                var anyway = Answers();
+                if (anyway.Count != 2 || anyway[0]["state"]?.GetValue<string>() != "updating" ||
+                    anyway[1]["state"]?.GetValue<string>() != "failed" || anyway[1]["reason"] != null)
+                    throw new Exception("A device whose user said to update anyway was still refused for the privacy screen: " +
+                                        string.Join(" | ", anyway.Select(m => m.ToJsonString())));
+            }
+            finally
+            {
+                SetBacking(privacy, "IsEnabled", false);
+                trusted.Remove(asker);
+            }
+            // The updated copy is told to put the privacy screen back up, and only a copy an update started does so by itself.
+            if (MainWindow.RestartArguments(minimized: true, privacy: true) != "--restart --updated --minimized --privacy" ||
+                MainWindow.RestartArguments(minimized: false, privacy: false) != "--restart --updated")
+                throw new Exception("The updated copy is not started with what this one had: " +
+                                    MainWindow.RestartArguments(minimized: true, privacy: true));
+            if (!App.RestoresPrivacy(["--restart", "--updated", "--privacy"]) ||
+                App.RestoresPrivacy(["--privacy"]) || App.RestoresPrivacy(["--restart", "--updated"]))
+                throw new Exception("The privacy screen is put back up by a copy that no update started, or not by one that was");
+            Console.WriteLine("PASS: a PC with its privacy screen up updates only when the asker says so, and the new copy puts it back up");
         }
         finally
         {

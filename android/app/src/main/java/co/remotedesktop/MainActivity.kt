@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.journeyapps.barcodescanner.ScanContract
 import org.json.JSONObject
 import java.util.Date
@@ -36,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private val trustListener: () -> Unit = { refreshStatus() }
     private val captureStateListener: () -> Unit = { refreshStatus() }
     private val approvalListener: (PeerAuth.PendingRequest) -> Unit = { Ui.showApprovalDialog(this, it) }
+    private val privacyConfirm: (String, String) -> Unit = { peerId, name -> confirmUpdateDespitePrivacy(peerId, name) }
 
     // Another phone can be opened only once it says Allow other phones is on
     // there (`phones` in its file-access reply). Phones on older apps never reply.
@@ -124,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         PeerAuth.approvalListeners.add(approvalListener)
         PhoneScreenCapture.stateListeners.add(captureStateListener)
         ConnectionManager.jsonListeners.add(jsonListener)
+        AppUpdate.confirmDespitePrivacy = privacyConfirm
         // Ask again: Allow other phones may have changed while this was away.
         askedAt.clear()
         refreshStatus()
@@ -136,7 +139,27 @@ class MainActivity : AppCompatActivity() {
         PeerAuth.approvalListeners.remove(approvalListener)
         PhoneScreenCapture.stateListeners.remove(captureStateListener)
         ConnectionManager.jsonListeners.remove(jsonListener)
+        if (AppUpdate.confirmDespitePrivacy === privacyConfirm) AppUpdate.confirmDespitePrivacy = null
         peerRows.removeCallbacks(replyTimeout)
+    }
+
+    /** A PC this phone asked to update won't, only because its privacy screen
+     *  is up. Asks whether to update it anyway. */
+    private fun confirmUpdateDespitePrivacy(peerId: String, name: String) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle(getString(R.string.peer_pc_update_private_title, name))
+            .setMessage(getString(R.string.peer_pc_update_private_message, name))
+            .setPositiveButton(R.string.peer_pc_update_private_confirm) { _, _ ->
+                if (ConnectionManager.peers.none { it.id == peerId }) {
+                    android.widget.Toast.makeText(this, getString(R.string.peer_pc_update_gone, name),
+                        android.widget.Toast.LENGTH_LONG).show()
+                } else {
+                    AppUpdate.askToUpdate(peerId, evenIfPrivate = true)
+                }
+                refreshStatus()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
     }
 
     @SuppressLint("SetTextI18n")

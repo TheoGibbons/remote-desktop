@@ -83,11 +83,23 @@ object AppUpdate {
     private val asked = ConcurrentHashMap<String, Long>()
     private const val ASKED_FOR_MS = 3 * 60_000L
 
-    /** Asks a PC to download the newest release and restart into it. */
-    fun askToUpdate(peerId: String) {
+    /** Asks a PC to download the newest release and restart into it.
+     *  @param evenIfPrivate the user said to update it even though its privacy
+     *    screen is up, which uncovers its screen while the app restarts. */
+    fun askToUpdate(peerId: String, evenIfPrivate: Boolean = false) {
         asked[peerId] = SystemClock.elapsedRealtime()
-        ConnectionManager.sendJson(JSONObject().put("type", "update-now").put("to", peerId))
+        ConnectionManager.sendJson(JSONObject().put("type", "update-now").put("to", peerId)
+            .apply { if (evenIfPrivate) put("evenIfPrivate", true) })
     }
+
+    /** Set by the home screen while it is open: asks its user whether to
+     *  update a PC that won't only because its privacy screen is up. */
+    @Volatile var confirmDespitePrivacy: ((peerId: String, peerName: String) -> Unit)? = null
+
+    /** The PC won't update only because its privacy screen is up. PCs before
+     *  this was asked about say so in words only, and aren't asked again. */
+    fun refusedForPrivacy(msg: JSONObject): Boolean =
+        msg.optString("state") == "failed" && msg.optString("reason") == "privacy"
 
     fun isUpdating(peerId: String): Boolean =
         asked[peerId]?.let { SystemClock.elapsedRealtime() - it < ASKED_FOR_MS } == true

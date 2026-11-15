@@ -627,7 +627,13 @@ object ConnectionManager {
 
             // A PC this phone asked to update says how it's going.
             "update-status" -> AppUpdate.statusText(appContext, peerName(from), from, msg)?.let { text ->
-                main.post { android.widget.Toast.makeText(appContext, text, android.widget.Toast.LENGTH_LONG).show() }
+                val name = peerName(from)
+                main.post {
+                    // Held back only by its privacy screen: the home screen asks whether to update it anyway.
+                    val confirm = AppUpdate.confirmDespitePrivacy
+                    if (confirm != null && AppUpdate.refusedForPrivacy(msg)) confirm(from, name)
+                    else android.widget.Toast.makeText(appContext, text, android.widget.Toast.LENGTH_LONG).show()
+                }
                 setState(state) // the Update button comes back if it failed
             }
         }

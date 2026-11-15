@@ -21,6 +21,17 @@ public partial class App : Application
 
     public static bool JustUpdated { get; private set; }
 
+    /// <summary>Passed with --updated by a copy whose privacy screen was up as
+    /// it updated, so that this one puts it straight back up.</summary>
+    internal const string PrivacySwitch = "--privacy";
+
+    public static bool RestorePrivacy { get; private set; }
+
+    /// <summary>Only a copy that an update started puts the privacy screen up by itself.</summary>
+    internal static bool RestoresPrivacy(string[] args) =>
+        args.Contains(UpdatedSwitch, StringComparer.OrdinalIgnoreCase) &&
+        args.Contains(PrivacySwitch, StringComparer.OrdinalIgnoreCase);
+
     protected override void OnStartup(StartupEventArgs e)
     {
 #if DEBUG
@@ -68,6 +79,7 @@ public partial class App : Application
             a.Equals(MinimizedSwitch, StringComparison.OrdinalIgnoreCase) ||
             a.Equals("/minimized", StringComparison.OrdinalIgnoreCase));
         JustUpdated = e.Args.Contains(UpdatedSwitch, StringComparer.OrdinalIgnoreCase);
+        RestorePrivacy = RestoresPrivacy(e.Args);
         // The copy this one replaced, once it has exited.
         Updater.CleanUp(Environment.ProcessPath!);
 

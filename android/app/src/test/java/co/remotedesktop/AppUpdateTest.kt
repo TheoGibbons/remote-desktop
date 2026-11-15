@@ -26,6 +26,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowDialog
 import org.robolectric.shadows.ShadowToast
 
 /** The relay names the newest release. The phone says once when it is behind,
@@ -248,6 +249,59 @@ class AppUpdateTest {
         } finally {
             controller.pause().stop().destroy()
         }
+    }
+
+    @Test
+    fun aPcWithItsPrivacyScreenUpIsUpdatedOnlyOnceTheUserSaysSo() {
+        welcome("1.0.53", pc("1.0.50"))
+        trustedPeers.add("pc")
+        PeerAuth.onResultFrom("pc", "trusted")
+        val refused = """{"type":"update-status","state":"failed","reason":"privacy","version":"1.0.53","from":"pc",""" +
+            """"error":"Its privacy screen is on, and restarting would uncover the screen. Turn privacy off, then update."}"""
+        fun asks() = socket.messages.filter { it.optString("type") == "update-now" }
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            fun button() = activity.findViewById<LinearLayout>(R.id.peerRows).getChildAt(0)
+                .findViewById<MaterialButton>(R.id.peerUpdate)
+            button().performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse(asks().single().has("evenIfPrivate"))
+
+            // The PC says no only because of its privacy screen: the phone asks, rather than just saying so.
+            receive(refused)
+            val dialog = ShadowDialog.getLatestDialog() as androidx.appcompat.app.AlertDialog
+            assertTrue(dialog.isShowing)
+            assertEquals("Test PC's privacy screen is on. Updating restarts the app there, which uncovers its screen " +
+                "for a few seconds, until the new version puts the privacy screen back up.",
+                dialog.findViewById<TextView>(android.R.id.message)!!.text.toString())
+            assertNull(ShadowToast.getTextOfLatestToast())
+            assertTrue(button().isEnabled)
+
+            // Cancel: nothing more is sent.
+            dialog.getButton(android.content.DialogInterface.BUTTON_NEGATIVE).performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(1, asks().size)
+
+            // Update: asked again, saying the user knows.
+            button().performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            receive(refused)
+            (ShadowDialog.getLatestDialog() as androidx.appcompat.app.AlertDialog)
+                .getButton(android.content.DialogInterface.BUTTON_POSITIVE).performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(3, asks().size)
+            assertTrue(asks().last().optBoolean("evenIfPrivate"))
+            assertEquals("pc", asks().last().optString("to"))
+            assertEquals("Updating…", button().text.toString())
+        } finally {
+            controller.pause().stop().destroy()
+        }
+
+        // With the home screen closed there is nobody to ask, so it is only said.
+        receive(refused)
+        assertEquals("Test PC couldn't update: Its privacy screen is on, and restarting would uncover the screen. " +
+            "Turn privacy off, then update.", ShadowToast.getTextOfLatestToast())
     }
 
     @Test
