@@ -2,6 +2,7 @@ package co.remotedesktop
 
 import android.os.Bundle
 import android.view.View
+import android.widget.ImageView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.widget.doAfterTextChanged
 import com.google.android.material.appbar.MaterialToolbar
@@ -17,6 +18,7 @@ class SessionIdActivity : AppCompatActivity() {
     private lateinit var sessionKeyBox: TextInputEditText
     private lateinit var sessionKeyInput: TextInputLayout
     private lateinit var saveBtn: MaterialButton
+    private lateinit var showQrBtn: MaterialButton
 
     private val qrScanner = registerForActivityResult(ScanContract()) { result ->
         result.contents?.let {
@@ -57,7 +59,26 @@ class SessionIdActivity : AppCompatActivity() {
         findViewById<MaterialButton>(R.id.scanQrBtn).setOnClickListener {
             qrScanner.launch(SessionPairing.scanOptions())
         }
+        showQrBtn = findViewById(R.id.showQrBtn)
+        showQrBtn.setOnClickListener { showQr() }
         refreshInput()
+    }
+
+    /** Lets another phone join by scanning this one, as it would the desktop
+     *  app's QR window. Shows the saved settings, the ones this phone uses. */
+    private fun showQr() {
+        val payload = SessionPairing.payload(SessionPairing.Settings(prefs.sessionKey, prefs.serverUrl))
+        val screen = resources.displayMetrics
+        val content = layoutInflater.inflate(R.layout.dialog_session_qr, null)
+        content.findViewById<ImageView>(R.id.qrImage).setImageBitmap(
+            SessionPairing.qrBitmap(payload, (minOf(screen.widthPixels, screen.heightPixels) * 0.7f).toInt()))
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.show_qr_title)
+            .setView(content)
+            .setPositiveButton(R.string.close, null)
+            .show()
+        // A bright screen scans far more reliably, as with boarding passes.
+        dialog.window?.let { it.attributes = it.attributes.apply { screenBrightness = 1f } }
     }
 
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
@@ -69,6 +90,8 @@ class SessionIdActivity : AppCompatActivity() {
         val key = sessionKeyBox.text.toString().trim()
         sessionKeyInput.error = if (key.isBlank()) getString(R.string.session_id_required) else null
         saveBtn.visibility = if (key != prefs.sessionKey) View.VISIBLE else View.GONE
+        // An unsaved edit would otherwise show the old ID; Save & connect sits just above.
+        showQrBtn.isEnabled = prefs.sessionKey.isNotBlank() && key == prefs.sessionKey
     }
 
     private fun saveAndConnect() {

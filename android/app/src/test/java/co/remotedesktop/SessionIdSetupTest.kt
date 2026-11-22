@@ -1,14 +1,20 @@
 package co.remotedesktop
 
 import android.content.Context
+import android.graphics.drawable.BitmapDrawable
 import android.os.Looper
 import android.os.Environment
 import android.view.View
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.HybridBinarizer
+import com.google.zxing.qrcode.QRCodeReader
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Before
@@ -160,6 +166,45 @@ class SessionIdSetupTest {
             assertEquals(validKey, prefs.sessionKey)
         } finally {
             controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun showQrWaitsForASavedIdAndShowsACodeOtherPhonesScanIntoTheSameSettings() {
+        val controller = Robolectric.buildActivity(SessionIdActivity::class.java).setup()
+        try {
+            assertFalse(controller.get().findViewById<MaterialButton>(R.id.showQrBtn).isEnabled)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+
+        val server = "wss://relay.example/ws"
+        prefs.sessionKey = validKey
+        prefs.serverUrl = server // Opening the screen does not connect; only saving does.
+        val shown = Robolectric.buildActivity(SessionIdActivity::class.java).setup()
+        try {
+            val activity = shown.get()
+            val box = activity.findViewById<TextInputEditText>(R.id.sessionKeyBox)
+            val showQr = activity.findViewById<MaterialButton>(R.id.showQrBtn)
+            assertTrue(showQr.isEnabled)
+            box.setText("Q9wE2rT7yU4iO8pA6sD1fG5h")
+            assertFalse("an unsaved edit would show the old ID", showQr.isEnabled)
+            box.setText(validKey)
+            assertTrue(showQr.isEnabled)
+
+            showQr.performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            val dialog = ShadowDialog.getLatestDialog() as AlertDialog
+            assertTrue(dialog.isShowing)
+            assertEquals(1f, dialog.window!!.attributes.screenBrightness)
+            val bitmap = (dialog.findViewById<ImageView>(R.id.qrImage)!!.drawable as BitmapDrawable).bitmap
+            val pixels = IntArray(bitmap.width * bitmap.height)
+            bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+            val scanned = QRCodeReader().decode(BinaryBitmap(HybridBinarizer(
+                RGBLuminanceSource(bitmap.width, bitmap.height, pixels)))).text
+            assertEquals(SessionPairing.Settings(validKey, server), SessionPairing.parse(scanned))
+        } finally {
+            shown.pause().stop().destroy()
         }
     }
 

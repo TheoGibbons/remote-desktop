@@ -64,7 +64,8 @@ consent, file transfers, and rotation on an Android 16 device or emulator.
    fills in the server URL and session ID and connects. (Or type the session ID
    under **Session ID** / tap **Generate new session ID** for a strong one and
    copy it to the PC. The server URL lives in **⋮ → Settings → Server URL**.)
-   The **Session ID** screen also has **Scan QR code** and **Save & connect**.
+   The **Session ID** screen also has **Scan QR code**, **Save & connect**, and
+   **Show QR code**, which another phone scans to join the same session.
    If no ID is saved, the main-screen card shows a red message asking you to add one.
 3. Settings persist, a small foreground service keeps the session alive in the
    background (and after reboots and app updates), and the app auto-connects

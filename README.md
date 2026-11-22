@@ -288,7 +288,8 @@ Pairing is the "set up once" part:
    - the server URL (`ws://host:8090/ws`, or `wss://…` behind TLS),
    - the **same long session key** (tap *Generate* on one device, copy it to the other —
      or click **QR code** on the PC and tap **Scan QR** on the phone to copy the
-     server URL + key in one scan),
+     server URL + key in one scan; a phone that is already set up shows the same
+     code under *Session ID → Show QR code*),
    - a device name.
 3. Press **Save & Connect**. That's it — forever. Both apps auto-reconnect with
    backoff and re-send the key on their own. There is **no login, no token

@@ -84,6 +84,16 @@
                         android:text="@string/scan_qr_code"
                         app:icon="@drawable/ic_qr_code"
                         app:iconGravity="textStart" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/showQrBtn"
+                        style="@style/Widget.Material3.Button.OutlinedButton.Icon"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="@string/show_qr_code"
+                        app:icon="@drawable/ic_qr_code"
+                        app:iconGravity="textStart" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
         </LinearLayout>
