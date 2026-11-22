@@ -210,7 +210,16 @@ on their way fail with a **Retry**.
     type with your real keyboard (shortcuts, modifiers and arrows included) while
     the window is focused. A **Ctrl+Alt+Del** button covers the one combo Windows
     won't let apps send directly. The remote PC must have *Allow paired devices…*
-    checked.
+    checked. **Zoom** in the toolbar: **Fit** shows the whole desktop, **1:1**
+    one remote pixel per pixel of this screen, and the slider anything between
+    and up to 400%. The remote PC sends just the part on show, at the detail this
+    screen can use, so text stays sharp. Zoomed in, push the pointer against an
+    edge of the picture to see more that way: after a moment the picture pans,
+    faster the nearer the edge; once there is no more that way the pointer moves
+    on out of the window. **Full screen** covers the whole monitor; its toolbar
+    comes down when the pointer reaches the middle of the top edge, and
+    **Ctrl+Alt+Break** switches it on and off. In full screen the Windows key,
+    Alt+Tab, Alt+Esc and Ctrl+Esc go to the remote PC.
   - **a phone** → click = tap, press-and-drag = real drag, hold in place =
     long-press, mouse wheel = pinch zoom in/out, right-click = Back,
     middle-click = Home. If the phone shows its own navigation buttons,

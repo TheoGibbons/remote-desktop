@@ -1115,6 +1115,108 @@ internal static class PrivacyLifecycleTests
                 SetBacking(ws, "RelayAddressesBinary", false);
                 Console.WriteLine("PASS: approved viewers keep the screen while a device waits for approval, on a relay that addresses frames, and a prompt goes once it can do nothing");
             }
+
+            // The window on another PC, zoomed into two 4K screens side by
+            // side. It asks for the part on show, at the pixels it takes here,
+            // and draws what comes back where it belongs: a pan carries what
+            // both crops share, and a jump it can't carry waits for a full
+            // picture, with the old one kept as the backdrop. Never on screen:
+            // the view's size is set as if it had been laid out.
+            {
+                var zoomed = new PcViewWindow(ws, "zoom-pc", "Zoom PC");
+                try
+                {
+                    Field<PcViewport>(zoomed, "_viewport").SetView(1600, 900);
+                    List<JsonObject> Asked() => Outgoing().Where(m => m["type"]?.GetValue<string>() == "view-region").ToList();
+                    void AskNow() => Invoke(zoomed, "Ask");
+                    Outgoing();
+                    zoomed.OnScreenInfo(1600, 450, 7680, 2160);
+                    AskNow();
+                    var asked = Asked();
+                    if (asked.Count != 1 || asked[0]["to"]?.GetValue<string>() != "zoom-pc" || asked[0]["w"]?.GetValue<double>() != 1 ||
+                        asked[0]["outW"]?.GetValue<int>() != 1600 || asked[0]["outH"]?.GetValue<int>() != 450)
+                        throw new Exception("Fitting, the PC was not asked for its whole desktop at the size it is shown: " +
+                                            string.Join(" ", asked.Select(m => m.ToJsonString())));
+                    AskNow();
+                    if (Asked().Count != 0) throw new Exception("The PC was asked again for what it was just asked for");
+                    Invoke(zoomed, "ActualSize_Click", zoomed, new RoutedEventArgs());
+                    AskNow();
+                    asked = Asked();
+                    if (asked.Count != 1 || asked[0]["outW"]?.GetValue<int>() != 2080 || asked[0]["outH"]?.GetValue<int>() != 1170)
+                        throw new Exception("At 1:1 the PC was not asked for the part on show at its own detail: " +
+                                            string.Join(" ", asked.Select(m => m.ToJsonString())));
+
+                    // Pictures at half the desktop's detail: left half red, right half green.
+                    byte[] Jpeg(int w, int h, Action<System.Drawing.Graphics> paint)
+                    {
+                        using var bmp = new System.Drawing.Bitmap(w, h);
+                        using (var g = System.Drawing.Graphics.FromImage(bmp)) paint(g);
+                        using var ms = new MemoryStream();
+                        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                        return ms.ToArray();
+                    }
+                    byte[] Patch(uint seq, int flags, (int X, int Y, int W, int H) region, params (int X, int Y, int W, int H, byte[] Jpeg)[] tiles)
+                    {
+                        var b = new List<byte> { 3 };
+                        void U16(int v) { b.Add((byte)(v >> 8)); b.Add((byte)v); }
+                        void U32(long v) { b.Add((byte)(v >> 24)); b.Add((byte)(v >> 16)); b.Add((byte)(v >> 8)); b.Add((byte)v); }
+                        U32(seq); b.Add((byte)flags); U16(1040); U16(585); U16(tiles.Length);
+                        U16(region.X); U16(region.Y); U16(region.W); U16(region.H);
+                        foreach (var t in tiles) { U16(t.X); U16(t.Y); U16(t.W); U16(t.H); U32(t.Jpeg.Length); b.AddRange(t.Jpeg); }
+                        return b.ToArray();
+                    }
+                    (byte B, byte G, byte R) Pixel(int x, int y)
+                    {
+                        var px = new byte[4];
+                        Field<System.Windows.Media.Imaging.WriteableBitmap>(zoomed, "_compose").CopyPixels(new Int32Rect(x, y, 1, 1), px, 4, 0);
+                        return (px[0], px[1], px[2]);
+                    }
+                    static bool Red((byte B, byte G, byte R) p) => p.R > 200 && p.G < 60 && p.B < 60;
+                    static bool Green((byte B, byte G, byte R) p) => p.G > 100 && p.R < 60 && p.B < 60;
+                    static bool Blue((byte B, byte G, byte R) p) => p.B > 200 && p.R < 60 && p.G < 60;
+
+                    var first = Jpeg(1040, 585, g =>
+                    {
+                        g.FillRectangle(System.Drawing.Brushes.Red, 0, 0, 520, 585);
+                        g.FillRectangle(System.Drawing.Brushes.Green, 520, 0, 520, 585);
+                    });
+                    zoomed.OnPatch(Patch(1, 1 | 2, (2800, 496, 2080, 1170), (0, 0, 1040, 585, first)));
+                    if (!Red(Pixel(100, 300)) || !Green(Pixel(900, 300))) throw new Exception("setup: the first picture was not drawn");
+                    // The crop moves 40 desktop pixels right: 20 of the picture's. Only the new strip comes.
+                    var strip = Jpeg(20, 585, g => g.FillRectangle(System.Drawing.Brushes.Blue, 0, 0, 20, 585));
+                    zoomed.OnPatch(Patch(2, 2 | 4, (2840, 496, 2080, 1170), (1020, 0, 20, 585, strip)));
+                    if (!Red(Pixel(480, 300)) || !Green(Pixel(520, 300)) || !Green(Pixel(1000, 300)) || !Blue(Pixel(1030, 300)))
+                        throw new Exception($"A pan was not carried across: {Pixel(480, 300)} {Pixel(520, 300)} {Pixel(1000, 300)} {Pixel(1030, 300)}");
+                    if (Field<Int32Rect>(zoomed, "_composeRegion") != new Int32Rect(2840, 496, 2080, 1170))
+                        throw new Exception("After a pan the picture is not where the PC said it is");
+                    if (Outgoing().Any(m => m["type"]?.GetValue<string>() == "request-keyframe"))
+                        throw new Exception("A pan the window could carry asked for a full picture");
+
+                    // A jump elsewhere, not a full picture: nothing is drawn there until one comes.
+                    zoomed.OnPatch(Patch(3, 2, (0, 0, 2080, 1170), (0, 0, 20, 585, strip)));
+                    if (!Outgoing().Any(m => m["type"]?.GetValue<string>() == "request-keyframe"))
+                        throw new Exception("A jump the window can't carry did not ask for a full picture");
+                    if (Field<Int32Rect>(zoomed, "_composeRegion") != new Int32Rect(2840, 496, 2080, 1170) || !Red(Pixel(480, 300)))
+                        throw new Exception("A jump drew over the picture before its full picture came");
+                    if (((System.Windows.Controls.Image)zoomed.FindName("BackdropImage")).Source == null)
+                        throw new Exception("The picture being left was not kept as the backdrop");
+                    zoomed.OnPatch(Patch(4, 1 | 2, (0, 0, 2080, 1170), (0, 0, 1040, 585, first)));
+                    if (Field<Int32Rect>(zoomed, "_composeRegion") != new Int32Rect(0, 0, 2080, 1170) || !Green(Pixel(900, 300)))
+                        throw new Exception("The full picture of the new place was not drawn there");
+
+                    // The pointer in the middle of the view is in the middle of the desktop.
+                    var mid = typeof(PcViewWindow).GetMethod("Normalize", BindingFlags.Instance | BindingFlags.NonPublic)!
+                        .Invoke(zoomed, [new System.Windows.Point(800, 450)]);
+                    if (mid is not ValueTuple<double, double> n || Math.Abs(n.Item1 - 0.5) > 1e-9 || Math.Abs(n.Item2 - 0.5) > 1e-9)
+                        throw new Exception("At 1:1 the middle of the view is not the middle of the desktop: " + mid);
+                    Console.WriteLine("PASS: the window on another PC asks for the part on show, carries a pan across, and waits for a full picture after a jump");
+                }
+                finally
+                {
+                    zoomed.Close();
+                    Outgoing();
+                }
+            }
         }
         finally
         {

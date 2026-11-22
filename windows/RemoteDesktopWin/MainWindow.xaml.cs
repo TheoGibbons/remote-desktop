@@ -1246,7 +1246,8 @@ public partial class MainWindow : Window
                     _phoneView.OnScreenInfo(siW, siH, msg["typing"]?.GetValue<bool>() ?? false,
                         // Whether it can be asked for smooth video. Only an approved phone's word puts a row in the menu.
                         _auth.IsTrusted(from) && msg["smooth"] is JsonValue smooth && smooth.TryGetValue<string>(out var word) ? word : null);
-                if (_pcView != null && _pcView.IsOn(from)) _pcView.OnScreenInfo(siW, siH);
+                if (_pcView != null && _pcView.IsOn(from))
+                    _pcView.OnScreenInfo(siW, siH, msg["desktopWidth"]?.GetValue<int>() ?? 0, msg["desktopHeight"]?.GetValue<int>() ?? 0);
                 break;
 
             case "phone-state":

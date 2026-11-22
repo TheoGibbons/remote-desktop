@@ -11,21 +11,47 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <DockPanel Grid.Row="0" Background="#1e1e1e" LastChildFill="False">
-            <Button Content="Ctrl+Alt+Del" DockPanel.Dock="Left" Margin="6,4" Padding="10,4" Click="Cad_Click"/>
-            <Button x:Name="CopyButton" Content="Copy to this PC" DockPanel.Dock="Left" Margin="0,4,6,4" Padding="10,4"
-                    Click="Copy_Click" ToolTip="Copy what's selected on the remote PC onto this PC's clipboard"/>
-            <Button x:Name="PasteButton" Content="Paste from this PC" DockPanel.Dock="Left" Margin="0,4,6,4" Padding="10,4"
-                    Click="Paste_Click" ToolTip="Paste this PC's clipboard into the remote PC"/>
-            <TextBlock x:Name="HintText" DockPanel.Dock="Left" Foreground="#aaa"
-                       VerticalAlignment="Center" Margin="8,0"
-                       Text="Your keyboard and mouse control the remote PC while this window is focused."/>
-        </DockPanel>
+        <!-- The remote desktop, drawn where the zoom and pan put it. A background
+             so the area round a desktop that does not fill it takes the mouse too.
+             The backdrop is what was seen before, grey and dimmed, for the parts
+             the stream is not covering just now. -->
+        <Canvas x:Name="ScreenArea" Grid.Row="1" ClipToBounds="True" Background="#111"
+                MouseDown="Screen_MouseDown" MouseUp="Screen_MouseUp" MouseMove="Screen_MouseMove"
+                MouseWheel="Screen_MouseWheel" MouseLeave="Screen_MouseLeave"
+                SizeChanged="ScreenArea_SizeChanged">
+            <Image x:Name="BackdropImage" Stretch="Fill" Opacity="0.45" IsHitTestVisible="False"
+                   RenderOptions.BitmapScalingMode="Linear"/>
+            <Image x:Name="ScreenImage" Stretch="Fill" Focusable="False" IsHitTestVisible="False"
+                   RenderOptions.BitmapScalingMode="Linear"/>
+        </Canvas>
 
-        <!-- Focusable=False so key events bubble to the window's Preview handlers
-             instead of being consumed by focus/navigation on the image. -->
-        <Image x:Name="ScreenImage" Grid.Row="1" Stretch="Uniform" Focusable="False"
-               MouseDown="Screen_MouseDown" MouseUp="Screen_MouseUp"
-               MouseMove="Screen_MouseMove" MouseWheel="Screen_MouseWheel"/>
+        <!-- Above the screen in full screen, where it slides down from the top middle. -->
+        <Border x:Name="ToolbarHost" Grid.Row="0" Background="#1e1e1e" MouseLeave="Toolbar_MouseLeave">
+            <DockPanel>
+                <Button Content="Ctrl+Alt+Del" DockPanel.Dock="Left" Margin="6,4" Padding="10,4" Click="Cad_Click"/>
+                <Button x:Name="CopyButton" Content="Copy to this PC" DockPanel.Dock="Left" Margin="0,4,6,4" Padding="10,4"
+                        Click="Copy_Click" ToolTip="Copy what's selected on the remote PC onto this PC's clipboard"/>
+                <Button x:Name="PasteButton" Content="Paste from this PC" DockPanel.Dock="Left" Margin="0,4,6,4" Padding="10,4"
+                        Click="Paste_Click" ToolTip="Paste this PC's clipboard into the remote PC"/>
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="6,0">
+                    <TextBlock Text="Zoom" Foreground="#aaa" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Button x:Name="FitButton" Content="Fit" Margin="0,4" Padding="10,4" Click="Fit_Click"
+                            ToolTip="Show the whole remote desktop"/>
+                    <!-- Never takes the keyboard: keys go to the remote PC. -->
+                    <Slider x:Name="ZoomSlider" Width="140" Minimum="0" Maximum="1" Margin="8,0,6,0"
+                            VerticalAlignment="Center" Focusable="False" IsMoveToPointEnabled="True"
+                            ValueChanged="ZoomSlider_ValueChanged"
+                            ToolTip="Zoomed in, push the pointer against an edge of the picture to see more"/>
+                    <TextBlock x:Name="ZoomText" Width="40" Foreground="#ddd" VerticalAlignment="Center" Text="100%"/>
+                    <Button x:Name="ActualSizeButton" Content="1:1" Margin="2,4,0,4" Padding="10,4" Click="ActualSize_Click"
+                            ToolTip="One pixel of the remote PC for each pixel of this screen"/>
+                </StackPanel>
+                <Button x:Name="FullScreenButton" Content="Full screen" DockPanel.Dock="Left" Margin="6,4" Padding="10,4"
+                        Click="FullScreen_Click" ToolTip="Ctrl+Alt+Break also switches full screen on and off"/>
+                <TextBlock x:Name="HintText" Foreground="#aaa" VerticalAlignment="Center" Margin="8,0"
+                           TextTrimming="CharacterEllipsis"
+                           Text="Your keyboard and mouse control the remote PC while this window is focused."/>
+            </DockPanel>
+        </Border>
     </Grid>
 </Window>

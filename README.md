@@ -260,6 +260,9 @@ publish alongside the relay.
   mouse (move / click / scroll), and your **physical keyboard** (shortcuts,
   modifiers, arrows, typing) while the view window is focused, plus a
   **Ctrl+Alt+Del** button. Uses the existing protocol unchanged.
+- ✅ **Zoom** (Fit, 1:1, or a slider up to 400%) with the part on show streamed at
+  full detail, panning by pushing the pointer against an edge, and **full
+  screen**, where the Windows key and Alt+Tab go to the remote PC
 - ✅ **Copy to this PC** brings the other PC's selection onto this PC's clipboard,
   and **Paste from this PC** pastes this PC's clipboard over there
 

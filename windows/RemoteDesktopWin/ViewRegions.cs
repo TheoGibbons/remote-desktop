@@ -19,8 +19,8 @@ public readonly record struct ViewRegion(double X, double Y, double W, double H,
 /// it can actually use instead.
 ///
 /// Region streaming is only used when **every** viewer has asked for one. A
-/// viewer that never sends `view-region` (an older build, or the Windows PC
-/// viewer) keeps the whole-desktop stream it expects, and its presence puts
+/// viewer that never sends `view-region` (an older build, such as a Windows PC
+/// viewer before v1.0.60) keeps the whole-desktop stream it expects, and its presence puts
 /// everyone back on that path — patches are broadcast, so there is one stream
 /// for the session and it has to be one that every viewer can read.
 /// </summary>

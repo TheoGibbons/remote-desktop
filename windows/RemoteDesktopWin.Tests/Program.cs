@@ -10,6 +10,8 @@ internal static class Program
     private static async Task Main()
     {
         CheckFrameMailbox();
+        CheckViewport();
+        CheckFullScreenKeys();
 
         var ws = new WsClient();
         var streamer = new ScreenStreamer(ws);
@@ -92,6 +94,105 @@ internal static class Program
         batches.Dequeue()();
         if (!drawn.SequenceEqual(new byte[] { 1, 2 })) throw new Exception("The later frame should be drawn next");
         Console.WriteLine("PASS: frames arriving during a draw wait for the next batch");
+    }
+
+    /// <summary>Two 4K screens side by side, viewed in a 1600x900 window.</summary>
+    private static void CheckViewport()
+    {
+        static void Near(double actual, double expected, string what)
+        {
+            if (Math.Abs(actual - expected) > 1e-6 * Math.Max(1, Math.Abs(expected)))
+                throw new Exception($"{what}: {actual}, expected {expected}");
+        }
+
+        var v = new PcViewport();
+        v.SetView(1600, 900);
+        v.SetDesktop(7680, 2160);
+        Near(v.Zoom, 1600.0 / 7680, "fitting zoom");
+        var whole = v.Want()!.Value;
+        if (whole is not { X: 0, Y: 0, W: 1, H: 1, OutW: 1600, OutH: 450 })
+            throw new Exception("Fitting, the whole desktop was not asked for at the pixels it takes here: " + whole);
+        if (v.EdgeVelocity(0, 450, 30) != (0, 0)) throw new Exception("The whole desktop on show still panned");
+        Console.WriteLine("PASS: fitting, the whole desktop is asked for at the size it is shown, and nothing pans");
+
+        v.ZoomAroundCentre(1);
+        Near(v.X, 3840 - 800, "1:1 left");
+        Near(v.Y, 1080 - 450, "1:1 top");
+        var c = v.ToDesktop(800, 450)!.Value;
+        Near(c.X, 0.5, "middle of the view, across");
+        Near(c.Y, 0.5, "middle of the view, down");
+        var one = v.Want()!.Value;
+        Near(one.W * 7680, 1600 * 1.3, "asked-for width at 1:1, with its margin");
+        Near(one.H * 2160, 900 * 1.3, "asked-for height at 1:1, with its margin");
+        if (one.OutW != 2080 || one.OutH != 1170) throw new Exception($"At 1:1 the pixels asked for are not the desktop's own: {one}");
+        var before = v.ToDesktop(300, 200)!.Value;
+        v.ZoomTo(2, 300, 200);
+        var after = v.ToDesktop(300, 200)!.Value;
+        Near(after.X, before.X, "point under the pointer while zooming, across");
+        Near(after.Y, before.Y, "point under the pointer while zooming, down");
+        v.ZoomAroundCentre(PcViewport.MaxZoom);
+        var close = v.Want()!.Value;
+        if (close.OutW > Math.Floor(close.W * 7680) || close.OutH > Math.Floor(close.H * 2160))
+            throw new Exception("Zoomed past 1:1, more pixels were asked for than the desktop holds: " + close);
+        Console.WriteLine("PASS: 1:1 and closer ask for the part on show at the desktop's own detail, and zooming keeps the point under the pointer");
+
+        v.ZoomAroundCentre(1);
+        var (left, still) = v.EdgeVelocity(0, 450, 30);
+        Near(left, -PcViewport.MaxPanSpeed, "speed right at the left edge");
+        Near(still, 0, "up or down at the middle of the left edge");
+        Near(v.EdgeVelocity(15, 450, 30).X, -PcViewport.MaxPanSpeed / 4, "speed halfway into the edge zone");
+        if (v.EdgeVelocity(-40, 450, 30).X != -PcViewport.MaxPanSpeed) throw new Exception("A pointer dragged past the edge did not pan at full speed");
+        if (v.EdgeVelocity(100, 450, 30) != (0, 0)) throw new Exception("Away from the edges the picture panned");
+        int steps = 0;
+        while (v.PanBy(-500, 0)) if (++steps > 100) throw new Exception("Panning left never stopped");
+        Near(v.X, 0, "panned to the left end");
+        if (v.EdgeVelocity(0, 450, 30).X != 0) throw new Exception("With nothing left to the left, the left edge still held the pointer");
+        if (v.EdgeVelocity(1599, 450, 30).X <= 0) throw new Exception("At the left end the right edge did not pan");
+        if (v.EdgeVelocity(800, 0, 30, upAllowed: false).Y != 0) throw new Exception("The top edge panned where it was kept for the toolbar");
+        if (v.EdgeVelocity(800, 0, 30).Y >= 0) throw new Exception("The top edge did not pan up");
+        var atEdge = v.Want()!.Value;
+        Near(atEdge.X, 0, "asked-for left at the left end");
+        Near(atEdge.W * 7680, 2080, "asked-for width at the left end: slid inside, not cut short");
+        Console.WriteLine("PASS: the edges pan faster the nearer the pointer, and let it go once there is no more that way");
+
+        double sx = atEdge.X * 7680, sy = atEdge.Y * 2160, sw = atEdge.W * 7680, sh = atEdge.H * 2160;
+        if (v.NeedsAsking(sx, sy, sw, sh, 1)) throw new Exception("The PC was asked again for what it already streams");
+        v.PanBy(400, 0);
+        if (v.NeedsAsking(sx, sy, sw, sh, 1)) throw new Exception("A pan inside the margin asked the PC again");
+        v.PanBy(200, 0);
+        if (!v.NeedsAsking(sx, sy, sw, sh, 1)) throw new Exception("A pan past what is streamed did not ask the PC again");
+        if (!v.NeedsAsking(0, 0, 7680, 2160, 1.2)) throw new Exception("A zoom well away from the one asked for did not ask again");
+        if (v.NeedsAsking(0, 0, 7680, 2160, 1.05)) throw new Exception("A small change of zoom asked the PC again");
+        Console.WriteLine("PASS: the PC is asked again only once the view leaves what it streams, or the zoom has moved well away");
+
+        v.Fit();
+        v.SetView(1200, 900);
+        Near(v.Zoom, 1200.0 / 7680, "fitting after the window shrank");
+        v.ZoomAroundCentre(1);
+        v.SetView(1600, 900);
+        Near(v.Zoom, 1, "zoom kept when the window grows");
+        var small = new PcViewport();
+        small.SetView(1600, 900);
+        small.SetDesktop(800, 600);
+        Near(small.Zoom, 1.5, "a small desktop is fitted");
+        if (small.ToDesktop(10, 450) != null) throw new Exception("The bar beside a small desktop was taken for part of it");
+        if (small.ToDesktop(800, 450) is not { } mid || Math.Abs(mid.X - 0.5) > 1e-9) throw new Exception("A small desktop is not centred");
+        Console.WriteLine("PASS: fitting follows the window, a chosen zoom stays, and a small desktop is centred with nothing beside it");
+    }
+
+    private static void CheckFullScreenKeys()
+    {
+        var cases = new (uint Vk, bool Alt, bool Ctrl, string? Code)[]
+        {
+            (0x5B, false, false, "WIN"), (0x5C, false, false, "WIN"), (0x5B, true, true, "WIN"),
+            (0x09, true, false, "TAB"), (0x09, false, false, null), (0x09, false, true, null),
+            (0x1B, true, false, "ESC"), (0x1B, false, true, "ESC"), (0x1B, false, false, null),
+            (0x41, true, true, null), (0x73, true, false, null), (0x20, true, false, null),
+        };
+        foreach (var (vk, alt, ctrl, code) in cases)
+            if (FullScreenKeys.Takes(vk, alt, ctrl) != code)
+                throw new Exception($"Key 0x{vk:X2} (alt {alt}, ctrl {ctrl}) taken as {FullScreenKeys.Takes(vk, alt, ctrl) ?? "nothing"}, expected {code ?? "nothing"}");
+        Console.WriteLine("PASS: full screen takes the Windows key, Alt+Tab, Alt+Esc and Ctrl+Esc from Windows, and nothing else");
     }
 
     private static async Task ExpectFrame(WsClient ws, bool keyframe, int timeoutMs = 2_000)

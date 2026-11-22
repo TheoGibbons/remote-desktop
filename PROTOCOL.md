@@ -827,9 +827,9 @@ because past 1:1 the extra pixels are interpolation rather than detail.
 
 Region mode is used only while **every** viewer has requested a region. All
 viewers get the same patches, so a session has one stream and it must be one
-that every viewer can read: a viewer that never sends `view-region` (an older build, or the
-Windows PC viewer) keeps the whole-desktop stream, and its presence puts the
-session back on that path for everyone. With several region viewers the host
+that every viewer can read: a viewer that never sends `view-region` (an older build;
+the Windows PC viewer sends one since v1.0.60) keeps the whole-desktop stream,
+and its presence puts the session back on that path for everyone. With several region viewers the host
 streams the union of their requests at the densest resolution any of them asked
 for.
 

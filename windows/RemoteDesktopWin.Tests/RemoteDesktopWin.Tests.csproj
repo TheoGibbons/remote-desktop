@@ -12,5 +12,8 @@
     <Compile Include="../RemoteDesktopWin/ScreenStreamer.cs" Link="ScreenStreamer.cs" />
     <Compile Include="../RemoteDesktopWin/ViewRegions.cs" Link="ViewRegions.cs" />
     <Compile Include="../RemoteDesktopWin/FrameMailbox.cs" Link="FrameMailbox.cs" />
+    <!-- The PC viewer's zoom and pan arithmetic, and which keys full screen takes from Windows. -->
+    <Compile Include="../RemoteDesktopWin/PcViewport.cs" Link="PcViewport.cs" />
+    <Compile Include="../RemoteDesktopWin/FullScreenKeys.cs" Link="FullScreenKeys.cs" />
   </ItemGroup>
 </Project>
