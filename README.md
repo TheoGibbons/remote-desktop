@@ -385,8 +385,9 @@ version, commit, and tagging steps.
   device code to compare. Approved devices reconnect silently forever; each app
   has a devices list to **revoke** one (it must be re-approved) or disconnect it.
   Changing the session key resets all approvals. While an *unapproved* device is
-  in the session, hosts also stop streaming/serving files entirely, since those
-  frames are broadcast. See [PROTOCOL.md](PROTOCOL.md#device-authentication).
+  in the session, hosts stop serving files, and stream only to approved viewers
+  (each frame is addressed to them; behind an older relay, which broadcasts
+  frames, streaming stops too). See [PROTOCOL.md](PROTOCOL.md#device-authentication).
 - **End-to-end encrypted.** The raw session key **never leaves your devices**.
   Each device derives (HKDF-SHA256) a *pairing id* it sends to the server and a
   separate *encryption key* it keeps. All screen frames, input, file names and

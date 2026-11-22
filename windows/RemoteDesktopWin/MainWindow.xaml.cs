@@ -17,6 +17,8 @@ public partial class MainWindow : Window
     private readonly PeerAuth _auth;
     private readonly PrivacyOverlayManager _privacy;
     private readonly HashSet<string> _autoUnprivacyViewers = new();
+    // The approve/deny prompts showing, by the fingerprint each one asks about.
+    private readonly Dictionary<string, ApprovalPrompt> _approvalPrompts = new();
     private readonly PhoneFeed _phoneFeed;
     // The phone picture that is decoded and waiting to be shown, with the
     // window it was decoded for. Only the newest is kept.
@@ -154,13 +156,19 @@ public partial class MainWindow : Window
             if (!streaming) RestorePrivacyForEndedViewers();
         };
 
-        // The stream is broadcast and every key holder can decrypt it, so it
-        // pauses whenever an unapproved device shares the session (checked on
-        // the capture thread — use the persisted consent flag, not the CheckBox).
-        _streamer.Gate = () => _settings.AllowRemoteControl && _auth.AllPeersTrusted;
-        // BeginInvoke: the prompt is modal, so it opens after OnJson returns
-        // rather than from inside it.
+        // Checked on the capture thread: use the persisted consent flag, not the CheckBox.
+        _streamer.Gate = () => _settings.AllowRemoteControl && StreamStaysWithViewers;
+        _ws.MayBroadcastVideo = () => _auth.AllPeersTrusted;
+        // Viewers are only ever added once approved; one whose approval goes stops getting the stream.
+        _auth.Changed += () =>
+        {
+            foreach (var viewer in _streamer.Regions.Viewers)
+                if (!_auth.IsTrusted(viewer)) _streamer.Regions.RemoveViewer(viewer);
+        };
+        // BeginInvoke: the prompt brings this window up, which is no business of OnJson's.
         _auth.ApprovalNeeded += req => Dispatcher.BeginInvoke(() => ShowApprovalPrompt(req));
+        // A prompt whose device left, or was answered in the devices list, would do nothing.
+        _auth.Changed += CloseAnsweredPrompts;
         _auth.Changed += RefreshDeviceList;
         // A device that proves its key and is approved may be the one a window is waiting for.
         _auth.Changed += FindDevicesAgain;
@@ -1169,7 +1177,7 @@ public partial class MainWindow : Window
                 {
                     if (enabled)
                     {
-                        if (!_auth.AllPeersTrusted || !_streamer.IsStreaming || !_streamer.Regions.IsViewing(from))
+                        if (!StreamStaysWithViewers || !_streamer.IsStreaming || !_streamer.Regions.IsViewing(from))
                         {
                             SendPrivacyState(from, "Start viewing the desktop before enabling privacy.");
                             break;
@@ -1299,10 +1307,20 @@ public partial class MainWindow : Window
             ["to"] = peerId,
             ["enabled"] = _privacy.IsEnabled,
             ["supported"] = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041),
-            ["allowed"] = _settings.AllowRemoteControl && _auth.AllPeersTrusted,
+            ["allowed"] = _settings.AllowRemoteControl && StreamStaysWithViewers,
             ["error"] = error,
         });
     }
+
+    /// <summary>
+    /// Whether the screen can go out without reaching a device that is not
+    /// approved. Frames are addressed to approved viewers alone, and a relay
+    /// that says so in its welcome delivers them only there, so a device
+    /// waiting at a prompt here is never sent one. An older relay broadcasts
+    /// every frame, and any key holder can decrypt it, so there the stream
+    /// waits until everybody in the session is approved. Any thread.
+    /// </summary>
+    private bool StreamStaysWithViewers => _auth.AllPeersTrusted || _ws.RelayAddressesBinary;
 
     private void RestorePrivacyForEndedViewers()
     {
@@ -1351,16 +1369,29 @@ public partial class MainWindow : Window
 
     private void ShowApprovalPrompt(PeerAuth.PendingRequest req)
     {
+        // Posted, so by now the device may have left or been answered in the devices list.
+        if (!_auth.Pending.Any(p => p.Fingerprint == req.Fingerprint)) return;
         RestoreFromTray();
-        var result = MessageBox.Show(this,
-            $"\"{req.Name}\" ({req.Device}) wants to pair with this computer.\n\n" +
-            $"Device code: {DeviceIdentity.ShortCode(req.Fingerprint)}\n\n" +
-            "Only allow if that device shows the same code. Once approved it can " +
-            "view, control and browse this computer whenever those switches are on.",
-            "New device wants to connect",
-            MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
-        if (result == MessageBoxResult.Yes) _auth.Approve(req.Fingerprint);
-        else _auth.Deny(req.Fingerprint);
+        if (_approvalPrompts.TryGetValue(req.Fingerprint, out var open)) open.Activate();
+        else PromptFor(req).Show();
+    }
+
+    /// <summary>The prompt for this request, wired up and kept track of, not yet shown.</summary>
+    private ApprovalPrompt PromptFor(PeerAuth.PendingRequest req)
+    {
+        var prompt = new ApprovalPrompt(req);
+        if (IsVisible) prompt.Owner = this; // only a window that has been shown can own one
+        prompt.Allowed += () => _auth.Approve(req.Fingerprint);
+        prompt.Denied += () => _auth.Deny(req.Fingerprint);
+        prompt.Closed += (_, _) => _approvalPrompts.Remove(req.Fingerprint);
+        _approvalPrompts[req.Fingerprint] = prompt;
+        return prompt;
+    }
+
+    private void CloseAnsweredPrompts()
+    {
+        foreach (var (fingerprint, prompt) in _approvalPrompts.ToList())
+            if (!_auth.Pending.Any(p => p.Fingerprint == fingerprint)) prompt.Close();
     }
 
     private void OnBinary(byte[] data)

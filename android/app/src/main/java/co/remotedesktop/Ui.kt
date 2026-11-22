@@ -83,7 +83,7 @@ object Ui {
 
     /** Approve/deny prompt for a device whose fingerprint isn't trusted yet. */
     fun showApprovalDialog(activity: Activity, req: PeerAuth.PendingRequest) {
-        MaterialAlertDialogBuilder(activity)
+        val dialog = MaterialAlertDialogBuilder(activity)
             .setTitle("New device wants to connect")
             .setMessage(
                 "\"${req.name}\" (${req.device}) wants to pair with this phone.\n\n" +
@@ -95,6 +95,17 @@ object Ui {
             .setNegativeButton("Deny") { _, _ -> PeerAuth.deny(req.fingerprint) }
             .setCancelable(true) // dismissed = still pending; the Devices screen keeps the buttons
             .show()
+        // Once the device has left, or been answered elsewhere, Allow and Deny would do nothing.
+        val stillAsked = object : () -> Unit {
+            override fun invoke() {
+                val gone = activity.isDestroyed
+                if (!gone && PeerAuth.pendingRequests().any { it.fingerprint == req.fingerprint }) return
+                PeerAuth.changeListeners.remove(this)
+                if (!gone && dialog.isShowing) dialog.dismiss()
+            }
+        }
+        PeerAuth.changeListeners.add(stillAsked)
+        dialog.setOnDismissListener { PeerAuth.changeListeners.remove(stillAsked) }
     }
 
     /** Single-field text prompt used for device name and server URL. */

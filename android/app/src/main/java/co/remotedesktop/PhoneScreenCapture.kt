@@ -154,10 +154,14 @@ object PhoneScreenCapture {
         }
     }
 
-    /** Rechecked before capture and before sending, including after asynchronous screenshots. */
+    /** Rechecked before capture and before sending, including after asynchronous screenshots.
+     *  Frames are addressed to approved viewers alone, so a device waiting for approval gets
+     *  none on a relay that delivers them only there. An older relay broadcasts them, and any
+     *  key holder can decrypt one, so there they wait until everybody is approved. */
     fun maySendFrames(context: Context): Boolean =
         ConnectionManager.state == "connected" && Prefs(context).allowControl &&
-            PeerAuth.allPeersTrusted && viewers.keys.any { mayView(context, it) }
+            (PeerAuth.allPeersTrusted || ConnectionManager.relayAddressesBinary) &&
+            viewers.keys.any { mayView(context, it) }
 
     fun refresh() {
         main.post {

@@ -295,6 +295,13 @@ class AccessibilityVideoTest {
 
     // ---------------- who gets video ----------------
 
+    /** A device nobody has approved is in the session, or no longer. Pictures pause for it
+     *  only behind an older relay, which hands every frame to the whole session. */
+    private fun unapprovedOnOlderRelay(present: Boolean) {
+        authField("allPeersTrusted").set(PeerAuth, !present)
+        connectionField("relayAddressesBinary").set(ConnectionManager, !present)
+    }
+
     @Test
     fun aPcThatOffersH264GetsEachScreenshotAsVideoAndAStillScreenSendsNothing() {
         startView("pc")
@@ -538,7 +545,7 @@ class AccessibilityVideoTest {
 
         // A device nobody has approved joins: pictures stop, and the viewer is told so.
         socket.clear()
-        authField("allPeersTrusted").set(PeerAuth, false)
+        unapprovedOnOlderRelay(true)
         PhoneScreenCapture.refresh()
         settle()
         assertTrue(infos().single().getBoolean("paused"))
@@ -549,7 +556,7 @@ class AccessibilityVideoTest {
         // It is approved. The same encoder goes on, in a new stream, and what starts it is the
         // next screenshot: the picture from before the pause is not sent as if it were the screen now.
         socket.clear()
-        authField("allPeersTrusted").set(PeerAuth, true)
+        unapprovedOnOlderRelay(false)
         PhoneScreenCapture.refresh()
         settle()
         encode(300)

@@ -129,6 +129,13 @@ class PhoneStreamTest {
 
     private fun id(n: Int) = PhoneFrame.streamHex(0xA0L + n)
 
+    /** A device nobody has approved is in the session, or no longer. Pictures pause for it
+     *  only behind an older relay, which hands every frame to the whole session. */
+    private fun unapprovedOnOlderRelay(present: Boolean) {
+        authField("allPeersTrusted").set(PeerAuth, !present)
+        connectionField("relayAddressesBinary").set(ConnectionManager, !present)
+    }
+
     @Test
     fun aViewerThatOffersJpegGetsType5FramesOfAStreamItWasToldFirst() {
         startView("pc")
@@ -298,7 +305,7 @@ class PhoneStreamTest {
 
         // A device nobody has approved joins: no pictures while it is there.
         socket.clear()
-        authField("allPeersTrusted").set(PeerAuth, false)
+        unapprovedOnOlderRelay(true)
         PhoneScreenCapture.refresh()
         idle()
         infos().single().let {
@@ -316,7 +323,7 @@ class PhoneStreamTest {
 
         // It is approved, or leaves.
         socket.clear()
-        authField("allPeersTrusted").set(PeerAuth, true)
+        unapprovedOnOlderRelay(false)
         PhoneScreenCapture.refresh()
         idle()
         assertTrue(picture())
@@ -326,13 +333,39 @@ class PhoneStreamTest {
             captureMs = 1234), header(socket.frames.single()))
     }
 
+    /** A device joins and waits at this phone's prompt while an approved one views it, as when a
+     *  PC joins and its owner is elsewhere. On a relay that hands each frame only to whom it
+     *  names, the pictures go on to the viewer alone, so it can see the prompt and answer it. */
+    @Test
+    fun aDeviceWaitingForApprovalGetsNoPicturesAndDoesNotStopThem() {
+        startView("pc")
+        screenInfo()
+        picture()
+        socket.clear()
+        authField("allPeersTrusted").set(PeerAuth, false)
+        PhoneScreenCapture.refresh()
+        idle()
+        assertTrue(infos().none { it.optBoolean("paused") })
+        assertTrue(picture())
+        assertEquals(listOf("pc"), socket.frames.single().to)
+        assertEquals(id(1), header(socket.frames.single()).stream.let(PhoneFrame::streamHex))
+
+        // Nothing goes to the whole session while it is there: not a frame with nobody to
+        // address, and not any frame behind an older relay, which would hand it to everybody.
+        assertFalse(ConnectionManager.sendBinary(Crypto.CH_PHONE, byteArrayOf(1), emptyList()))
+        connectionField("relayAddressesBinary").set(ConnectionManager, false)
+        assertFalse(ConnectionManager.sendBinary(Crypto.CH_PHONE, byteArrayOf(1), listOf("pc")))
+        assertFalse(picture())
+        assertEquals(1, socket.frames.size)
+    }
+
     @Test
     fun anOlderViewerIsToldNothingWhenPicturesPause() {
         startViewOld("old-pc")
         screenInfo()
         picture()
         socket.clear()
-        authField("allPeersTrusted").set(PeerAuth, false)
+        unapprovedOnOlderRelay(true)
         PhoneScreenCapture.refresh()
         idle()
         assertTrue(infos().isEmpty())
@@ -611,12 +644,12 @@ class PhoneStreamTest {
         picture()
         socket.clear()
         // A device nobody has approved joins before the second is up.
-        authField("allPeersTrusted").set(PeerAuth, false)
+        unapprovedOnOlderRelay(true)
         PhoneScreenCapture.refresh()
         later(60_000)
         assertTrue(socket.frames.isEmpty())
         // And an older viewer joining ends the stream the picture belonged to.
-        authField("allPeersTrusted").set(PeerAuth, true)
+        unapprovedOnOlderRelay(false)
         PhoneScreenCapture.refresh()
         idle()
         picture()

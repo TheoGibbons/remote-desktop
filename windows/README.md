@@ -181,7 +181,10 @@ its name. The **Devices** list shows every approved or connected device with
 approval (the device must be approved again to connect), *Disconnect* just ends
 its current session. Either one also closes this PC's own viewer of that
 device, and *Revoke* its files window too. Changing the session key resets all approvals. While an
-unapproved device is present in the session, streaming and file serving pause.
+unapproved device is present in the session, file serving pauses, and the screen
+goes only to approved viewers (behind an older relay streaming pauses too), so
+a device you have approved can still view this PC and answer the prompt from
+afar. A prompt closes by itself if its device leaves before you answer it.
 A device's **View** and **Files** buttons are greyed until this PC has
 approved it, and say why when the pointer rests on them: what you type in a
 viewer and the files you send go to that device, and until its code has been

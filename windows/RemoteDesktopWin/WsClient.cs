@@ -104,6 +104,11 @@ public class WsClient : IDisposable
     /// names. Learned from this connection's welcome; older relays broadcast.</summary>
     public bool RelayAddressesBinary { get; private set; }
 
+    /// <summary>Whether a video frame may go to the whole session: every key
+    /// holder can decrypt one, approved or not. A video frame that would be
+    /// broadcast is dropped while this says no. Read on the capture thread.</summary>
+    public Func<bool>? MayBroadcastVideo { get; set; }
+
     /// <summary>Video bytes waiting in the app-level lane (excludes whatever the
     /// socket itself is still draining).</summary>
     public long QueuedVideoBytes { get { lock (_outLock) return _queuedVideoBytes; } }
@@ -495,8 +500,10 @@ public class WsClient : IDisposable
     {
         if (_ws?.State != WebSocketState.Open) return false;
 
-        var blob = Crypto.Encrypt(_encKey, payload, frameType);
         var route = to is { Count: > 0 } && RelayAddressesBinary ? AddressHeader(to) : null;
+        // Dropped like a frame the lane had no room for: the viewer sees the gap.
+        if (route == null && frameType != Crypto.ChFile && MayBroadcastVideo is { } may && !may()) return true;
+        var blob = Crypto.Encrypt(_encKey, payload, frameType);
         var wire = new byte[1 + (route?.Length ?? 0) + blob.Length];
         // The relay strips the header and clears the flag, so the receiver
         // decrypts against the plain frame type it always has.

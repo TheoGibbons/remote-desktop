@@ -153,6 +153,13 @@ class PhoneH264StreamTest {
 
     // ---------------- who gets H.264 ----------------
 
+    /** A device nobody has approved is in the session, or no longer. Pictures pause for it
+     *  only behind an older relay, which hands every frame to the whole session. */
+    private fun unapprovedOnOlderRelay(present: Boolean) {
+        authField("allPeersTrusted").set(PeerAuth, !present)
+        connectionField("relayAddressesBinary").set(ConnectionManager, !present)
+    }
+
     @Test
     fun aPcThatOffersH264GetsItAsType5FramesOfAStreamAnnouncedAsSuch() {
         startView("pc")
@@ -371,10 +378,10 @@ class PhoneH264StreamTest {
 
         // A paired device joins the session: until its reply comes, not every peer is known.
         // Its reply comes before the main thread has looked, so the stream is never paused.
-        authField("allPeersTrusted").set(PeerAuth, false)
+        unapprovedOnOlderRelay(true)
         assertEquals(VideoSent.NOT_SENT, video())
         assertEquals(VideoSent.NOT_SENT, video(repeat = true))
-        authField("allPeersTrusted").set(PeerAuth, true)
+        unapprovedOnOlderRelay(false)
 
         // The stream goes on, but not with a picture built on ones the viewer never got.
         assertEquals(VideoSent.NEEDS_KEYFRAME, video())
@@ -421,9 +428,9 @@ class PhoneH264StreamTest {
         assertTrue(asked.isEmpty())
 
         // The gate blinks, a picture goes unsent, and the screen then stays as it is.
-        authField("allPeersTrusted").set(PeerAuth, false)
+        unapprovedOnOlderRelay(true)
         assertEquals(VideoSent.NOT_SENT, video())
-        authField("allPeersTrusted").set(PeerAuth, true)
+        unapprovedOnOlderRelay(false)
         PhoneScreenCapture.refresh()
         idle()
         assertEquals(listOf("key"), asked)
@@ -722,7 +729,7 @@ class PhoneH264StreamTest {
 
         // A device nobody has approved joins.
         socket.clear()
-        authField("allPeersTrusted").set(PeerAuth, false)
+        unapprovedOnOlderRelay(true)
         PhoneScreenCapture.refresh()
         idle()
         assertTrue(infos().single().getBoolean("paused"))
@@ -733,7 +740,7 @@ class PhoneH264StreamTest {
 
         // It is approved. The encoder is the same one, mid-stream; the stream is new.
         socket.clear()
-        authField("allPeersTrusted").set(PeerAuth, true)
+        unapprovedOnOlderRelay(false)
         PhoneScreenCapture.refresh()
         idle()
         assertTrue(announce())

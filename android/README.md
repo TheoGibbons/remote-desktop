@@ -214,8 +214,9 @@ is keyed to the device's cryptographic identity and sticks across reconnects
 and restarts. Each trusted device has a **Revoke** button (it must be approved
 again to connect) and, while online, a **Disconnect** button (ends the session;
 trust is kept). Changing the session ID resets all approvals. While an
-unapproved device is present in the session, screen sharing and file serving
-pause.
+unapproved device is present in the session, file serving pauses, and the
+screen goes only to approved viewers (behind an older relay it pauses too).
+A prompt closes by itself if its device leaves before you answer it.
 
 The connection card lists each device online in the session with where it
 stands: *Paired*, *Checking…*, *Waiting for approval* (approve this phone on

@@ -1035,6 +1035,86 @@ internal static class PrivacyLifecycleTests
                 App.RestoresPrivacy(["--privacy"]) || App.RestoresPrivacy(["--restart", "--updated"]))
                 throw new Exception("The privacy screen is put back up by a copy that no update started, or not by one that was");
             Console.WriteLine("PASS: a PC with its privacy screen up updates only when the asker says so, and the new copy puts it back up");
+
+            // A device waits at this PC's prompt while an approved one views
+            // it, as when a PC joins and its owner is at the other one. On a
+            // relay that addresses frames the approved viewer still gets the
+            // screen, so it can answer the prompt; on one that broadcasts them,
+            // the stream waits and nothing is broadcast. A prompt that can no
+            // longer do anything goes.
+            {
+                const string watcher = "approved-watcher", stranger = "waiting-pc";
+                string watcherKey = new('e', 64), strangerKey = new('d', 64);
+                var prompts = Field<Dictionary<string, ApprovalPrompt>>(host, "_approvalPrompts");
+                bool StaysWithViewers() => (bool)typeof(MainWindow)
+                    .GetProperty("StreamStaysWithViewers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(host)!;
+                ApprovalPrompt PromptFor(string id) => (ApprovalPrompt)typeof(MainWindow)
+                    .GetMethod("PromptFor", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(host, [asking.Single(r => r.PeerId == id)])!;
+                void Asks(string id) => asking.Add(new PeerAuth.PendingRequest(id, strangerKey, "Waiting PC", "windows"));
+                Field<AppSettings>(host, "_settings").AllowRemoteControl = true;
+
+                Invoke(host, "OnJson", new JsonObject
+                {
+                    ["type"] = "welcome",
+                    ["id"] = "this-pc",
+                    ["peers"] = new JsonArray(
+                        new JsonObject { ["id"] = watcher, ["device"] = "android", ["name"] = "Approved phone" },
+                        new JsonObject { ["id"] = stranger, ["device"] = "windows", ["name"] = "Waiting PC" }),
+                });
+                trusted.Add(watcher);
+                keys[watcher] = watcherKey;
+                Field<Dictionary<string, PeerAuth.TrustedDevice>>(auth, "_trusted")[watcherKey] =
+                    new PeerAuth.TrustedDevice(watcherKey, "Approved phone", "android", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+                keys[stranger] = strangerKey;
+                Asks(stranger);
+                if (auth.AllPeersTrusted) throw new Exception("setup: everybody is taken for approved");
+
+                SetBacking(ws, "RelayAddressesBinary", false);
+                if (StaysWithViewers() || ws.MayBroadcastVideo!())
+                    throw new Exception("Behind a relay that broadcasts frames, this PC would stream while a device waits for approval");
+                SetBacking(ws, "RelayAddressesBinary", true);
+                if (!StaysWithViewers())
+                    throw new Exception("An approved viewer was shut out because another device waits for approval");
+                if (ws.MayBroadcastVideo!())
+                    throw new Exception("A frame could go to the whole session while a device waits for approval");
+                Outgoing();
+                Invoke(host, "SendPrivacyState", watcher, null);
+                if (Outgoing().SingleOrDefault(m => m["type"]?.GetValue<string>() == "privacy-state") is not { } state ||
+                    state["allowed"]?.GetValue<bool>() != true)
+                    throw new Exception("The privacy screen was not offered to an approved viewer while a device waits for approval");
+
+                // A viewer whose approval is taken back is sent no more of the stream.
+                streamer.Regions.AddViewer(watcher);
+                auth.Revoke(watcherKey);
+                if (streamer.Regions.IsViewing(watcher)) throw new Exception("A revoked device stayed among the viewers");
+
+                // The prompt goes when its device leaves, and its device asks afresh when it is back.
+                bool gone = false;
+                var prompt = PromptFor(stranger);
+                prompt.Closed += (_, _) => gone = true;
+                Json("peer-left", id: stranger);
+                if (!gone || prompts.Count != 0) throw new Exception("A prompt stayed up for a device that had left");
+                // And when it is answered in the devices list.
+                keys["waiting-pc-again"] = strangerKey;
+                Asks("waiting-pc-again");
+                gone = false;
+                prompt = PromptFor("waiting-pc-again");
+                prompt.Closed += (_, _) => gone = true;
+                auth.Approve(strangerKey);
+                if (!gone || prompts.Count != 0) throw new Exception("A prompt stayed up for a device approved in the devices list");
+                // Its own Allow button approves the device it asks about.
+                auth.Revoke(strangerKey);
+                Asks("waiting-pc-again");
+                prompt = PromptFor("waiting-pc-again");
+                var allow = LogicalTreeHelper.GetChildren((DependencyObject)LogicalTreeHelper.GetChildren((DependencyObject)prompt.Content)
+                        .Cast<object>().Last()).OfType<System.Windows.Controls.Button>().Single(b => (string)b.Content == "Allow");
+                allow.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                if (!auth.IsTrusted("waiting-pc-again") || prompts.Count != 0)
+                    throw new Exception("Allow in the prompt did not approve the device, or the prompt stayed up");
+                SetBacking(ws, "RelayAddressesBinary", false);
+                Console.WriteLine("PASS: approved viewers keep the screen while a device waits for approval, on a relay that addresses frames, and a prompt goes once it can do nothing");
+            }
         }
         finally
         {

@@ -94,7 +94,8 @@ object ConnectionManager {
         private set
     /** The relay delivers an addressed binary frame to just the peers it names.
      *  Learned from this connection's welcome; older relays broadcast. */
-    @Volatile private var relayAddressesBinary = false
+    @Volatile var relayAddressesBinary = false
+        private set
     val peers = CopyOnWriteArrayList<Peer>()
 
     /** Intent extra: the peer id of the device a viewer or file browser opens. */
@@ -365,8 +366,10 @@ object ConnectionManager {
         // so it was held back before it was encoded and is never skipped after.
         val video = frameType == Crypto.CH_VIDEO || frameType == Crypto.CH_PHONE
         if (!always && socket.queueSize() > if (video) VIDEO_QUEUE_LIMIT else 6_000_000L) return false
-        val blob = Crypto.encrypt(encKey, payload, frameType)
         val route = if (!to.isNullOrEmpty() && relayAddressesBinary) addressHeader(to) else null
+        // Every key holder can decrypt a broadcast, approved or not.
+        if (video && route == null && !PeerAuth.allPeersTrusted) return false
+        val blob = Crypto.encrypt(encKey, payload, frameType)
         val wire = ByteArray(1 + (route?.size ?: 0) + blob.size)
         // The relay strips the header and clears the flag, so the receiver
         // decrypts against the plain frame type it always has.

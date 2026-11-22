@@ -125,7 +125,7 @@
     <string name="viewer_awaiting_approval">Approve this phone on %1$s.\nCode: %2$s</string>
     <string name="allow_phones">Allow other phones</string>
     <string name="allow_phones_description">Let approved phones view, control and browse this phone</string>
-    <string name="phone_viewer_nothing_yet">Nothing from %1$s yet. On %1$s, check that View and control this phone, Allow other phones and Screen view and control are on, and that no device is waiting for approval.</string>
+    <string name="phone_viewer_nothing_yet">Nothing from %1$s yet. On %1$s, check that View and control this phone, Allow other phones and Screen view and control are on.</string>
     <string name="phone_viewer_no_typing">%1$s needs Android 13 or later to type into it</string>
     <string name="phone_viewer_disconnected">%1$s disconnected</string>
     <string name="phone_viewer_not_online">That phone is no longer online</string>

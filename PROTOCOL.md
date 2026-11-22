@@ -110,6 +110,9 @@ fingerprint, and:
   device code (users should compare codes out-of-band), send `status:pending`,
   then `trusted` or `denied` once the user decides. Denials are remembered for
   the rest of the process so a hostile peer cannot spam prompts by reconnecting.
+  A prompt goes away once it can no longer do anything: the peer left before it
+  was answered (it asks afresh when it is back), or it was answered in the
+  devices list.
 
 **Enforcement.** Messages that view, control, or touch files or the clipboard
 (`start-view`, `request-keyframe`, `privacy-mode`, `mouse`, `scroll`, `key`, `text`, `cad`, `tap`, `swipe`,
@@ -124,10 +127,16 @@ app on an approved phone. A phone takes `frame-ack`, `request-keyframe`, `reques
 `stop-smooth`, and answers `diagnostic-ping`, only from a device that is
 viewing it at that moment: one whose `start-view` it accepted and that has not
 stopped since. From anyone else they are dropped without an answer. Because every key holder can decrypt binary frames,
-and older relays **broadcast them** to the whole session, a host additionally
-sends no video frames and serves no file transfers while *any* unapproved peer
-is present in the session (the stream resumes automatically once the peer is
-approved or leaves; a keyframe covers the gap).
+a host never lets one reach the whole session while *any* unapproved peer is
+present. Behind a relay whose `welcome` carried `binaryTo: true`, video goes
+only to approved viewers, each frame [addressed](#addressed-binary-frames) to
+them, so they keep the stream while another device waits for approval and can
+answer its prompt from afar; a viewer whose approval is taken back is sent no
+more. Behind an older relay, which **broadcasts** binary frames, a host sends
+no video at all until the peer is approved or leaves (the stream resumes
+automatically; a keyframe covers the gap). Either way a video frame that would
+go out unaddressed is dropped while an unapproved peer is present, and file
+transfers pause.
 
 **Revocation.** Each device shows its trusted-device list with per-device
 *Revoke* (delete the fingerprint — the device must be re-approved on its next

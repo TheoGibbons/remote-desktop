@@ -23,6 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowDialog
 
 /** After a reinstall the phone has a new key, so the PC must approve it again.
  *  The phone has to say so instead of looking paired and showing a black screen. */
@@ -181,6 +182,36 @@ class PairingStatusTest {
             pending.clear()
             pcSays("trusted")
             assertEquals(Row("Test PC · PC", "Denied on this phone", offered = false), rows(activity)[1])
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    /** A prompt whose device has left, or that was answered on the Devices screen, would do nothing. */
+    @Test
+    fun anApprovalPromptGoesOnceItCanDoNothing() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            fun prompt(peerId: String): android.app.Dialog {
+                val req = PeerAuth.PendingRequest(peerId, "fedcba9876543210", "Other PC", "windows")
+                pending.add(req)
+                Ui.showApprovalDialog(activity, req)
+                shadowOf(Looper.getMainLooper()).idle()
+                return ShadowDialog.getLatestDialog().also { assertTrue(it.isShowing) }
+            }
+
+            val first = prompt("pc2")
+            pcSays("trusted") // something else changed: the question still stands
+            assertTrue(first.isShowing)
+            PeerAuth.onPeerLeft("pc2")
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse("a prompt stayed up for a device that had left", first.isShowing)
+
+            val second = prompt("pc2-again")
+            pending.clear() // answered on the Devices screen
+            pcSays("trusted")
+            assertFalse("a prompt stayed up for a device already answered", second.isShowing)
         } finally {
             controller.pause().stop().destroy()
         }
