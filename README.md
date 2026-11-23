@@ -387,6 +387,8 @@ version, commit, and tagging steps.
   device connects, the other side shows an approve/deny prompt with a short
   device code to compare. Approved devices reconnect silently forever; each app
   has a devices list to **revoke** one (it must be re-approved) or disconnect it.
+  A device that has this one's screen open is marked there (*Viewing this PC*,
+  *Viewing this phone*), so you can see who is in.
   Changing the session key resets all approvals. While an *unapproved* device is
   in the session, hosts stop serving files, and stream only to approved viewers
   (each frame is addressed to them; behind an older relay, which broadcasts

@@ -68,6 +68,10 @@ public partial class MainWindow : Window
         /// <summary>What the dot's colour means, for its tooltip and for screen
         /// readers: the colour alone says whether a device is online.</summary>
         public string DotTip { get; init; } = "";
+        /// <summary>The device has this PC's screen open: marked on its row,
+        /// so the person at this PC can see who is in.</summary>
+        public bool Viewing { get; init; }
+        public string ViewingTip { get; init; } = "";
         public bool ShowApprove { get; init; }
         public bool ShowView { get; init; }
         /// <summary>Whether View and Files can be used: only on a device this
@@ -165,6 +169,8 @@ public partial class MainWindow : Window
             foreach (var viewer in _streamer.Regions.Viewers)
                 if (!_auth.IsTrusted(viewer)) _streamer.Regions.RemoveViewer(viewer);
         };
+        // Each row says whether that device is viewing this PC.
+        _streamer.Regions.ViewersChanged += ShowDeviceRowsSoon;
         // BeginInvoke: the prompt brings this window up, which is no business of OnJson's.
         _auth.ApprovalNeeded += req => Dispatcher.BeginInvoke(() => ShowApprovalPrompt(req));
         // A prompt whose device left, or was answered in the devices list, would do nothing.
@@ -625,6 +631,8 @@ public partial class MainWindow : Window
         _settings.Save();
         foreach (var peer in _peers) SendFileAccess(peer.Id);
         foreach (var peer in _peers) SendPrivacyState(peer.Id);
+        // With control off, nobody is viewing this PC, though their windows stay open.
+        ShowDeviceRows();
         ApplySectionVisibility();
     }
 
@@ -1422,6 +1430,29 @@ public partial class MainWindow : Window
     private void RefreshDeviceList()
     {
         foreach (var peer in _peers) SendFileAccess(peer.Id);
+        ShowDeviceRows();
+    }
+
+    private bool _rowsPosted;
+
+    /// <summary>Who is viewing changed. The rows are shown again once the
+    /// message that changed it is handled, so a burst of changes (a stream
+    /// that stops with everyone's viewport) redraws them once.</summary>
+    private void ShowDeviceRowsSoon()
+    {
+        if (_rowsPosted) return;
+        _rowsPosted = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _rowsPosted = false;
+            ShowDeviceRows();
+        });
+    }
+
+    /// <summary>The rows of the devices list, from what this PC knows now.
+    /// Unlike <see cref="RefreshDeviceList"/>, tells the devices nothing.</summary>
+    private void ShowDeviceRows()
+    {
         var good = (System.Windows.Media.Brush)FindResource("RdGoodBrush");
         var warn = (System.Windows.Media.Brush)FindResource("RdWarnBrush");
         var offline = (System.Windows.Media.Brush)FindResource("RdOfflineBrush");
@@ -1442,6 +1473,8 @@ public partial class MainWindow : Window
             var code = fp == null ? "" : $"Code {DeviceIdentity.ShortCode(fp)}";
             var subtitle = code.Length > 0 && status.Length > 0 ? $"{code} — {status}" : code + status;
             var standing = StandingOf(p.Id);
+            // Only an approved device is let in, and only while control is allowed.
+            var viewing = trusted && _settings.AllowRemoteControl && _streamer.Regions.IsViewing(p.Id);
             rows.Add(new DeviceRow
             {
                 PeerId = p.Id,
@@ -1452,7 +1485,9 @@ public partial class MainWindow : Window
                 Subtitle = subtitle,
                 VersionText = p.Version == null ? "" : $" · v{p.Version.TrimStart('v')}",
                 Dot = trusted ? good : warn,
-                DotTip = trusted ? "Online" : "Online, not approved",
+                DotTip = viewing ? "Online, viewing this PC" : trusted ? "Online" : "Online, not approved",
+                Viewing = viewing,
+                ViewingTip = viewing ? $"{p.Name} is viewing this PC's screen and can control it" : "",
                 ShowApprove = pending,
                 ShowView = true,
                 CanOpen = DeviceActions.CanOpen(standing),

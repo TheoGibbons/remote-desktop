@@ -245,6 +245,12 @@ class MainActivity : AppCompatActivity() {
                 text = status.label
                 setTextColor(status.color)
             }
+            // It has this phone's screen open. Only an approved device is let in.
+            row.findViewById<TextView>(R.id.peerViewing).apply {
+                val viewing = PhoneScreenCapture.isViewing(peer.id) && PeerAuth.isTrusted(peer.id)
+                visibility = if (viewing) View.VISIBLE else View.GONE
+                contentDescription = getString(R.string.peer_viewing_description, peer.name)
+            }
             // A PC on an older version can be told to update from here.
             val latest = AppUpdate.latest(this)
             val behind = peer.device == "windows" && status.ready && latest != null &&

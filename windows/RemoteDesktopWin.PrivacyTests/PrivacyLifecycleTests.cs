@@ -982,6 +982,45 @@ internal static class PrivacyLifecycleTests
                 if (!rows["row-waiting"].ShowApprove || rows["row-refused"].ShowApprove || rows["row-new"].ShowApprove || rows["row-approved"].ShowApprove)
                     throw new Exception("Approve is offered on the wrong rows");
                 Console.WriteLine("PASS: a device's row offers View and Files only once this PC has approved it, and says why until then");
+
+                // A device that has this PC's screen open is marked on its row,
+                // for as long as it has. The rows are redrawn once the message
+                // is handled, so the dispatcher is let run before each look.
+                MainWindow.DeviceRow Row(string id)
+                {
+                    Pump(20);
+                    return ((IEnumerable<MainWindow.DeviceRow>)host.DevicesList.ItemsSource).Single(r => r.PeerId == id);
+                }
+                var settings = Field<AppSettings>(host, "_settings");
+                host.AllowStreamCheck.IsChecked = true;   // not saved: see above
+                if (Row("row-approved").Viewing) throw new Exception("setup: a device is marked as viewing before it asked to");
+                Json("start-view", "row-approved");
+                var watching = Row("row-approved");
+                if (!watching.Viewing || !watching.ViewingTip.Contains("Approved phone") || !watching.DotTip.Contains("viewing this PC"))
+                    throw new Exception("A device viewing this PC is not marked on its row");
+                if (new[] { "row-waiting", "row-refused", "row-new" }.Any(id => Row(id).Viewing))
+                    throw new Exception("A device that is not viewing this PC is marked as viewing it");
+                // One this PC has not approved is never let in, so never marked.
+                Json("start-view", "row-new");
+                if (Row("row-new").Viewing) throw new Exception("A device this PC has not approved is marked as viewing it");
+                // With control switched off nobody is viewing, whatever windows are open.
+                settings.AllowRemoteControl = false;
+                Invoke(host, "ShowDeviceRows");
+                if (Row("row-approved").Viewing) throw new Exception("A device is marked as viewing this PC with control switched off");
+                settings.AllowRemoteControl = true;
+                Invoke(host, "ShowDeviceRows");
+                if (!Row("row-approved").Viewing) throw new Exception("setup: the viewer's mark did not come back with control");
+                Json("stop-view", "row-approved");
+                if (Row("row-approved").Viewing) throw new Exception("A device that stopped viewing this PC is still marked as viewing it");
+                // Its approval taken back ends its view, and the mark goes with it.
+                Json("start-view", "row-approved");
+                if (!Row("row-approved").Viewing) throw new Exception("setup: the viewer did not come back");
+                auth.Revoke(new string('a', 64));
+                if (Row("row-approved").Viewing) throw new Exception("A device whose approval went is still marked as viewing this PC");
+                trusted.Add("row-approved");
+                streamer.Stop();
+                host.AllowStreamCheck.IsChecked = false;
+                Console.WriteLine("PASS: a device's row is marked while it views this PC, and only then");
             }
             finally
             {

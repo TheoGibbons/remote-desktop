@@ -101,6 +101,8 @@
     <string name="peer_revoked">Revoked</string>
     <string name="peer_revoked_detail">%1$s removed this phone. It asks again when this phone next connects.</string>
     <string name="peer_denied_here">Denied on this phone</string>
+    <string name="peer_viewing">Viewing this phone</string>
+    <string name="peer_viewing_description">%1$s is viewing this phone and can control it</string>
     <string name="peer_view">View</string>
     <string name="peer_view_description">View %1$s</string>
     <string name="peer_browse">Browse</string>

@@ -35,6 +35,26 @@
             android:textAppearance="?attr/textAppearanceLabelLarge" />
     </LinearLayout>
 
+    <!-- The device has this phone's screen open. -->
+    <TextView
+        android:id="@+id/peerViewing"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:background="@drawable/viewing_pill"
+        android:drawablePadding="6dp"
+        android:gravity="center_vertical"
+        android:paddingStart="8dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="3dp"
+        android:paddingBottom="3dp"
+        android:text="@string/peer_viewing"
+        android:textAppearance="?attr/textAppearanceLabelMedium"
+        android:textColor="@color/rd_on_primary_container"
+        android:visibility="gone"
+        app:drawableStartCompat="@drawable/ic_visibility"
+        app:drawableTint="@color/rd_on_primary_container" />
+
     <TextView
         android:id="@+id/peerDetail"
         android:layout_width="match_parent"

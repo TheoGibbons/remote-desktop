@@ -139,6 +139,58 @@ class PairingStatusTest {
         }
     }
 
+    /** A device that has this phone's screen open is marked on its row, for as long as it has. */
+    @Test
+    fun aDeviceViewingThisPhoneIsMarkedOnItsRow() {
+        resultFrom["pc"] = "trusted"
+        ConnectionManager.peers.add(ConnectionManager.Peer("pc2", "windows", "Office PC"))
+        val handleJson = ConnectionManager::class.java.getDeclaredMethod("handleJson", JSONObject::class.java)
+            .apply { isAccessible = true }
+        fun receive(from: String, type: String) {
+            handleJson.invoke(ConnectionManager, JSONObject().put("type", type).put("from", from))
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+        // It keeps the context of whichever test first set it up; the switch lives in this one's.
+        val captureContext = PhoneScreenCapture::class.java.getDeclaredField("appContext").apply { isAccessible = true }
+        val previousCapture = captureContext.get(PhoneScreenCapture)
+        captureContext.set(PhoneScreenCapture, null)
+        PhoneScreenCapture.init(context)
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val activity = controller.get()
+            val container = activity.findViewById<LinearLayout>(R.id.peerRows)
+            fun viewing() = (0 until container.childCount).map { container.getChildAt(it) }
+                .filter { it.findViewById<View>(R.id.peerViewing).visibility == View.VISIBLE }
+                .map { it.findViewById<TextView>(R.id.peerName).text.toString() }
+            assertEquals(emptyList<String>(), viewing())
+
+            receive("pc", "start-view")
+            assertEquals(listOf("Test PC · PC"), viewing())
+            val badge = container.getChildAt(1).findViewById<TextView>(R.id.peerViewing)
+            assertEquals("Viewing this phone", badge.text.toString())
+            assertEquals("Test PC is viewing this phone and can control it", badge.contentDescription)
+            // One this phone hasn't approved is never let in, so never marked.
+            receive("pc2", "start-view")
+            assertEquals(listOf("Test PC · PC"), viewing())
+
+            receive("pc", "stop-view")
+            assertEquals(emptyList<String>(), viewing())
+
+            // Switching control off ends every view, and the mark goes with it.
+            receive("pc", "start-view")
+            assertEquals(listOf("Test PC · PC"), viewing())
+            Prefs(context).allowControl = false
+            PhoneScreenCapture.refresh()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(emptyList<String>(), viewing())
+        } finally {
+            controller.pause().stop().destroy()
+            PhoneScreenCapture.onViewStopped(forGood = true)
+            shadowOf(Looper.getMainLooper()).idle()
+            captureContext.set(PhoneScreenCapture, previousCapture)
+        }
+    }
+
     @Test
     fun eachDeviceGetsItsOwnRowAndEachPcItsOwnButtons() {
         ConnectionManager.peers.add(ConnectionManager.Peer("tablet", "android", "Tablet"))

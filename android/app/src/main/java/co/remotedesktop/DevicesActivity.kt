@@ -30,6 +30,7 @@ class DevicesActivity : AppCompatActivity() {
 
     private val stateListener: (String) -> Unit = { rebuild() }
     private val trustListener: () -> Unit = { rebuild() }
+    private val captureStateListener: () -> Unit = { rebuild() }
     private val approvalListener: (PeerAuth.PendingRequest) -> Unit = { Ui.showApprovalDialog(this, it) }
 
     @SuppressLint("SetTextI18n")
@@ -55,6 +56,7 @@ class DevicesActivity : AppCompatActivity() {
         ConnectionManager.stateListeners.add(stateListener)
         PeerAuth.changeListeners.add(trustListener)
         PeerAuth.approvalListeners.add(approvalListener)
+        PhoneScreenCapture.stateListeners.add(captureStateListener)
         rebuild()
     }
 
@@ -63,6 +65,7 @@ class DevicesActivity : AppCompatActivity() {
         ConnectionManager.stateListeners.remove(stateListener)
         PeerAuth.changeListeners.remove(trustListener)
         PeerAuth.approvalListeners.remove(approvalListener)
+        PhoneScreenCapture.stateListeners.remove(captureStateListener)
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -178,8 +181,11 @@ class DevicesActivity : AppCompatActivity() {
             row(
                 trustedGroup,
                 "${d.name} (${d.device})",
-                "Code ${PeerAuth.shortCode(d.fingerprint)} — " +
-                    if (onlinePeerId != null) "online" else "offline, trusted",
+                "Code ${PeerAuth.shortCode(d.fingerprint)} — " + when {
+                    onlinePeerId == null -> "offline, trusted"
+                    PhoneScreenCapture.isViewing(onlinePeerId) -> "online, viewing this phone"
+                    else -> "online"
+                },
                 moreButton(d, onlinePeerId),
             )
         }

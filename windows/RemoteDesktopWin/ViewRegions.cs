@@ -31,6 +31,12 @@ public sealed class ViewRegionTracker
     private readonly HashSet<string> _h264 = new();
 
     /// <summary>
+    /// Someone started or stopped viewing, so the devices list can mark who
+    /// is. Raised on the thread that made the change, outside the lock.
+    /// </summary>
+    public event Action? ViewersChanged;
+
+    /// <summary>
     /// Every viewer can decode H.264. Like region mode this is all-or-nothing:
     /// one stream is broadcast to the session, so a single viewer that cannot
     /// decode it keeps everyone on JPEG tiles.
@@ -54,10 +60,9 @@ public sealed class ViewRegionTracker
 
     public void AddViewer(string peerId)
     {
-        lock (_lock)
-        {
-            if (!_viewers.ContainsKey(peerId)) _viewers[peerId] = null;
-        }
+        bool added;
+        lock (_lock) added = _viewers.TryAdd(peerId, null);
+        if (added) ViewersChanged?.Invoke();
     }
 
     public bool IsViewing(string peerId)
@@ -79,26 +84,37 @@ public sealed class ViewRegionTracker
 
     public void RemoveViewer(string peerId)
     {
+        bool removed;
         lock (_lock)
         {
-            _viewers.Remove(peerId);
+            removed = _viewers.Remove(peerId);
             _h264.Remove(peerId);
         }
+        if (removed) ViewersChanged?.Invoke();
     }
 
     public void Clear()
     {
+        bool any;
         lock (_lock)
         {
+            any = _viewers.Count > 0;
             _viewers.Clear();
             _h264.Clear();
         }
+        if (any) ViewersChanged?.Invoke();
     }
 
     /// <summary>A viewer reported its viewport. Implies it is viewing.</summary>
     public void SetRegion(string peerId, ViewRegion region)
     {
-        lock (_lock) _viewers[peerId] = region;
+        bool added;
+        lock (_lock)
+        {
+            added = !_viewers.ContainsKey(peerId);
+            _viewers[peerId] = region;
+        }
+        if (added) ViewersChanged?.Invoke();
     }
 
     /// <summary>
