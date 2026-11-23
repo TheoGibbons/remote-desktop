@@ -108,6 +108,8 @@ public partial class PcViewWindow : Window, IDeviceWindow
     public PcViewWindow(WsClient ws, string peerId, string name, string? identity = null)
     {
         InitializeComponent();
+        WindowCaption.Darken(this);
+        SizeChanged += (_, _) => FitBarLabels();
         _ws = ws;
         _link = new DeviceLink(peerId, identity);
         _name = name;
@@ -508,6 +510,9 @@ public partial class PcViewWindow : Window, IDeviceWindow
         ZoomSlider.Value = top > min ? Math.Log(_viewport.Zoom / min) / Math.Log(top / min) : 0;
         _settingSlider = false;
         ZoomText.Text = Math.Round(_viewport.Zoom * 100).ToString(CultureInfo.CurrentCulture) + "%";
+        // Lit while that zoom is the one in force.
+        FitButton.IsChecked = _viewport.Fitting;
+        ActualSizeButton.IsChecked = Math.Abs(_viewport.Zoom - 1) < 0.005;
     }
 
     // The slider runs from fitting the whole desktop to 400%, evenly by ratio:
@@ -586,12 +591,8 @@ public partial class PcViewWindow : Window, IDeviceWindow
             // Maximized again once the frame has gone, so it covers the taskbar too.
             WindowState = WindowState.Normal;
             WindowState = WindowState.Maximized;
-            Grid.SetRow(ToolbarHost, 1);
-            ToolbarHost.HorizontalAlignment = HorizontalAlignment.Center;
-            ToolbarHost.VerticalAlignment = VerticalAlignment.Top;
+            StyleBar(floating: true);
             ToolbarHost.Visibility = Visibility.Collapsed;
-            HintText.Visibility = Visibility.Collapsed;
-            FullScreenButton.Content = "Leave full screen";
             try
             {
                 _keys = new FullScreenKeys(new WindowInteropHelper(this).Handle,
@@ -612,14 +613,41 @@ public partial class PcViewWindow : Window, IDeviceWindow
             WindowStyle = _windowed.Style;
             ResizeMode = _windowed.Resize;
             WindowState = _windowed.State;
-            Grid.SetRow(ToolbarHost, 0);
-            ToolbarHost.HorizontalAlignment = HorizontalAlignment.Stretch;
-            ToolbarHost.VerticalAlignment = VerticalAlignment.Stretch;
+            StyleBar(floating: false);
             ToolbarHost.Visibility = Visibility.Visible;
-            HintText.Visibility = Visibility.Visible;
-            FullScreenButton.Content = "Full screen";
         }
         FocusScreen();
+    }
+
+    /// <summary>
+    /// Docked, the bar runs across the top of the window above the picture.
+    /// Floating, in full screen, it lies over the picture at the top middle,
+    /// sized to its buttons, with rounded corners and a shadow, and without
+    /// the hint, which full screen has no room for.
+    /// </summary>
+    private void StyleBar(bool floating)
+    {
+        Grid.SetRow(ToolbarHost, floating ? 1 : 0);
+        ToolbarHost.HorizontalAlignment = floating ? HorizontalAlignment.Center : HorizontalAlignment.Stretch;
+        ToolbarHost.VerticalAlignment = floating ? VerticalAlignment.Top : VerticalAlignment.Stretch;
+        ToolbarHost.CornerRadius = floating ? new CornerRadius(0, 0, 12, 12) : new CornerRadius(0);
+        ToolbarHost.BorderThickness = floating ? new Thickness(1, 0, 1, 1) : new Thickness(0, 0, 0, 1);
+        ToolbarHost.Padding = floating ? new Thickness(10, 6, 10, 7) : new Thickness(6, 5, 6, 5);
+        ToolbarHost.Effect = floating ? (System.Windows.Media.Effects.Effect)FindResource("FloatingBarShadow") : null;
+        HintText.Visibility = floating ? Visibility.Collapsed : Visibility.Visible;
+        FullScreenGlyph.Text = floating ? "\uE73F" : "\uE740"; // BackToWindow, FullScreen
+        FullScreenText.Text = floating ? "Exit full screen" : "Full screen";
+        FullScreenButton.ToolTip = floating ? "Back to a window (Ctrl+Alt+Break)" : "Full screen (Ctrl+Alt+Break)";
+    }
+
+    /// <summary>In a narrow window the buttons show only their icons, so the
+    /// zoom controls keep their room. Their tooltips still say what they do.</summary>
+    private void FitBarLabels() => ShowBarLabels(ActualWidth >= 1000);
+
+    private void ShowBarLabels(bool shown)
+    {
+        var labels = shown ? Visibility.Visible : Visibility.Collapsed;
+        CadText.Visibility = CopyText.Visibility = PasteText.Visibility = FullScreenText.Visibility = labels;
     }
 
     /// <summary>In full screen the toolbar comes down when the pointer reaches

@@ -44,6 +44,21 @@ internal sealed class WindowCaption
     /// <summary>The bar's height or the buttons' width changed.</summary>
     public event Action? Changed;
 
+    /// <summary>
+    /// Only the dark caption, the same colour as this class's, on a window that
+    /// keeps the system's whole title bar (the window on another PC, whose dark
+    /// toolbar sits right under it).
+    /// </summary>
+    public static void Darken(Window window) => window.SourceInitialized += (_, _) =>
+    {
+        var hwnd = new WindowInteropHelper(window).Handle;
+        int on = 1;
+        if (DwmSetWindowAttribute(hwnd, 20, ref on, sizeof(int)) != 0)
+            DwmSetWindowAttribute(hwnd, 19, ref on, sizeof(int));
+        int colour = 0x001E1E1E; // Windows 11 only
+        DwmSetWindowAttribute(hwnd, 35, ref colour, sizeof(int));
+    };
+
     public WindowCaption(Window window)
     {
         _window = window;

@@ -5,6 +5,163 @@
         Background="#111" Focusable="True"
         PreviewKeyDown="Window_PreviewKeyDown" PreviewKeyUp="Window_PreviewKeyUp"
         PreviewTextInput="Window_PreviewTextInput" Deactivated="Window_Deactivated">
+    <Window.Resources>
+        <!-- The toolbar is dark, like the phone viewer's title bar, and one
+             colour with this window's own (see WindowCaption.Darken). -->
+        <SolidColorBrush x:Key="BarBrush" Color="#1E1E1E"/>
+        <SolidColorBrush x:Key="BarLineBrush" Color="#333538"/>
+        <SolidColorBrush x:Key="OnBarBrush" Color="#E8EAED"/>
+        <SolidColorBrush x:Key="OnBarMutedBrush" Color="#9AA0A6"/>
+        <!-- The app's blue, lightened to read on dark. -->
+        <SolidColorBrush x:Key="BarAccentBrush" Color="#8AB4F8"/>
+        <SolidColorBrush x:Key="BarAccentFaintBrush" Color="#2E8AB4F8"/>
+
+        <!-- A pill with an icon and a label. Nothing on the bar takes the
+             keyboard focus: while this window is focused, keys go to the remote PC. -->
+        <Style x:Key="BarButton" TargetType="Button">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Foreground" Value="{StaticResource OnBarBrush}"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Padding" Value="11,0"/>
+            <Setter Property="Margin" Value="1,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" CornerRadius="15" Background="Transparent" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1FFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- A zoom that can be in force (Fit, 1:1): lit while it is. -->
+        <Style x:Key="BarChoice" TargetType="ToggleButton">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="Foreground" Value="{StaticResource OnBarBrush}"/>
+            <Setter Property="FontFamily" Value="Segoe UI"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Height" Value="26"/>
+            <Setter Property="MinWidth" Value="38"/>
+            <Setter Property="Padding" Value="9,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd" CornerRadius="13" Background="Transparent" Padding="{TemplateBinding Padding}"
+                                BorderBrush="#4A4D51" BorderThickness="1">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1FFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource BarAccentFaintBrush}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="Transparent"/>
+                                <Setter Property="Foreground" Value="{StaticResource BarAccentBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BarGlyph" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="BarLabel" TargetType="TextBlock">
+            <Setter Property="Margin" Value="8,0,0,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <Style x:Key="BarDivider" TargetType="Border">
+            <Setter Property="Width" Value="1"/>
+            <Setter Property="Height" Value="20"/>
+            <Setter Property="Margin" Value="8,0"/>
+            <Setter Property="Background" Value="{StaticResource BarLineBrush}"/>
+        </Style>
+
+        <Style x:Key="BarSliderThumb" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <!-- Taller than the dot, so it is easy to catch. -->
+                        <Grid Width="16" Height="28" Background="Transparent">
+                            <Ellipse x:Name="Dot" Width="14" Height="14" Fill="{StaticResource BarAccentBrush}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Dot" Property="Fill" Value="#AECBFA"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="Dot" Property="Fill" Value="#AECBFA"/>
+                                <Setter TargetName="Dot" Property="Width" Value="16"/>
+                                <Setter TargetName="Dot" Property="Height" Value="16"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Like the phone menu's volume slider: a click on the track goes there. -->
+        <Style x:Key="BarSlider" TargetType="Slider">
+            <Setter Property="OverridesDefaultStyle" Value="True"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="IsTabStop" Value="False"/>
+            <Setter Property="IsMoveToPointEnabled" Value="True"/>
+            <Setter Property="SmallChange" Value="0.02"/>
+            <Setter Property="LargeChange" Value="0.1"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Track x:Name="PART_Track" Height="28">
+                            <Track.DecreaseRepeatButton>
+                                <RepeatButton Style="{StaticResource RdMenuSliderTrack}" Command="Slider.DecreaseLarge"
+                                              Tag="{StaticResource BarAccentBrush}"/>
+                            </Track.DecreaseRepeatButton>
+                            <Track.IncreaseRepeatButton>
+                                <RepeatButton Style="{StaticResource RdMenuSliderTrack}" Command="Slider.IncreaseLarge"
+                                              Tag="#4A4D51"/>
+                            </Track.IncreaseRepeatButton>
+                            <Track.Thumb>
+                                <Thumb Style="{StaticResource BarSliderThumb}"/>
+                            </Track.Thumb>
+                        </Track>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <DropShadowEffect x:Key="FloatingBarShadow" BlurRadius="16" ShadowDepth="3" Opacity="0.5" Direction="270"/>
+    </Window.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -25,31 +182,64 @@
                    RenderOptions.BitmapScalingMode="Linear"/>
         </Canvas>
 
-        <!-- Above the screen in full screen, where it slides down from the top middle. -->
-        <Border x:Name="ToolbarHost" Grid.Row="0" Background="#1e1e1e" MouseLeave="Toolbar_MouseLeave">
+        <!-- Above the screen in full screen, where it comes down from the top
+             middle with rounded corners and a shadow (see StyleBar). -->
+        <Border x:Name="ToolbarHost" Grid.Row="0" Background="{StaticResource BarBrush}"
+                BorderBrush="{StaticResource BarLineBrush}" BorderThickness="0,0,0,1" Padding="6,5"
+                MouseLeave="Toolbar_MouseLeave"
+                TextElement.Foreground="{StaticResource OnBarBrush}">
             <DockPanel>
-                <Button Content="Ctrl+Alt+Del" DockPanel.Dock="Left" Margin="6,4" Padding="10,4" Click="Cad_Click"/>
-                <Button x:Name="CopyButton" Content="Copy to this PC" DockPanel.Dock="Left" Margin="0,4,6,4" Padding="10,4"
-                        Click="Copy_Click" ToolTip="Copy what's selected on the remote PC onto this PC's clipboard"/>
-                <Button x:Name="PasteButton" Content="Paste from this PC" DockPanel.Dock="Left" Margin="0,4,6,4" Padding="10,4"
-                        Click="Paste_Click" ToolTip="Paste this PC's clipboard into the remote PC"/>
-                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="6,0">
-                    <TextBlock Text="Zoom" Foreground="#aaa" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <Button x:Name="FitButton" Content="Fit" Margin="0,4" Padding="10,4" Click="Fit_Click"
-                            ToolTip="Show the whole remote desktop"/>
-                    <!-- Never takes the keyboard: keys go to the remote PC. -->
-                    <Slider x:Name="ZoomSlider" Width="140" Minimum="0" Maximum="1" Margin="8,0,6,0"
-                            VerticalAlignment="Center" Focusable="False" IsMoveToPointEnabled="True"
-                            ValueChanged="ZoomSlider_ValueChanged"
-                            ToolTip="Zoomed in, push the pointer against an edge of the picture to see more"/>
-                    <TextBlock x:Name="ZoomText" Width="40" Foreground="#ddd" VerticalAlignment="Center" Text="100%"/>
-                    <Button x:Name="ActualSizeButton" Content="1:1" Margin="2,4,0,4" Padding="10,4" Click="ActualSize_Click"
-                            ToolTip="One pixel of the remote PC for each pixel of this screen"/>
+                <!-- First in the panel, so it keeps its place in a narrow window. -->
+                <Button x:Name="FullScreenButton" DockPanel.Dock="Right" Style="{StaticResource BarButton}"
+                        Click="FullScreen_Click" ToolTip="Full screen (Ctrl+Alt+Break)">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="FullScreenGlyph" Style="{StaticResource BarGlyph}" Text="&#xE740;"/>
+                        <TextBlock x:Name="FullScreenText" Style="{StaticResource BarLabel}" Text="Full screen"/>
+                    </StackPanel>
+                </Button>
+
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                    <Button Style="{StaticResource BarButton}" Click="Cad_Click"
+                            ToolTip="Send Ctrl+Alt+Del: Windows won't let it be typed from here">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource BarGlyph}" Text="&#xE765;"/>
+                            <TextBlock x:Name="CadText" Style="{StaticResource BarLabel}" Text="Ctrl+Alt+Del"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="CopyButton" Style="{StaticResource BarButton}" Click="Copy_Click"
+                            ToolTip="Copy what's selected on the remote PC onto this PC's clipboard">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource BarGlyph}" Text="&#xE8C8;"/>
+                            <TextBlock x:Name="CopyText" Style="{StaticResource BarLabel}" Text="Copy to this PC"/>
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="PasteButton" Style="{StaticResource BarButton}" Click="Paste_Click"
+                            ToolTip="Paste this PC's clipboard into the remote PC">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource BarGlyph}" Text="&#xE77F;"/>
+                            <TextBlock x:Name="PasteText" Style="{StaticResource BarLabel}" Text="Paste from this PC"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
-                <Button x:Name="FullScreenButton" Content="Full screen" DockPanel.Dock="Left" Margin="6,4" Padding="10,4"
-                        Click="FullScreen_Click" ToolTip="Ctrl+Alt+Break also switches full screen on and off"/>
-                <TextBlock x:Name="HintText" Foreground="#aaa" VerticalAlignment="Center" Margin="8,0"
-                           TextTrimming="CharacterEllipsis"
+
+                <Border DockPanel.Dock="Left" Style="{StaticResource BarDivider}"/>
+
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                    <TextBlock Style="{StaticResource BarGlyph}" Text="&#xE71E;" Margin="4,0,10,0"
+                               Foreground="{StaticResource OnBarMutedBrush}" ToolTip="Zoom"/>
+                    <ToggleButton x:Name="FitButton" Style="{StaticResource BarChoice}" Content="Fit" Click="Fit_Click"
+                                  ToolTip="Show the whole remote desktop"/>
+                    <Slider x:Name="ZoomSlider" Style="{StaticResource BarSlider}" Width="130" Minimum="0" Maximum="1"
+                            Margin="10,0,8,0" ValueChanged="ZoomSlider_ValueChanged"
+                            ToolTip="Zoomed in, push the pointer against an edge of the picture to see more"/>
+                    <TextBlock x:Name="ZoomText" Width="38" Margin="0,0,6,0" TextAlignment="Center" FontSize="12"
+                               VerticalAlignment="Center" Text=""/>
+                    <ToggleButton x:Name="ActualSizeButton" Style="{StaticResource BarChoice}" Content="1:1"
+                                  Click="ActualSize_Click" ToolTip="One pixel of the remote PC for each pixel of this screen"/>
+                </StackPanel>
+
+                <TextBlock x:Name="HintText" Margin="14,0,8,0" VerticalAlignment="Center" FontSize="12"
+                           Foreground="{StaticResource OnBarMutedBrush}" TextTrimming="CharacterEllipsis"
                            Text="Your keyboard and mouse control the remote PC while this window is focused."/>
             </DockPanel>
         </Border>
