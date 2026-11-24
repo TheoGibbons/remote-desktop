@@ -86,6 +86,10 @@ public class WsClient : IDisposable
     private const int MinBackoffMs = 2000;
     private const int MaxBackoffMs = 30000;
 
+    /// <summary>How often a ping goes out, and how long its pong may take.
+    /// Shortened only by tests.</summary>
+    internal static TimeSpan KeepAlive = TimeSpan.FromSeconds(20);
+
     public string? MyId { get; private set; }
 
     public event Action<JsonNode>? JsonReceived;   // always the decrypted inner message
@@ -204,8 +208,8 @@ public class WsClient : IDisposable
                 // router reboot, ISP re-IP) leaves ReceiveAsync blocked forever with
                 // the app still reporting "connected" while the relay has already
                 // reaped its side. Matches OkHttp pingInterval on Android.
-                _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
-                _ws.Options.KeepAliveTimeout = TimeSpan.FromSeconds(20);
+                _ws.Options.KeepAliveInterval = KeepAlive;
+                _ws.Options.KeepAliveTimeout = KeepAlive;
                 await _ws.ConnectAsync(new Uri(_url), ct);
 
                 OpenOutbox();
@@ -229,11 +233,15 @@ public class WsClient : IDisposable
                 CloseOutbox();
                 await pump;
             }
-            catch (OperationCanceledException) { break; }
+            // Only Stop() ends the loop. A missed pong also surfaces as an
+            // OperationCanceledException ("Aborted") although nobody cancelled
+            // anything: ending the loop for it left the PC off the relay for
+            // good, still showing "connected" and the devices it last saw.
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                reason = ex.Message;
-                StateChanged?.Invoke("disconnected: " + ex.Message);
+                reason = ex is OperationCanceledException ? "the relay stopped answering" : ex.Message;
+                StateChanged?.Invoke("disconnected: " + reason);
             }
             finally
             {
