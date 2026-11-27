@@ -280,6 +280,20 @@ wire/screen throughput, changed-frame FPS, JPEG decode time, dirty-area rate,
 sender queue depth, sequence gaps, and decode errors. The same panel has a
 persistent **Highlight updated rectangles in red** debugging option.
 
+**Export** in that panel shares it as text through Android's share sheet, with
+what the panel does not show. The viewer notes the panel's figures every two
+seconds for as long as it is in front, panel open or not, and keeps the last
+ten minutes of them, along with what happened: when the PC was asked for its
+screen and how long the first picture took, each change between JPEG and
+H.264, each time a whole picture had to be asked for, decoder failures, and
+changes in the connection. The export adds this phone's recent connection
+history and the PC's own account of itself, which the PC is asked for as you
+tap Export: its version, whether its window is keeping up with what devices
+ask of it, its monitors, what its stream is doing and the end of its log. A
+PC that does not answer within three seconds is exported as that. Nothing is
+sent to the PC for the figures and nothing is saved to the phone; the session
+key is not in the export.
+
 While holding a left-click drag, hold your finger near any edge of the visible
 desktop to keep moving the cursor in that direction. The zoomed view follows
 the cursor so you can extend a selection beyond the phone screen without zooming

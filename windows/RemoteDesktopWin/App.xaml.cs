@@ -46,7 +46,7 @@ public partial class App : Application
             return;
         }
 #endif
-        if (PrivacyCursorGuard.TryRun(e.Args))
+        if (PrivacyCursorGuard.TryRun(e.Args) || StallDump.TryRun(e.Args))
         {
             Shutdown();
             return;
@@ -82,6 +82,9 @@ public partial class App : Application
         RestorePrivacy = RestoresPrivacy(e.Args);
         // The copy this one replaced, once it has exited.
         Updater.CleanUp(Environment.ProcessPath!);
+        AppLog.Start(System.IO.Path.Combine(AppSettings.StorageDir, "app.log"));
+        AppLog.Write($"Started version {Updater.RunningVersion}" +
+            (e.Args.Length > 0 ? " with " + string.Join(' ', e.Args) : ""));
 
         // Catch any drift from the shared cross-language crypto vectors.
         System.Diagnostics.Debug.Assert(Crypto.SelfTest(), "Crypto self-test failed");
@@ -91,7 +94,9 @@ public partial class App : Application
         // opens a StartupUri even after one of the returns above has asked to
         // shut down, and building the main window rewrites the startup entry
         // to point at this copy and begins to connect.
-        new MainWindow().Show();
+        var window = new MainWindow();
+        window.Show();
+        window.WatchForStalls();
     }
 
     protected override void OnExit(ExitEventArgs e)

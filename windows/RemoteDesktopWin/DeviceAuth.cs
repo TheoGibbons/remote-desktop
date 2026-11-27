@@ -231,6 +231,9 @@ public class PeerAuth
 
     public bool IsTrusted(string? peerId) => peerId != null && _trustedPeers.Contains(peerId);
 
+    /// <summary>The ids of the devices in the session that are approved now. A copy.</summary>
+    public string[] TrustedPeerIds => _trustedPeers.ToArray();
+
     public string? FingerprintOf(string peerId) => _peerFingerprint.GetValueOrDefault(peerId);
 
     /// <summary>Whether the person here said no to this device since the app

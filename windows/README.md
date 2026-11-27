@@ -48,7 +48,10 @@ Run the deterministic H.264 idle/recovery regression checks from the repository
 root with `dotnet run --project windows/RemoteDesktopWin.Tests`. They exercise
 the production capture loop with capture, encoder and transport doubles, including
 an idle keyframe request behind a busy lane and the periodic repair of a final
-inter frame. They take about 11 seconds and do not require a relay or GPU encoder.
+inter frame. They also cover what keeps a window that has fallen behind from
+taking the PC with it: the inbox the relay's messages wait in, the queue a
+viewer's input is carried out from, the watchdog, and the PC's account of
+itself. They take about 11 seconds and do not require a relay or GPU encoder.
 
 Run `dotnet run --project windows/RemoteDesktopWin.SingleInstanceTests` for
 cross-process checks of duplicate-launch rejection, normal shutdown, restart
@@ -352,3 +355,34 @@ on their way fail with a **Retry**.
 - Frame rate/quality/scale are in `settings.json` (`Fps`, `JpegQuality`,
   `MaxStreamWidth` — `0` means native resolution; set e.g. `1600` to clamp
   width on very slow links).
+- **When the PC is online and answers nothing.** Everything a device asks of
+  the PC is answered on the app's window thread, so a window that stalls
+  takes the PC with it while it stays connected. Three things limit that and
+  record it:
+  - The relay's messages wait in an inbox of the app's own and reach the
+    window one at a time, in order. A pointer position or a viewport
+    replaces the one still waiting just ahead of it, so a window that has
+    fallen behind is handed where the pointer is now, not everywhere it has
+    been.
+  - A viewer's mouse and keyboard input is carried out on a thread of its
+    own. Input that has waited more than 5 s is dropped, not replayed onto
+    whatever is on the screen by then; a button or key coming up is always
+    carried out.
+  - A watchdog looks at the window thread once a second. If it has not run
+    for 10 s, or the relay's messages have waited 10 s for it, that goes
+    into `%AppData%\RemoteDesktopWin\app.log` with what the window was
+    handling and how many messages were waiting, and again when it ends.
+    Anything that takes the window a second or more to handle is logged too,
+    and so is time in which the whole app was not running, as when the PC
+    slept: that is not counted as a stall.
+    The first stall in a run also saves the app's memory to
+    `%LocalAppData%\RemoteDesktopWin\dumps`, from which what each thread
+    was doing can be read afterwards. Only the newest file is kept, none is
+    written within 12 hours of the last or with under 4 GB free, and each is
+    several hundred megabytes. **It holds whatever the app had in memory,
+    the session key included**: it stays on the PC, and should not be passed
+    on without that in mind.
+  The log holds times, message types and counts, never what a message said.
+  An approved device viewing the PC can ask for the PC's own account of
+  itself, which the Android viewer's **Stats → Export** includes: that is
+  answered off the window thread, so it still comes when nothing else does.

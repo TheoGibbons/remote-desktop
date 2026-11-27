@@ -238,6 +238,37 @@ internal static class PrivacyLifecycleTests
                 }
                 return list;
             }
+            // What this PC says about itself to a viewer's Stats that asks.
+            // It is answered on the socket's thread, and the window's thread
+            // is given nothing to do here: the answer is wanted most when
+            // that thread has fallen behind and answers nothing else.
+            void AskForReport(string from, string reqId)
+            {
+                var asked = Task.Run(() => ws.Dispatch(Sealed("{\"type\":\"diagnostic-report-get\",\"reqId\":\"" + reqId + "\"}", from), false));
+                if (!asked.Wait(TimeSpan.FromSeconds(10))) throw new Exception("Asking the PC for its report never returned");
+            }
+            Invoke(host, "PublishApproved");
+            Outgoing();
+            AskForReport(phone, "r1");
+            var reports = Outgoing();
+            if (reports.Count != 1 || reports[0]["type"]?.GetValue<string>() != "diagnostic-report" ||
+                reports[0]["to"]?.GetValue<string>() != phone || reports[0]["reqId"]?.GetValue<string>() != "r1" ||
+                reports[0]["report"]?.GetValue<string>() is not { } account ||
+                !account.StartsWith("Remote Desktop ") || !account.Contains("\nWindow: ") || !account.Contains("\nStream: "))
+                throw new Exception("An approved device was not sent the PC's report: " + string.Join(" ", reports.Select(r => r.ToJsonString())));
+            AskForReport("unapproved", "r2");
+            if (Outgoing().Count != 0) throw new Exception("A device that is not approved was sent the PC's report");
+            // On the next connection that id may be some other device's, and
+            // the window, working through the last one's messages, still has
+            // it down as approved.
+            var generation = typeof(WsClient).GetField("_generation", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            int reportConnection = (int)generation.GetValue(ws)!;
+            generation.SetValue(ws, reportConnection + 2);
+            AskForReport(phone, "r3");
+            if (Outgoing().Count != 0) throw new Exception("An id approved on an earlier connection was sent the PC's report on the next");
+            generation.SetValue(ws, reportConnection);
+            Console.WriteLine("PASS: the PC's report goes to an approved device, from the socket's thread, and only on the connection it was approved on");
+
             // Whether this Windows decodes H.264 is found out on the feed's
             // thread as the app starts, and decides what a phone is offered.
             var feed = Field<PhoneFeed>(host, "_phoneFeed");

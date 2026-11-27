@@ -40,6 +40,12 @@
     <string name="viewer_keyboard">Keyboard</string>
     <string name="viewer_more">More</string>
     <string name="viewer_stats">Stats</string>
+    <string name="stats_export">Export</string>
+    <string name="stats_export_subject">Remote Desktop stats</string>
+    <string name="stats_export_not_connected">Not asked: this phone was not connected to the relay.</string>
+    <string name="stats_export_no_reply">The PC did not answer within %1$d s. Its app (version %2$s) may be older than the one this report came in with, or it is not answering this phone.</string>
+    <string name="stats_export_version_unknown">not given</string>
+    <string name="stats_export_failed">Couldn\'t share the stats: %1$s</string>
     <string name="viewer_help">Gestures and buttons</string>
     <string name="clip_no_reply">The PC didn\'t answer. Check that it\'s still connected and running the latest Remote Desktop.</string>
     <string name="clip_not_connected">Not connected to the PC</string>

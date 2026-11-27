@@ -12,6 +12,30 @@ public partial class MainWindow : Window
     private readonly AppSettings _settings;
     private readonly WsClient _ws = new();
     private readonly ScreenStreamer _streamer;
+    // What the socket thread has heard and this window has not handled yet.
+    private readonly MessageInbox _inbox;
+    // A viewer's mouse and keyboard input, carried out off this window's thread.
+    private readonly RemoteInputQueue _input = new(dropped => AppLog.Write(
+        $"Dropped {dropped} of a viewer's mouse and keyboard events: each had waited over " +
+        $"{RemoteInputQueue.StaleMs / 1000} s to be carried out."));
+    private UiWatchdog? _watchdog;
+    // When the message being handled reached this PC, by MessageInbox.Now, or
+    // 0 for one that was not timed on its way in.
+    private long _arrivedAt;
+    // The connection to the relay that what this window is handling came in
+    // on (WsClient.Generation as it arrived), and so the one that everything
+    // the window knows about the devices belongs to. The window can be behind
+    // the socket by a whole connection.
+    private int _windowConnection;
+    // More than 0 while handling something that came from the socket thread,
+    // which said which connection it was on.
+    private int _deliveries;
+    // Which devices are approved, and on which connection, as this window
+    // last knew it: see PublishApproved. Never changed once made.
+    private sealed record Approved(int Connection, HashSet<string> Ids);
+    private volatile Approved _approved = new(-1, new HashSet<string>());
+    private readonly bool _elevated = IsElevated();
+    private static readonly DateTime Started = DateTime.UtcNow;
     private readonly FsService _fs;
     private readonly ClipboardService _clip;
     private readonly PeerAuth _auth;
@@ -231,10 +255,21 @@ public partial class MainWindow : Window
 
         // Never make the socket thread wait for the window: while it waits it
         // answers no pings, so the relay drops the PC, and the PC can neither
-        // notice nor reconnect until the window catches up. BeginInvoke keeps
-        // the messages in order.
-        _ws.StateChanged += s => Dispatcher.BeginInvoke(() => OnState(s));
+        // notice nor reconnect until the window catches up. The inbox keeps
+        // the messages and the changes of state in order, and hands them to
+        // the window one at a time.
+        _inbox = new MessageInbox(DeliverFromInbox, deliver => Dispatcher.BeginInvoke(deliver))
+        {
+            Slow = (what, ms) => AppLog.Write($"Handling \"{what}\" took {ms / 1000.0:0.#} s."),
+        };
+        _ws.StateChanged += s => _inbox.PostState(s, _ws.Generation);
         _ws.JsonReceived += OnJsonReceived;
+        _auth.Changed += PublishApproved;
+        Closed += (_, _) =>
+        {
+            _watchdog?.Dispose();
+            _input.Dispose();
+        };
         _ws.BinaryReceived += OnBinary;
         _fs.TransferChanged += u => Dispatcher.BeginInvoke(() =>
         {
@@ -630,7 +665,11 @@ public partial class MainWindow : Window
     {
         if (!_settingsInitialized) return;
         _settings.AllowRemoteControl = AllowStreamCheck.IsChecked == true;
-        if (!_settings.AllowRemoteControl) _privacy.Disable();
+        if (!_settings.AllowRemoteControl)
+        {
+            _privacy.Disable();
+            _input.Forget(null); // nor is what a viewer already asked for carried out
+        }
         _settings.AllowFileAccess = AllowFilesCheck.IsChecked == true;
         _settings.Save();
         foreach (var peer in _peers) SendFileAccess(peer.Id);
@@ -745,6 +784,8 @@ public partial class MainWindow : Window
 
     private void OnState(string state)
     {
+        // Called straight, as a test does, it is about the connection there is now.
+        if (_deliveries == 0) _windowConnection = _ws.Generation;
         // Posted from the socket thread, so an exception here would end the app.
         try { ApplyState(state); }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Ignored a state change that failed: {ex}"); }
@@ -767,6 +808,7 @@ public partial class MainWindow : Window
             // with every viewer's viewport. A viewer that wants it back asks
             // again, once it has proved its key again.
             _streamer.Stop();
+            _input.Forget(null); // and what its viewers asked for is not carried out
             _peers.Clear();
             _auth.ResetConnection(); // peer ids are stale after a drop
             CaptureOfferCard.PeerLeft(null);
@@ -941,11 +983,106 @@ public partial class MainWindow : Window
         if (type == "screen-info") _phoneFeed.OnScreenInfo(msg);
         // And its answer to a ping is timed here, not when the window gets to it.
         else if (type == "diagnostic-pong") _phoneFeed.OnPong(msg);
+        // A viewer's Stats asking what this PC has to say for itself. Answered
+        // here: it is wanted most when the window is not answering.
+        if (type == "diagnostic-report-get")
+        {
+            AnswerReport(msg);
+            return;
+        }
         // fs-begin is the exception: it opens the file that the chunks behind
         // it are written to, and chunks are written on the socket thread.
-        if (type == "fs-begin") Dispatcher.Invoke(() => OnJson(msg));
-        else Dispatcher.BeginInvoke(() => OnJson(msg));
+        if (type == "fs-begin")
+            Dispatcher.Invoke(() =>
+            {
+                _deliveries++;
+                try { OnJson(msg); }
+                finally { _deliveries--; }
+            });
+        else _inbox.Post(msg, _ws.Generation);
     }
+
+    /// <summary>Hands this window the next thing the socket thread heard.</summary>
+    private void DeliverFromInbox(MessageInbox.Item item)
+    {
+        long arrivedBefore = _arrivedAt;
+        _arrivedAt = item.ArrivedAt;
+        _windowConnection = item.Connection;
+        _deliveries++;
+        try
+        {
+            if (item.State is { } state) OnState(state);
+            else OnJson(item.Message!);
+        }
+        finally
+        {
+            _deliveries--;
+            _arrivedAt = arrivedBefore;
+        }
+    }
+
+    /// <summary>
+    /// Says which devices are approved, for the one question that is answered
+    /// off this window's thread (<see cref="AnswerReport"/>), together with
+    /// the connection that is true of. An id is a device's only on the
+    /// connection it was approved on, and the window may still be working
+    /// through an earlier connection's messages when the socket is on the
+    /// next: whoever reads this must be on the same connection, or take
+    /// nobody for approved.
+    /// </summary>
+    private void PublishApproved() =>
+        _approved = new Approved(_windowConnection, new HashSet<string>(_auth.TrustedPeerIds));
+
+    /// <summary>
+    /// Sends an approved device this PC's account of itself (see <see
+    /// cref="HostReport"/>). On the socket thread, where nothing may throw.
+    /// </summary>
+    private void AnswerReport(JsonNode msg)
+    {
+        try
+        {
+            var from = ClipboardService.Str(msg["from"]);
+            var approved = _approved;
+            if (from == null || approved.Connection != _ws.Generation || !approved.Ids.Contains(from)) return;
+
+            int viewers = _streamer.Regions.Viewers.Length;
+            string stream = !_streamer.IsStreaming || viewers == 0
+                ? "not sending this screen to anybody"
+                : $"sending this screen to {(viewers == 1 ? "1 device" : viewers + " devices")} as " +
+                  (_streamer.ActiveCodec == "h264" ? "H.264" : $"JPEG {_streamer.ActiveQuality}") +
+                  $", {_streamer.ActiveFps} FPS, " +
+                  (_streamer.ActiveWidth > 0 ? $"{_streamer.ActiveWidth} px wide" : "full size");
+            var (monitors, width, height) = HostReport.Screen();
+            _ws.SendJson(new JsonObject
+            {
+                ["type"] = "diagnostic-report",
+                ["to"] = from,
+                ["reqId"] = ClipboardService.Str(msg["reqId"]),
+                ["report"] = HostReport.Build(new HostReport.Facts(
+                    _settings.DeviceName, Updater.RunningVersion, _elevated, DateTime.UtcNow - Started, _inbox.Look(),
+                    monitors, width, height, HostReport.SecondsSinceInput(),
+                    stream, ScreenStreamer.H264Note, _ws.QueuedBinaryBytes, _ws.VideoFramesDropped, AppLog.Recent())),
+            });
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Starts watching this window's thread for stalls (see <see
+    /// cref="UiWatchdog"/>). The app itself asks for it; a window that a test
+    /// builds is not watched.
+    /// </summary>
+    internal void WatchForStalls() => _watchdog ??= new UiWatchdog(
+        answer => Dispatcher.BeginInvoke(DispatcherPriority.Send, answer), _inbox.Look, AppLog.Write, StallDump.Request);
+
+    /// <summary>
+    /// Has a viewer's input carried out: off this window's thread, in the
+    /// order asked for, and not at all once it has waited too long (see <see
+    /// cref="RemoteInputQueue"/>). Whether the viewer may send input was
+    /// decided before this.
+    /// </summary>
+    private void Inject(RemoteInputQueue.Kind kind, string? from, Action act) =>
+        _input.Post(kind, from, _arrivedAt != 0 ? _arrivedAt : MessageInbox.Now(), act);
 
     /// <summary>The phone feed's thread: turns the newest picture into a
     /// bitmap there, and leaves it for the window to show when it next can.</summary>
@@ -1018,6 +1155,8 @@ public partial class MainWindow : Window
 
     private void OnJson(JsonNode msg)
     {
+        // Called straight, as a test does, it is about the connection there is now.
+        if (_deliveries == 0) _windowConnection = _ws.Generation;
         // Posted from the socket thread: an exception here would end the app,
         // and under Invoke one malformed message would drop the relay connection.
         try { HandleJson(msg); }
@@ -1087,6 +1226,7 @@ public partial class MainWindow : Window
                     // forgotten, so the window is never taken for unapproved.
                     EachLink(link => link.Left(leftId, DateTime.UtcNow));
                     _auth.OnPeerLeft(leftId);
+                    _input.Forget(leftId);
                     // Drop their viewport, or the stream stays cropped to a
                     // region nobody is looking at any more.
                     _streamer.Regions.RemoveViewer(leftId);
@@ -1216,23 +1356,41 @@ public partial class MainWindow : Window
                 var action = msg["action"]!.GetValue<string>();
                 var x = msg["x"]!.GetValue<double>();
                 var y = msg["y"]!.GetValue<double>();
-                if (action == "move") InputInjector.MouseMove(x, y);
-                else InputInjector.MouseButton(msg["button"]?.GetValue<string>() ?? "left", action == "down", x, y);
+                if (action == "move") Inject(RemoteInputQueue.Kind.Move, from, () => InputInjector.MouseMove(x, y));
+                else
+                {
+                    var button = msg["button"]?.GetValue<string>() ?? "left";
+                    bool down = action == "down";
+                    Inject(down ? RemoteInputQueue.Kind.Other : RemoteInputQueue.Kind.Release, from,
+                        () => InputInjector.MouseButton(button, down, x, y));
+                }
                 break;
 
             case "scroll":
                 if (controlAllowed)
-                    InputInjector.Scroll(msg["dx"]?.GetValue<double>() ?? 0, msg["dy"]?.GetValue<double>() ?? 0);
+                {
+                    var wheelX = msg["dx"]?.GetValue<double>() ?? 0;
+                    var wheelY = msg["dy"]?.GetValue<double>() ?? 0;
+                    Inject(RemoteInputQueue.Kind.Other, from, () => InputInjector.Scroll(wheelX, wheelY));
+                }
                 break;
 
             case "key":
                 if (controlAllowed)
-                    InputInjector.KeyEvent(msg["code"]!.GetValue<string>(), msg["action"]?.GetValue<string>() ?? "press");
+                {
+                    var keyCode = msg["code"]!.GetValue<string>();
+                    var keyAction = msg["action"]?.GetValue<string>() ?? "press";
+                    Inject(keyAction == "up" ? RemoteInputQueue.Kind.Release : RemoteInputQueue.Kind.Other, from,
+                        () => InputInjector.KeyEvent(keyCode, keyAction));
+                }
                 break;
 
             case "text":
                 if (controlAllowed)
-                    InputInjector.TypeText(msg["text"]?.GetValue<string>() ?? "");
+                {
+                    var typed = msg["text"]?.GetValue<string>() ?? "";
+                    Inject(RemoteInputQueue.Kind.Other, from, () => InputInjector.TypeText(typed));
+                }
                 break;
 
             // Clipboard requests need the control switch, which the service

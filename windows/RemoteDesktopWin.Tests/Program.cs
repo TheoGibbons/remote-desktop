@@ -12,6 +12,7 @@ internal static class Program
         CheckFrameMailbox();
         CheckViewport();
         CheckFullScreenKeys();
+        StallChecks.Run();
 
         var ws = new WsClient();
         var streamer = new ScreenStreamer(ws);

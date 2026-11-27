@@ -15,5 +15,10 @@
     <!-- The PC viewer's zoom and pan arithmetic, and which keys full screen takes from Windows. -->
     <Compile Include="../RemoteDesktopWin/PcViewport.cs" Link="PcViewport.cs" />
     <Compile Include="../RemoteDesktopWin/FullScreenKeys.cs" Link="FullScreenKeys.cs" />
+    <!-- What keeps a window that has fallen behind from taking the PC with it, and says so. -->
+    <Compile Include="../RemoteDesktopWin/MessageInbox.cs" Link="MessageInbox.cs" />
+    <Compile Include="../RemoteDesktopWin/RemoteInputQueue.cs" Link="RemoteInputQueue.cs" />
+    <Compile Include="../RemoteDesktopWin/UiWatchdog.cs" Link="UiWatchdog.cs" />
+    <Compile Include="../RemoteDesktopWin/HostReport.cs" Link="HostReport.cs" />
   </ItemGroup>
 </Project>

@@ -2,6 +2,7 @@ package co.remotedesktop
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.res.ColorStateList
 import android.content.res.Configuration
@@ -84,6 +85,7 @@ class ViewerActivity : AppCompatActivity() {
         Toast.makeText(this, R.string.privacy_no_reply, Toast.LENGTH_SHORT).show()
     }
     private val stateListener: (String) -> Unit = { state ->
+        note("This phone's connection to the relay: $state")
         if (state != "connected") {
             resetPrivacy()
             // The answer can no longer arrive; say so now rather than at the timeout.
@@ -204,6 +206,20 @@ class ViewerActivity : AppCompatActivity() {
     private var hostCodec: String? = null
     // The PC's own word on its H.264 encoder: which one, or why it gave up.
     private var hostH264Note: String? = null
+    // What Export shares besides the panel as it reads now: its figures over
+    // the last minutes, and what happened (see ViewerStatsLog).
+    private val statsLog = ViewerStatsLog()
+    private var statsSampler: Runnable? = null
+    private var everResumed = false
+    // When the PC was last asked for its screen, while no picture has come
+    // since (elapsed realtime); 0 once one has.
+    @Volatile private var askedForScreenAtMs = 0L
+    // How the last picture came, by its frame type: 3 JPEG pieces, 4 H.264. 0 before the first.
+    @Volatile private var lastFrameKind = 0
+    private lateinit var exportButton: Button
+    // Export has asked the PC for its own account and is waiting for it.
+    private var pendingReportReq: String? = null
+    private val reportTimeout = Runnable { finishExport(null) }
 
     private val binaryListener: (ByteArray) -> Unit = { data ->
         // No type 1: only phones send full-frame JPEGs, and this views a
@@ -286,6 +302,7 @@ class ViewerActivity : AppCompatActivity() {
                 width = w,
                 height = h,
             )
+            pictureArrived(4)
         } catch (e: Exception) {
             recoverVideo()
         }
@@ -355,8 +372,9 @@ class ViewerActivity : AppCompatActivity() {
             // Some hardware decoders never produce output for sparse desktop
             // frames. Switch this session to JPEG rather than reset forever.
             h264Enabled = false
+            note("The video decoder failed twice: asking the PC for JPEG instead")
             runOnUiThread { screen.resendViewport() }
-        }
+        } else note("The video decoder failed: starting it again")
         requestKeyframe()
         videoHandler.postDelayed(videoRecoveryRetry, VIDEO_RECOVERY_RETRY_MS)
     }
@@ -507,8 +525,10 @@ class ViewerActivity : AppCompatActivity() {
                 width = w,
                 height = h,
             )
+            pictureArrived(3)
         } catch (e: Exception) {
             streamStats.recordDecodeError()
+            note("A picture could not be read")
             requestKeyframe()
         }
     }
@@ -552,12 +572,37 @@ class ViewerActivity : AppCompatActivity() {
         lastKeyframeRequestAt = now
         winId?.let {
             ConnectionManager.sendJson(JSONObject().put("type", "request-keyframe").put("to", it))
+            note("Asked the PC for a whole picture")
+        }
+    }
+
+    /** Writes down, for Export, that something happened. Any thread. */
+    private fun note(what: String, key: String? = null) = statsLog.event(System.currentTimeMillis(), what, key)
+
+    /**
+     * A picture has come, as frame type [kind]. Any thread, and for every
+     * picture, so it does nothing but compare two numbers unless this is the
+     * first since the PC was asked, or the first of its kind.
+     */
+    private fun pictureArrived(kind: Int) {
+        val asked = askedForScreenAtMs
+        if (asked != 0L) {
+            askedForScreenAtMs = 0L
+            note(String.format(Locale.US, "First picture, %.1f s after asking", (SystemClock.elapsedRealtime() - asked) / 1000.0))
+        }
+        if (kind != lastFrameKind) {
+            lastFrameKind = kind
+            note(if (kind == 4) "Pictures now come as H.264 video" else "Pictures now come as JPEG pieces")
         }
     }
 
     private val jsonListener: (JSONObject) -> Unit = { msg ->
-        if (msg.optString("type") == "peer-left" && msg.optString("id") == winId) desktopGone()
+        if (msg.optString("type") == "peer-left" && msg.optString("id") == winId) {
+            note("The PC left the session")
+            desktopGone()
+        }
         if (msg.optString("type") == "auth-result" && msg.optString("from") == winId) {
+            note("The PC says this phone is " + msg.optString("status"))
             updateApprovalNotice()
             when (msg.optString("status")) {
                 // Approved: re-request the stream — the start-view sent while we
@@ -610,6 +655,11 @@ class ViewerActivity : AppCompatActivity() {
             hostH264Note = msg.optString("h264Note").takeIf { it.isNotEmpty() && !msg.isNull("h264Note") }
             pendingPingNonce = -1L
             pingTimedOut = false
+        }
+        if (msg.optString("type") == "diagnostic-report" && msg.optString("from") == winId &&
+            pendingReportReq != null && msg.optString("reqId") == pendingReportReq
+        ) {
+            finishExport(msg.optString("report").takeIf { it.isNotEmpty() && !msg.isNull("report") })
         }
         if (msg.optString("type") == "clip-get-result" && msg.optString("from") == winId &&
             pendingCopyReq != null && msg.optString("reqId") == pendingCopyReq
@@ -859,6 +909,9 @@ class ViewerActivity : AppCompatActivity() {
                     // Only once there is somewhere to decode onto, or the host
                     // would stream frames we cannot show.
                     .put("h264", supportsH264))
+                // One line however far it is dragged: where it ended up.
+                note("Told the PC which part is on show, to be sent at ${outW}x$outH, " +
+                    (if (supportsH264) "as video if the PC can" else "as JPEG"), key = "viewport")
             }
         }
     }
@@ -1012,6 +1065,117 @@ class ViewerActivity : AppCompatActivity() {
         if (::diagnosticsPanel.isInitialized) diagnosticsPanel.visibility = View.GONE
         diagnosticsUpdater?.let { diagnosticsHandler.removeCallbacks(it) }
         diagnosticsUpdater = null
+        cancelExport()
+    }
+
+    /**
+     * Notes the panel's figures every couple of seconds while the viewer is
+     * in front, whether or not the panel is open, for Export (see
+     * ViewerStatsLog): counters the viewer keeps anyway, read on this thread,
+     * with nothing sent to the PC.
+     */
+    private fun startStatsSampler() {
+        statsSampler?.let { diagnosticsHandler.removeCallbacks(it) }
+        var previousStream = streamStats.snapshot()
+        var previousConnection = ConnectionManager.debugStats()
+        val sampler = object : Runnable {
+            override fun run() {
+                val stream = streamStats.snapshot()
+                val connection = ConnectionManager.debugStats()
+                val seconds = ((stream.sampledAtMs - previousStream.sampledAtMs) / 1000.0).coerceAtLeast(0.001)
+                statsLog.sample(ViewerStatsLog.Sample(
+                    atMs = System.currentTimeMillis(),
+                    state = connection.state,
+                    fps = (stream.frames - previousStream.frames) / seconds,
+                    screenMbps = (stream.streamBytes - previousStream.streamBytes) * 8.0 / seconds / 1_000_000.0,
+                    wireMbps = (connection.receivedWireBytes - previousConnection.receivedWireBytes) * 8.0 /
+                        seconds / 1_000_000.0,
+                    frames = stream.frames,
+                    keyframes = stream.keyframes,
+                    sequenceGaps = stream.sequenceGaps,
+                    decodeErrors = stream.decodeErrors,
+                    lastFrameAgoMs = stream.lastFrameAgoMs,
+                    lastPacketAgoMs = connection.lastReceiveAgoMs,
+                    // Only an open panel asks the PC, and a figure from an earlier look would mislead.
+                    rttMs = lastRttMs.takeIf { diagnosticsUpdater != null && !pingTimedOut },
+                    kind = when (lastFrameKind) { 4 -> "H.264"; 3 -> "JPEG"; else -> null },
+                ))
+                previousStream = stream
+                previousConnection = connection
+                diagnosticsHandler.postDelayed(this, ViewerStatsLog.SAMPLE_EVERY_MS)
+            }
+        }
+        statsSampler = sampler
+        diagnosticsHandler.postDelayed(sampler, ViewerStatsLog.SAMPLE_EVERY_MS)
+    }
+
+    /**
+     * Shares the Stats panel together with what it does not show: its
+     * figures over the last minutes, what happened, this phone's connection
+     * history, and the PC's own account of itself. The PC is asked for that
+     * first and given a moment; a PC that says nothing is part of what is
+     * shared.
+     */
+    private fun exportStats() {
+        if (pendingReportReq != null) return
+        if (ConnectionManager.state != "connected" || winId == null) {
+            shareStats(null, getString(R.string.stats_export_not_connected))
+            return
+        }
+        val reqId = UUID.randomUUID().toString()
+        pendingReportReq = reqId
+        exportButton.isEnabled = false
+        send(JSONObject().put("type", "diagnostic-report-get").put("reqId", reqId))
+        diagnosticsHandler.postDelayed(reportTimeout, REPORT_TIMEOUT_MS)
+    }
+
+    /** The PC has answered Export with [report], or, with null, has not answered in time. */
+    private fun finishExport(report: String?) {
+        if (pendingReportReq == null) return
+        cancelExport()
+        val version = ConnectionManager.peers.firstOrNull { it.id == winId }?.version
+            ?: getString(R.string.stats_export_version_unknown)
+        shareStats(report,
+            if (report != null) null else getString(R.string.stats_export_no_reply, REPORT_TIMEOUT_MS / 1000, version))
+    }
+
+    private fun cancelExport() {
+        pendingReportReq = null
+        diagnosticsHandler.removeCallbacks(reportTimeout)
+        if (::exportButton.isInitialized) exportButton.isEnabled = true
+    }
+
+    private fun shareStats(pcReport: String?, noPcReport: String?) {
+        val pc = ConnectionManager.peers.firstOrNull { it.id == winId }
+        val version = try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { null }
+        val text = ViewerStatsLog.export(
+            ViewerStatsLog.Heading(
+                exportedAtMs = System.currentTimeMillis(),
+                phoneName = Prefs(this).deviceName,
+                appVersion = version ?: "?",
+                android = Build.VERSION.RELEASE,
+                model = "${Build.MANUFACTURER} ${Build.MODEL}",
+                pcName = pc?.name ?: "a PC that has left the session",
+                pcVersion = pc?.version,
+            ),
+            now = diagnosticsText.text.toString(),
+            samples = statsLog.samples(),
+            events = statsLog.events(),
+            connectionHistory = ConnectionLog.toText(ConnectionLog.entries().take(EXPORTED_HISTORY)),
+            pcReport = pcReport,
+            noPcReport = noPcReport,
+        )
+        note("Exported these stats")
+        try {
+            startActivity(Intent.createChooser(
+                Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, getString(R.string.stats_export_subject))
+                    .putExtra(Intent.EXTRA_TEXT, text),
+                getString(R.string.stats_export_subject)))
+        } catch (e: Exception) {
+            Toast.makeText(this, getString(R.string.stats_export_failed, e.message ?: e.javaClass.simpleName),
+                Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun buildDiagnosticsPanel(): LinearLayout {
@@ -1040,6 +1204,12 @@ class ViewerActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
                 setTypeface(typeface, Typeface.BOLD)
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            exportButton = Button(this@ViewerActivity).apply {
+                setText(R.string.stats_export)
+                isAllCaps = false
+                setOnClickListener { exportStats() }
+            }
+            addView(exportButton)
             addView(Button(this@ViewerActivity).apply {
                 setText(R.string.close)
                 isAllCaps = false
@@ -1421,6 +1591,10 @@ class ViewerActivity : AppCompatActivity() {
         ConnectionManager.stateListeners.add(stateListener)
         updateApprovalNotice()
         updateReconnectNotice()
+        note(if (everResumed) "Came back to the viewer"
+            else "Opened on " + (ConnectionManager.peers.firstOrNull { it.id == winId }?.name ?: "a PC that has left"))
+        everResumed = true
+        startStatsSampler()
         startViewer()
         send(JSONObject().put("type", "get-privacy-state"))
     }
@@ -1510,6 +1684,8 @@ class ViewerActivity : AppCompatActivity() {
         }
         hideDiagnostics()
         diagnosticsHandler.removeCallbacksAndMessages(null)
+        statsSampler = null
+        note("Left the viewer")
         // Send before stop-view, including to older hosts that do not understand
         // the disconnect policy carried in start-view.
         if (Prefs(this).autoUnprivacy) {
@@ -1528,6 +1704,8 @@ class ViewerActivity : AppCompatActivity() {
         winId?.let {
             ConnectionManager.sendJson(JSONObject().put("type", "start-view").put("to", it)
                 .put("autoUnprivacy", Prefs(this).autoUnprivacy))
+            askedForScreenAtMs = SystemClock.elapsedRealtime()
+            note("Asked the PC for its screen")
         }
     }
 
@@ -1562,6 +1740,10 @@ class ViewerActivity : AppCompatActivity() {
         const val STATS_REFRESH_MS = 1_000L
         const val PING_INTERVAL_MS = 2_000L
         const val PING_TIMEOUT_MS = 5_000L
+        // How long Export waits for the PC's own account before sharing without it.
+        const val REPORT_TIMEOUT_MS = 3_000L
+        // How much of this phone's connection history goes into an export.
+        const val EXPORTED_HISTORY = 30
         const val MAX_LISTED_FILES = 5
     }
 }
