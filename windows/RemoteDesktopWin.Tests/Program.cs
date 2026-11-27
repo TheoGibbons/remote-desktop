@@ -257,9 +257,11 @@ public sealed class GdiCaptureSource : ICaptureSource
     public bool CaptureInto(Bitmap surface, List<Rectangle> dirty, Rectangle interest) => true;
     public void Dispose() { }
 }
-
-public sealed class H264Encoder : IDisposable
-{
+  public sealed class H264Encoder : IDisposable
+  {
+    public static string? Starting => null;
+    public string Name => "Test H.264 encoder";
+    public string Activity => "test double";
     public static H264Encoder TryCreate(int width, int height, int bitrate, int fps) => new();
     public byte[] Encode(Bitmap frame, bool forceKeyframe) =>
         new byte[] { 0, 0, 0, 1, forceKeyframe ? (byte)0x65 : (byte)0x41, 0 };
