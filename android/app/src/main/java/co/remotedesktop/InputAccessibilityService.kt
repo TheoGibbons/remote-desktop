@@ -46,12 +46,15 @@ class InputAccessibilityService : AccessibilityService() {
 
         /** The rows of a viewer's menu, beyond navigation, that this phone can
          *  act on right now, by the names `phone-state` lists them under.
-         *  Locking and taking a screenshot came with Android 9. */
+         *  Locking and taking a screenshot came with Android 9. `copy` is
+         *  answering `clip-get` (see [PhoneClipCopy]), which needs the
+         *  service to press Copy and to bring up the screen that reads the
+         *  clipboard. */
         val menuActions: List<String>
             get() = when {
                 instance == null -> emptyList()
-                Build.VERSION.SDK_INT >= 28 -> listOf("rotate", "quick-settings", "lock", "screenshot")
-                else -> listOf("rotate", "quick-settings")
+                Build.VERSION.SDK_INT >= 28 -> listOf("rotate", "quick-settings", "lock", "screenshot", "copy")
+                else -> listOf("rotate", "quick-settings", "copy")
             }
 
         /** Which way a viewer is holding the screen: `auto` when none is. */
@@ -296,6 +299,31 @@ class InputAccessibilityService : AccessibilityService() {
         }
         val keyCode = PhoneKeyboard.keyCode(code) ?: return
         PhoneKeyboard.press(keyCode, ctrl, shift, SystemClock.uptimeMillis()).forEach(field::sendKeyEvent)
+    }
+
+    // ---------- a viewer's Copy ----------
+
+    /**
+     * Presses Copy in the text field the keyboard is typing into, for a
+     * viewer's `clip-get`: what Ctrl+C typed there would do. With nothing
+     * selected it copies nothing. Nothing of the field, or of any other
+     * view, is read: the app copies, and [PhoneClipCopy] reads the clipboard.
+     * Not for the main thread, since it waits on the app in front.
+     * @return whether there was a field to press it in.
+     */
+    internal fun pressCopy(): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return false
+        val field = inputMethod?.currentInputConnection ?: return false
+        return try {
+            field.performContextMenuAction(android.R.id.copy)
+            // Answered only once the field has dealt with what came before,
+            // the copy included, so the clipboard is read after it.
+            field.getCursorCapsMode(0)
+            true
+        } catch (_: RuntimeException) {
+            // The field went away as it was asked.
+            false
+        }
     }
 
     private fun tap(x: Double, y: Double): GestureDescription {

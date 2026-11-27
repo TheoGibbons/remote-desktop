@@ -162,7 +162,7 @@ class PhoneControlsTest {
             assertEquals(7, it.getInt("volume"))
             assertEquals(15, it.getInt("volumeMax"))
             assertEquals("auto", it.getString("rotation"))
-            assertEquals(listOf("volume", "rotate", "quick-settings", "lock", "screenshot"), can(it))
+            assertEquals(listOf("volume", "rotate", "quick-settings", "lock", "screenshot", "copy"), can(it))
         }
 
         // Android 8 can open Quick settings but not lock or take a screenshot.
@@ -170,7 +170,7 @@ class PhoneControlsTest {
         ReflectionHelpers.setStaticField(Build.VERSION::class.java, "SDK_INT", 27)
         try {
             receive("pc", message("get-phone-state"))
-            assertEquals(listOf("volume", "rotate", "quick-settings"), can(states().last()))
+            assertEquals(listOf("volume", "rotate", "quick-settings", "copy"), can(states().last()))
             receive("pc", message("lock"))
             receive("pc", message("screenshot"))
             assertEquals(emptyList<Int>(), actions)
@@ -190,7 +190,7 @@ class PhoneControlsTest {
     fun phoneStateIsBuiltAsTheWindowsAppReadsIt() {
         val shared = JSONObject(
             """{"type":"phone-state","to":"pc","volume":7,"volumeMax":15,"muted":false,"rotation":"auto",""" +
-                """"can":["volume","rotate","quick-settings","lock","screenshot"]}""")
+                """"can":["volume","rotate","quick-settings","lock","screenshot","copy"]}""")
         receive("pc", message("get-phone-state"))
         // As it went over the wire: the socket read it back from text.
         val built = states().single()

@@ -38,9 +38,11 @@ namespace RemoteDesktopWin;
 /// While it is focused, the keyboard types into the phone's focused text
 /// field: characters as <c>text</c>, composed here with this PC's layout, and
 /// editing keys and Ctrl shortcuts as <c>key</c>. Ctrl+V pastes this PC's
-/// clipboard rather than the phone's, and Esc is Back. Alt combinations stay
-/// with Windows. Nothing in the title bar or the menu takes the focus, so
-/// using them never gets in the way of typing.
+/// clipboard rather than the phone's, and Esc is Back. With a phone that can,
+/// Ctrl+C, like Copy to this PC in the menu, brings what the phone copied onto
+/// this PC's clipboard, pressing Copy in its text field first (<c>clip-get</c>). Alt
+/// combinations stay with Windows. Nothing in the title bar or the menu takes
+/// the focus, so using them never gets in the way of typing.
 /// </summary>
 public partial class PhoneViewWindow : Window, IDeviceWindow
 {
@@ -113,6 +115,12 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
     private readonly DispatcherTimer _rotationTimer;
     private SmoothVideo _smooth = new();
     private readonly DispatcherTimer _smoothTimer;
+
+    // The Copy to this PC in flight: one at a time, and only its own answer
+    // counts. A phone that says it can copy answers within a few seconds.
+    private string? _clipReq;
+    private int _clipCounter;
+    private readonly DispatcherTimer _clipTimeout = new() { Interval = TimeSpan.FromSeconds(10) };
 
     // What the phone last said in lock-state; null until it does, and for
     // good with a phone app too old to say. Written here, on the window's
@@ -221,7 +229,15 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
             _smoothTimer.Stop();
             if (_smooth.Tick(DateTime.UtcNow) is { } said) Toast.Show(said);
         };
-        Closed += (_, _) => { _updateLineTimer.Stop(); _volumeTimer.Stop(); _rotationTimer.Stop(); _smoothTimer.Stop(); };
+        _clipTimeout.Tick += (_, _) =>
+        {
+            EndClipRequest();
+            Toast.Show($"{Title} didn't answer the copy. Try again.");
+        };
+        Closed += (_, _) =>
+        {
+            _updateLineTimer.Stop(); _volumeTimer.Stop(); _rotationTimer.Stop(); _smoothTimer.Stop(); _clipTimeout.Stop();
+        };
 
         SendStartView();
         AskPhoneState(always: true);
@@ -338,6 +354,7 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
         _volumeTimer.Stop();
         _rotationTimer.Stop();
         _smoothTimer.Stop();
+        EndClipRequest();
         _phoneTypes = null;
         _phoneState = null;
         _viewingSince = null;
@@ -649,6 +666,7 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
         ShowRotation();
         QuickSettingsButton.Visibility = Shown(rows.QuickSettings);
         ScreenshotButton.Visibility = Shown(rows.Screenshot);
+        CopyButton.Visibility = Shown(rows.Copy);
         LockButton.Visibility = Shown(rows.Lock);
         UpdateLine.Visibility = Shown(rows.UpdateLine);
     }
@@ -1326,6 +1344,9 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
     private static bool IsPaste(Key key, ModifierKeys modifiers) =>
         modifiers == ModifierKeys.Control && key == Key.V || modifiers == ModifierKeys.Shift && key == Key.Insert;
 
+    private static bool IsCopy(Key key, ModifierKeys modifiers) =>
+        modifiers == ModifierKeys.Control && (key == Key.C || key == Key.Insert);
+
     /// <summary>
     /// Every key pressed in the window comes through here, and the order of
     /// the checks is the order keys are claimed in. It is shared with the
@@ -1336,7 +1357,8 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
     ///      on its keys, never text. Digits are claimed in
     ///      <see cref="Window_PreviewTextInput"/>, where they arrive as
     ///      characters whatever the keyboard's layout.
-    ///   4. Everything else is typed into the phone.
+    ///   4. Paste and, with a phone that can copy, Copy cross over to this
+    ///      PC's clipboard. Everything else is typed into the phone.
     /// A key that makes a character is left unhandled here and arrives in
     /// <see cref="Window_PreviewTextInput"/>; handling it here stops that.
     /// </summary>
@@ -1378,8 +1400,8 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
         }
 
         // 3. A PIN pad on the phone: Backspace and Enter are its own two
-        // keys, tapped, and a paste has nowhere to go. A pad without one of
-        // them (some confirm by themselves) gets nothing for it.
+        // keys, tapped, and a paste or a copy has nowhere to go. A pad
+        // without one of them (some confirm by themselves) gets nothing for it.
         if (CurrentPin is { } pin)
         {
             var label = modifiers != ModifierKeys.None ? null : key switch
@@ -1394,17 +1416,24 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
                 e.Handled = true;
                 return;
             }
-            if (IsPaste(key, modifiers))
+            if (IsPaste(key, modifiers) || IsCopy(key, modifiers))
             {
                 e.Handled = true;
                 return;
             }
         }
 
-        // 4. The phone's keys.
+        // 4. The phone's keys, but for the clipboard's. A phone that can't
+        // copy for this PC still gets Ctrl+C, which copies on its own clipboard.
         if (IsPaste(key, modifiers))
         {
             if (!e.IsRepeat) _ = PasteAsync();
+            e.Handled = true;
+            return;
+        }
+        if (IsCopy(key, modifiers) && CanCopy)
+        {
+            if (!e.IsRepeat) StartCopy();
             e.Handled = true;
             return;
         }
@@ -1467,5 +1496,42 @@ public partial class PhoneViewWindow : Window, IDeviceWindow
             return;
         }
         SendText(fitText.ReplaceLineEndings("\n"));
+    }
+
+    // ---------------- Copy to this PC ----------------
+
+    /// <summary>Whether the phone said it answers <c>clip-get</c>.</summary>
+    private bool CanCopy => _phoneState?.Can.Contains("copy") == true;
+
+    /// <summary>A row of the menu, like the others: the menu stays open.</summary>
+    private void CopyButton_Click(object sender, RoutedEventArgs e) => StartCopy();
+
+    /// <summary>Asks the phone to press Copy in the text field in use and send
+    /// its clipboard (see PhoneClipCopy on Android).</summary>
+    private void StartCopy()
+    {
+        if (_clipReq != null || !_link.Live || !CanCopy) return;
+        _clipReq = (++_clipCounter).ToString();
+        Send(new JsonObject { ["type"] = "clip-get", ["reqId"] = _clipReq });
+        CopyButton.IsEnabled = false;
+        _clipTimeout.Start();
+    }
+
+    private void EndClipRequest()
+    {
+        _clipReq = null;
+        _clipTimeout.Stop();
+        CopyButton.IsEnabled = true;
+    }
+
+    /// <summary>The phone's answer to Copy: it goes on this PC's clipboard.</summary>
+    public void OnClipResult(JsonNode msg)
+    {
+        if (_clipReq == null || ClipboardService.Str(msg["reqId"]) != _clipReq) return;
+        EndClipRequest();
+        // Outside a text field the phone copies nothing by itself: its own
+        // Copy has to be tapped first.
+        _ = ViewerClipboard.ApplyCopyAsync(this, Title, msg,
+            $"If you selected something on {Title}, tap Copy there first, then copy again.");
     }
 }

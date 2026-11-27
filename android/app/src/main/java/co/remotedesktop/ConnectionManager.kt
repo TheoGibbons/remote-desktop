@@ -586,6 +586,10 @@ object ConnectionManager {
             // The rest of a viewer's menu. Not input: these never wake the phone.
             "volume", "get-phone-state" ->
                 if (mayControl(from)) PhoneControls.handle(appContext, from, msg)
+            // A viewer's Copy. Answered even when refused, so the PC can say why.
+            "clip-get" -> if (PeerAuth.isTrusted(from))
+                PhoneClipCopy.handle(appContext, from, msg.optString("reqId").ifEmpty { null },
+                    msg.optBoolean("press", true)) { controlRefusal(from) }
             // Turning the screen is for whoever is looking at it, and is undone when they stop.
             "rotate" ->
                 if (mayControl(from) && PhoneScreenCapture.isViewing(from)) PhoneControls.handle(appContext, from, msg)
@@ -657,6 +661,17 @@ object ConnectionManager {
 
     /** Why another phone can't browse this one. */
     private fun phonesOffReason(prefs: Prefs) = "Allow other phones is off on ${prefs.deviceName}"
+
+    /** Why an approved device may not control this phone right now, in words
+     *  for its screen; null when it may (see [mayControl]). */
+    private fun controlRefusal(from: String): String? {
+        val prefs = Prefs(appContext)
+        return when {
+            !prefs.allowControl -> "\"View and control this phone\" is turned off on ${prefs.deviceName}."
+            !prefs.allowsDevice(deviceOf(from)) -> phonesOffReason(prefs) + "."
+            else -> null
+        }
+    }
 
     /** Answers get-file-access as a PC does, so the asker knows whether it may
      *  upload here. `phones` tells another phone whether it may open this one. */

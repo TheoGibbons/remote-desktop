@@ -75,9 +75,9 @@ class PcClipboardTest {
         clipboard.clearPrimaryClip()
         assertNull(PcClipboard.read(context))
         clipboard.setPrimaryClip(ClipData.newPlainText("note", "hello"))
-        assertEquals(PcClipboard.PhoneClip("hello", null, false), PcClipboard.read(context))
+        assertEquals(PcClipboard.PhoneClip("hello", null, false), PcClipboard.read(context)?.copy(copiedAtMs = 0))
         clipboard.setPrimaryClip(ClipData.newHtmlText("page", "Bold", "<b>Bold</b>"))
-        assertEquals(PcClipboard.PhoneClip("Bold", "<b>Bold</b>", false), PcClipboard.read(context))
+        assertEquals(PcClipboard.PhoneClip("Bold", "<b>Bold</b>", false), PcClipboard.read(context)?.copy(copiedAtMs = 0))
         clipboard.setPrimaryClip(ClipData(ClipDescription("photo", arrayOf("image/png")),
             ClipData.Item(Uri.parse("content://media/external/images/1"))))
         assertNull(PcClipboard.read(context))
@@ -104,7 +104,7 @@ class PcClipboardTest {
         // Android insists on some plain text beside HTML, but it can be empty.
         clipboard.setPrimaryClip(ClipData(ClipDescription("page", arrayOf(ClipDescription.MIMETYPE_TEXT_HTML)),
             ClipData.Item("", "<p>Hello <b>there</b></p>")))
-        assertEquals(PcClipboard.PhoneClip("Hello there", "<p>Hello <b>there</b></p>", false), PcClipboard.read(context))
+        assertEquals(PcClipboard.PhoneClip("Hello there", "<p>Hello <b>there</b></p>", false), PcClipboard.read(context)?.copy(copiedAtMs = 0))
     }
 
     @Test
@@ -112,7 +112,7 @@ class PcClipboardTest {
         clipboard.setPrimaryClip(ClipData.newPlainText("password", "hunter2").apply {
             description.extras = PersistableBundle().apply { putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true) }
         })
-        assertEquals(PcClipboard.PhoneClip("hunter2", null, true), PcClipboard.read(context))
+        assertEquals(PcClipboard.PhoneClip("hunter2", null, true), PcClipboard.read(context)?.copy(copiedAtMs = 0))
     }
 
     @Test

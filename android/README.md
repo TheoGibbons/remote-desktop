@@ -311,6 +311,11 @@ repeat quickly while held, after a short initial delay. The
   Android 13+), so the PC's keyboard can type into the focused text field
   alongside the user's own keyboard. It types only what an approved device
   sends while remote control is allowed, and reads none of what is typed.
+  For a viewer's **Copy to this PC** it presses Copy in that field, as the
+  Ctrl+C it would type does, and reads nothing of it; the app then reads the
+  clipboard from an invisible screen of its own (`ClipReadActivity`), since
+  Android lets only the app in front do that. Android 12 and later show
+  "Remote Desktop pasted from your clipboard" when it does.
 - The Accessibility service can read what is on the screen
   (`canRetrieveWindowContent`, with view ids). It uses that for one thing,
   described under [Unlocking the phone from a viewer](#unlocking-the-phone-from-a-viewer):
@@ -334,7 +339,12 @@ can:
   usual one;
 - open Quick settings, take a screenshot (saved like any other, so it is
   offered to your PCs if *Offer new photos to PCs* is on), and lock the phone.
-  Locking and screenshots need Android 9 or later.
+  Locking and screenshots need Android 9 or later;
+- take what is on the clipboard (**Copy to this PC**), while it is viewing and
+  the phone is unlocked. The phone first presses Copy in the text box in use,
+  if there is one; a selection anywhere else needs the phone's own Copy
+  tapped first. A copy more than a minute old is sent to be asked about, and
+  one a password manager marked private isn't sent at all.
 
 All of it goes through the Accessibility service except the volume, and needs
 no further permission. The Windows app has these in the **⋯** menu of the

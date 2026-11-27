@@ -1242,6 +1242,8 @@ public partial class MainWindow : Window
 
             case "clip-get-result":
                 if (_pcView != null && _pcView.IsOn(from)) _pcView.OnClipResult(msg);
+                // What a phone copied goes on this PC's clipboard: only an approved phone's.
+                else if (_phoneView != null && _phoneView.IsOn(from) && _auth.IsTrusted(from)) _phoneView.OnClipResult(msg);
                 break;
             case "clip-set-result":
                 if (_pcView != null && _pcView.IsOn(from)) _pcView.OnPasteResult(msg);

@@ -511,6 +511,60 @@ internal static class PrivacyLifecycleTests
                 {
                     Toast.Capture = Quiet;
                 }
+
+                // Copy to this PC: offered only by a phone that says it can
+                // copy, asked once at a time, and ended only by the phone's
+                // own answer to that ask. An answer with text isn't tried
+                // here: it would replace the clipboard of whoever runs this.
+                var copySaid = new List<string>();
+                Toast.Capture = copySaid.Add;
+                try
+                {
+                    var copyRow = (System.Windows.Controls.Button)view.FindName("CopyButton");
+                    void CopyClick() => copyRow.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                    List<JsonObject> Gets() => Outgoing().Where(m => m["type"]?.GetValue<string>() == "clip-get").ToList();
+                    string Answer(string reqId, string error) =>
+                        "{\"type\":\"clip-get-result\",\"reqId\":\"" + reqId + "\",\"fresh\":true,\"error\":\"" + error + "\"}";
+
+                    Outgoing();
+                    CopyClick();
+                    if (copyRow.Visibility == Visibility.Visible || Gets().Count != 0)
+                        throw new Exception("Copy to this PC was offered before the phone said it could copy");
+                    OffSocket(Sealed("{\"type\":\"phone-state\",\"volume\":7,\"volumeMax\":15,\"muted\":false,\"rotation\":\"auto\"," +
+                        "\"can\":[\"volume\",\"copy\"]}", phone), binary: false);
+                    Until(() => copyRow.Visibility == Visibility.Visible, "Copy to this PC was not offered by a phone that says it can copy");
+
+                    CopyClick();
+                    var gets = Gets();
+                    if (gets.Count != 1 || gets[0]["to"]?.GetValue<string>() != phone || ClipboardService.Str(gets[0]["reqId"]) is not { } reqId)
+                        throw new Exception("Copy to this PC did not ask the phone: " + string.Join(", ", gets.Select(m => m.ToJsonString())));
+                    if (copyRow.IsEnabled) throw new Exception("Copy to this PC was not greyed while the phone answers");
+                    CopyClick();
+                    if (Gets().Count != 0) throw new Exception("The phone was asked to copy again before it had answered");
+
+                    // Not the answer to this ask, another device's, and the phone's while this PC doesn't approve it.
+                    OffSocket(Sealed(Answer("other", "An old answer"), phone), binary: false);
+                    OffSocket(Sealed(Answer(reqId, "Another device's answer"), "unapproved"), binary: false);
+                    trusted.Remove(phone);
+                    OffSocket(Sealed(Answer(reqId, "An unapproved phone's answer"), phone), binary: false);
+                    trusted.Add(phone);
+                    Pump(200);
+                    if (copySaid.Count != 0 || copyRow.IsEnabled)
+                        throw new Exception("An answer that was not the phone's own to this copy was taken: " + string.Join(" | ", copySaid));
+
+                    OffSocket(Sealed(Answer(reqId, "Test phone is locked or its screen is off. Unlock it, then copy again."), phone), binary: false);
+                    Until(() => copySaid.Count > 0, "The phone's refusal was not said");
+                    if (!copySaid.SequenceEqual(new[] { "Test phone is locked or its screen is off. Unlock it, then copy again." }) || !copyRow.IsEnabled)
+                        throw new Exception("The phone's refusal ended the copy wrongly: " + string.Join(" | ", copySaid));
+                    // And the phone may be asked again.
+                    CopyClick();
+                    if (Gets().Count != 1) throw new Exception("After its answer the phone could not be asked again");
+                    Console.WriteLine("PASS: Copy to this PC is offered by a phone that can copy, asks it once at a time, and takes only its own answer");
+                }
+                finally
+                {
+                    Toast.Capture = Quiet;
+                }
             }
             finally
             {

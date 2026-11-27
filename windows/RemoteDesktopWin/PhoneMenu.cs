@@ -370,9 +370,10 @@ internal sealed class AskPace
 /// always there. The rest need a phone that says it can do them, in
 /// <c>phone-state</c>; a phone that is being viewed and has never sent one is
 /// running an older app, and gets a line saying to update it instead.
+/// <c>Copy</c> is Copy to this PC, which also decides what Ctrl+C does.
 /// </summary>
 internal readonly record struct MenuRows(bool Volume, bool Rotation, bool QuickSettings, bool Screenshot, bool Lock,
-    bool UpdateLine)
+    bool UpdateLine, bool Copy = false)
 {
     /// <summary>How long a phone has to answer before it is taken for an older app.</summary>
     public static readonly TimeSpan AnswerWait = TimeSpan.FromSeconds(2);
@@ -385,7 +386,7 @@ internal readonly record struct MenuRows(bool Volume, bool Rotation, bool QuickS
         if (state == null)
             return new MenuRows(false, false, false, false, false, UpdateLine: UpdateLineDue(state, viewingSince) <= now);
         return new MenuRows(state.Can.Contains("volume"), state.Can.Contains("rotate"), state.Can.Contains("quick-settings"),
-            state.Can.Contains("screenshot"), state.Can.Contains("lock"), UpdateLine: false);
+            state.Can.Contains("screenshot"), state.Can.Contains("lock"), UpdateLine: false, Copy: state.Can.Contains("copy"));
     }
 
     /// <summary>When the update line appears if the phone goes on saying nothing.</summary>

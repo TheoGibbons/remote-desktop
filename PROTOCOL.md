@@ -210,7 +210,10 @@ The phone types through its accessibility service's own input method, which
 Android 13 added, so on older versions only `ESC` works. A viewer that sees
 `screen-info` without `typing` should say so rather than type into nothing.
 The desktop keeps Ctrl+V for itself and sends its clipboard as `text`, since
-a paste there is expected to come from the PC.
+a paste there is expected to come from the PC. For the same reason it keeps
+Ctrl+C and Ctrl+Insert, and asks for the phone's selection with `clip-get`
+(see Clipboard), from a phone whose `phone-state` lists `copy`; an older phone
+still gets Ctrl+C as a `key`.
 
 A phone that has gone to sleep is woken by input, as touching it would wake
 it: by every message in the table except the `move`s of a `touch`, `lock`,
@@ -237,7 +240,7 @@ The phone answers `volume`, `rotate` and `get-phone-state`, to the device that s
 
 | type          | fields | notes |
 |---------------|--------|-------|
-| `phone-state` | `to`, `volume`, `volumeMax`, `muted`, `rotation`, `can` | `volume` is the media volume, an integer from 0 to `volumeMax` (15 on most phones). Android reports 0 while `muted` (boolean) is true. `rotation` is `portrait` or `landscape` while a viewer is holding the screen that way with `rotate`, and `auto` otherwise; it is what is being held, not which way the screen happens to be. `can` lists what the phone is able to do right now, as an array of names: `volume` (absent on a device whose volume is fixed), and `rotate`, `quick-settings`, `lock` and `screenshot` (absent while the accessibility service is off; the last two need Android 9). `rotate` is also absent while the phone's screen is off or it is locked, and back once it is unlocked. The first apps to send `phone-state` could not rotate: they leave `rotate` out and always say `auto`. |
+| `phone-state` | `to`, `volume`, `volumeMax`, `muted`, `rotation`, `can` | `volume` is the media volume, an integer from 0 to `volumeMax` (15 on most phones). Android reports 0 while `muted` (boolean) is true. `rotation` is `portrait` or `landscape` while a viewer is holding the screen that way with `rotate`, and `auto` otherwise; it is what is being held, not which way the screen happens to be. `can` lists what the phone is able to do right now, as an array of names: `volume` (absent on a device whose volume is fixed), and `rotate`, `quick-settings`, `lock`, `screenshot` and `copy` (absent while the accessibility service is off; `lock` and `screenshot` need Android 9). `copy` means the phone answers `clip-get` (see Clipboard). `rotate` is also absent while the phone's screen is off or it is locked, and back once it is unlocked. The first apps to send `phone-state` could not rotate: they leave `rotate` out and always say `auto`. |
 
 A viewer offers only what `can` lists, and ignores names it doesn't know. Apps
 before these messages never send `phone-state`, so a viewer that asks and
@@ -457,7 +460,7 @@ not offered.
 
 A PC acts on `fs-offer` only from an approved device, and older apps ignore it.
 
-**Clipboard** (only a Windows host serves these; a phone or another PC sends them)
+**Clipboard** (a Windows host serves all four, and a phone serves `clip-get`; a phone or another PC sends them)
 
 | type              | fields | notes |
 |-------------------|--------|-------|
@@ -481,6 +484,27 @@ Edit > Copy and Edit > Paste commands (`WM_SYSCOMMAND` `0xFFF0` / `0xFFF1`),
 so no key reaches the program at all. PuTTY copies on select, so nothing is
 pressed and the result is never `fresh`. Paste is Shift+Insert in terminals and
 Ctrl+V elsewhere. Any other modifier already down is released first.
+
+**A phone as host.** A phone answers `clip-get` only from an approved device
+that is viewing it (its `start-view` was accepted and not stopped), and says
+so in `can` (`copy`, see `phone-state`). Every refusal is an answer with
+`error`: control switched off or, for another phone, *Allow other phones* off;
+not viewing; the accessibility service off; the phone locked or its screen off;
+another copy still under way. Only an unapproved device hears nothing. To
+copy, the phone presses Copy in the text field its keyboard is typing into
+(Android 13 and later), as Ctrl+C typed there would; it reads nothing on the
+screen, that field included. A selection anywhere else is copied with the
+phone's own Copy, tapped first. Android lets only the app in front read the
+clipboard, so the phone then brings an invisible screen of its own to the
+front for the moment it takes; Android 12 and later say on the phone that the
+app pasted from the clipboard. The reply is what is on the clipboard, with
+`html` when the app that copied offered it. `fresh` is true when the copy
+pressed for the request changed the clipboard, or when it changed in the last
+minute, which is the phone's own Copy tapped just before; anything older is
+`fresh: false`, and a private copy (`sensitive`) is then refused as on
+Windows. With `press: false` nothing is pressed, and the clipboard is sent as
+it is and is always `fresh`. A phone never sends `files`. It answers within
+about five seconds, with an `error` if the clipboard could not be read by then.
 
 `text` plus `html` is at most **200,000** UTF-16 code units. Android passes a
 clip to the system through Binder, whose buffer is about 1 MB, and a large

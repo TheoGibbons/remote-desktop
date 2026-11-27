@@ -27,8 +27,9 @@ object PcClipboard {
     private const val PREVIEW_CHARS = 300
     private const val PREVIEW_LINES = 8
 
-    /** This phone's clipboard as Paste sends it. */
-    data class PhoneClip(val text: String, val html: String?, val sensitive: Boolean)
+    /** This phone's clipboard as Paste sends it. [copiedAtMs] is when it was
+     *  put there, on the wall clock (System.currentTimeMillis), 0 if unknown. */
+    data class PhoneClip(val text: String, val html: String?, val sensitive: Boolean, val copiedAtMs: Long = 0)
 
     /** What fits under [MAX_CHARS]: the HTML version goes first, and text too
      *  long on its own doesn't fit at all (null). */
@@ -95,6 +96,6 @@ object PcClipboard {
             ?: item.uri?.takeIf { it.scheme == "http" || it.scheme == "https" }?.toString()
             ?: return null
         val sensitive = clip.description.extras?.getBoolean(EXTRA_IS_SENSITIVE) == true
-        return PhoneClip(text, html, sensitive)
+        return PhoneClip(text, html, sensitive, clip.description.timestamp)
     }
 }

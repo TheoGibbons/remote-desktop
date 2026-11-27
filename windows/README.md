@@ -229,7 +229,8 @@ on their way fail with a **Retry**.
     that mutes; **Rotation** (Auto, Portrait or Landscape), which holds the
     phone's screen that way while the window is open, whichever way the
     phone is lying; Quick settings; Screenshot, which pops up on this PC like
-    any capture the phone takes; and Lock screen. The menu stays open after
+    any capture the phone takes; **Copy to this PC** (below); and Lock
+    screen. The menu stays open after
     a click, so Back can be pressed several times. A phone whose app is older
     shows only the first four, and a line saying to update it. A sleeping
     phone wakes when the window opens. A line over the picture says when the
@@ -245,7 +246,16 @@ on their way fail with a **Retry**.
     window is focused, your keyboard types
     into the phone's focused text box (Android 13 and later), with Enter,
     Backspace, arrows and Ctrl shortcuts; Esc is Back, and Ctrl+V pastes this
-    PC's clipboard. **F8**, or **Stats** in the menu, shows in a corner of the
+    PC's clipboard. **Copy to this PC**, or Ctrl+C, does the reverse: this
+    PC gets what the phone copied, with its formatting when the phone's app
+    copied some (Chrome and Gmail do). Text selected in a text box is
+    copied for you (Android 13 and later). Anywhere else, tap the phone's
+    own Copy first, in its selection menu or the app's Copy button, then
+    copy here; if the phone's clipboard is more than a minute old you're
+    asked first. The phone briefly brings an invisible screen to the front
+    to read its clipboard, so Android 12 and later say on the phone that
+    Remote Desktop pasted from the clipboard. A phone whose app is older has
+    no Copy row, and Ctrl+C copies only on the phone. **F8**, or **Stats** in the menu, shows in a corner of the
     picture how the phone is capturing its screen, how many pictures a second
     arrive and how big they are, how old a picture is when it is drawn (give
     or take the figure after the ±), the round trip to the phone, and how many

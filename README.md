@@ -239,6 +239,10 @@ publish alongside the relay.
 - ✅ Type into the phone with the PC's keyboard (Android 13 and later): Enter,
   Backspace, arrows and Ctrl shortcuts included, Esc for Back, and Ctrl+V pastes
   the PC's clipboard
+- ✅ **Copy to this PC** in the ⋯ menu, or Ctrl+C, puts what the phone copied
+  on the PC's clipboard, with formatting when the phone's app copied some
+  (Chrome and Gmail do). A selection in a text box is copied for you; anywhere
+  else, tap the phone's own Copy first
 - ✅ **Copy to PC** in the phone's text-selection menu puts the selection on the
   PC's clipboard after you confirm, whether you are holding the phone or driving
   it from the PC; text and links shared to Remote Desktop go there too

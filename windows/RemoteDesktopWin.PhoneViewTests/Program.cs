@@ -622,10 +622,11 @@ internal static class Program
         // (phoneStateIsBuiltAsTheWindowsAppReadsIt), so the two apps can't come to
         // disagree about a field's name or type. Change both together.
         var shared = PhoneState.Parse(Json("""
-            {"type":"phone-state","to":"pc","volume":7,"volumeMax":15,"muted":false,"rotation":"auto","can":["volume","rotate","quick-settings","lock","screenshot"]}
+            {"type":"phone-state","to":"pc","volume":7,"volumeMax":15,"muted":false,"rotation":"auto","can":["volume","rotate","quick-settings","lock","screenshot","copy"]}
             """));
         Check(shared is { Volume: 7, VolumeMax: 15, Muted: false, Rotation: PhoneState.Auto, IsSilent: false }, "What the phone builds is read");
-        Check(shared!.Can.SetEquals(["volume", "rotate", "quick-settings", "lock", "screenshot"]), "With the rows it offers");
+        Check(shared!.Can.SetEquals(["volume", "rotate", "quick-settings", "lock", "screenshot", "copy"]), "With the rows it offers");
+        Check(MenuRows.For(shared, null, At(0)) is { Copy: true, Lock: true }, "Copy to this PC among them");
 
         var muted = PhoneState.Parse(Json("""{"volume":0,"volumeMax":15,"muted":true,"can":["volume"]}"""));
         Check(muted is { Muted: true, IsSilent: true }, "A muted phone is silent");
@@ -703,6 +704,12 @@ internal static class Program
         // A newer phone lists something this app has no row for.
         var newer = PhoneState.Parse(Json("""{"volume":3,"volumeMax":15,"can":["rotate","torch","lock"]}"""));
         Check(MenuRows.For(newer, At(1000), At(5000)) == none with { Rotation = true, Lock = true }, "Names this app doesn't know add nothing");
+
+        // Copy to this PC, and Ctrl+C with it, only for a phone that answers clip-get.
+        var copies = PhoneState.Parse(Json("""{"volume":7,"volumeMax":15,"can":["volume","copy"]}"""));
+        Check(MenuRows.For(copies, At(1000), At(1100)) == none with { Volume = true, Copy = true }, "A phone that can copy gets the Copy row");
+        Check(MenuRows.For(full, At(1000), At(1100)) is { Copy: false }, "A phone app from before it doesn't");
+        Check(MenuRows.For(null, At(1000), At(1000) + MenuRows.AnswerWait) is { Copy: false }, "Nor one that says nothing");
         Console.WriteLine("PASS: the menu shows the rows the phone lists, or says to update a phone that lists nothing");
     }
 

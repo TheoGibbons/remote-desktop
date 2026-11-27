@@ -106,6 +106,20 @@
             </intent-filter>
         </activity>
 
+        <!-- Comes to the front for the moment it takes to read the clipboard
+             for a viewer's Copy, since Android lets only the app in front read
+             it (see PhoneClipCopy). Invisible, and its own affinity keeps the
+             app's task in the background. -->
+        <activity
+            android:name=".ClipReadActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:windowSoftInputMode="stateUnchanged"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false" />
+
         <!-- Stands under Android's screen-sharing prompt when a viewer asks for
              smooth sharing. Not noHistory: such an activity is never given the
              prompt's answer. It handles a turned phone itself, so the prompt

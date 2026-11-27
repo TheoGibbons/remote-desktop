@@ -188,6 +188,10 @@
                             Content="Quick settings" Visibility="Collapsed" Click="MenuAction_Click"/>
                     <Button x:Name="ScreenshotButton" Style="{StaticResource RdMenuButton}" Tag="screenshot"
                             Content="Screenshot" Visibility="Collapsed" Click="MenuAction_Click"/>
+                    <!-- Greyed while the phone is answering, so it isn't asked twice. -->
+                    <Button x:Name="CopyButton" Style="{StaticResource RdMenuButton}"
+                            Content="Copy to this PC" Visibility="Collapsed" Click="CopyButton_Click"
+                            ToolTip="Puts what the phone copied on this PC's clipboard, copying a text box's selection first. Elsewhere, tap the phone's own Copy before this. Ctrl+C does the same."/>
                     <Button x:Name="LockButton" Style="{StaticResource RdMenuButton}" Tag="lock"
                             Content="Lock screen" Visibility="Collapsed" Click="MenuAction_Click"/>
                     <Separator Style="{StaticResource RdMenuSeparator}"/>

@@ -944,46 +944,7 @@ public partial class PcViewWindow : Window, IDeviceWindow
     /// <summary>The remote PC's answer to Copy: put it on this PC's clipboard.</summary>
     public void OnClipResult(JsonNode msg)
     {
-        if (EndClipRequest(msg)) _ = ApplyCopyAsync(msg);
-    }
-
-    private async Task ApplyCopyAsync(JsonNode msg)
-    {
-        // This arrives inside the socket thread's blocking Dispatcher.Invoke;
-        // the question below must not hold up the relay while it waits.
-        await Task.Yield();
-        try
-        {
-            if (ClipboardService.Str(msg["error"]) is { } error)
-            {
-                Toast.Show(error);
-                return;
-            }
-            if (msg["files"] is JsonArray { Count: > 0 } files)
-            {
-                Toast.Show($"{_name} copied {files.Count} file{(files.Count == 1 ? "" : "s")}. Use Files to transfer them.");
-                return;
-            }
-            var (text, html, fitError) = ClipboardFormat.Fit(ClipboardService.Str(msg["text"]), ClipboardService.Str(msg["html"]));
-            if (fitError != null || string.IsNullOrEmpty(text))
-            {
-                Toast.Show(fitError ?? $"{_name} sent nothing to copy.");
-                return;
-            }
-            bool sensitive = ClipboardService.Flag(msg["sensitive"], false);
-            // Nothing new was copied there, so ask before replacing what's here.
-            if (!ClipboardService.Flag(msg["fresh"], true) && MessageBox.Show(this,
-                    $"Nothing new was copied on {_name}. Use what's already on its clipboard?\n\n" +
-                    (sensitive ? "(Hidden: it's marked private.)" : text.Length <= 300 ? text : text[..300] + "…"),
-                    "Copy to this PC", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-                return;
-            await ClipboardService.WriteAsync(text, html, sensitive);
-            Toast.Show($"Copied from {_name}");
-        }
-        catch (Exception ex)
-        {
-            Toast.Show("Couldn't copy to this PC's clipboard: " + ex.Message);
-        }
+        if (EndClipRequest(msg)) _ = ViewerClipboard.ApplyCopyAsync(this, _name, msg);
     }
 
     /// <summary>The remote PC's answer to Paste.</summary>
