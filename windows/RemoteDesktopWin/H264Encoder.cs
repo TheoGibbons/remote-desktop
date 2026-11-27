@@ -74,6 +74,14 @@ public sealed class H264Encoder : IDisposable
     private const int NeedMoreInput = unchecked((int)0xC00D6D72);
     // MF_E_NOTACCEPTING
     private const int NotAccepting = unchecked((int)0xC00D36B5);
+    // MF_EVENT_FLAG_NO_WAIT, and what GetEvent answers with it when nothing is queued:
+    // MF_E_NO_EVENTS_AVAILABLE.
+    private const int MfEventFlagNoWait = 0x1;
+    private const int NoEventsAvailable = unchecked((int)0xC00D3E80);
+
+    /// <summary>The longest one <see cref="Encode"/> call waits on a hardware
+    /// encoder, for it to ask for the frame and then to hand back its output.</summary>
+    private const int AsyncWaitMs = 150;
 
     private readonly IMFTransform _mft;
     private readonly IMFMediaEventGenerator? _events; // async MFTs only
@@ -84,6 +92,10 @@ public sealed class H264Encoder : IDisposable
     // filled again for every access unit.
     private IMFSample? _outSample;
     private IMFMediaBuffer? _outBuffer;
+    // Async MFTs only: input it has asked for and not yet been given, and
+    // output it has handed back that has not yet been returned.
+    private int _inputRequests;
+    private readonly Queue<byte[]> _readyOutput = new();
     private bool _disposed;
 
     public int Width { get; }
@@ -337,37 +349,58 @@ public sealed class H264Encoder : IDisposable
     /// Async MFTs are event driven: the transform asks for input, then
     /// announces output. Both events are consumed here so the call still looks
     /// synchronous to the streamer.
+    ///
+    /// Each "need input" is a request the transform makes once and then waits
+    /// on, so every one is counted until a frame answers it, never dropped. An
+    /// encoder that asks for the next frame before it has handed back this
+    /// one's output was once told no by dropping its request: it then waited
+    /// for input, this waited for its output, and the screen stopped after
+    /// the first picture while everything else on the PC went on working.
+    ///
+    /// Nothing here waits longer than <see cref="AsyncWaitMs"/>. Output that
+    /// is not ready by then is returned by a later call, in order.
     /// </summary>
     private byte[]? EncodeAsync(IMFSample sample)
     {
+        long deadline = Environment.TickCount64 + AsyncWaitMs;
         bool delivered = false;
-        for (int i = 0; i < 16; i++)
+        while (true)
         {
-            IMFMediaEvent evt;
-            try { evt = _events!.GetEvent(0); }
-            catch { return null; }
+            if (!delivered && _inputRequests > 0)
+            {
+                _mft.ProcessInput(0, sample, 0);
+                _inputRequests--;
+                delivered = true;
+            }
+            // Oldest first: a viewer's decoder needs every access unit in order.
+            if (delivered && _readyOutput.Count > 0) return _readyOutput.Dequeue();
 
+            var evt = NextEvent();
+            if (evt == null)
+            {
+                if (Environment.TickCount64 >= deadline) break;
+                Thread.Sleep(1);
+                continue;
+            }
             using (evt)
             {
-                switch (evt.EventType)
-                {
-                    case MediaEventTypes.TransformNeedInput:
-                        if (delivered) continue; // it wants the next frame, not this one
-                        _mft.ProcessInput(0, sample, 0);
-                        delivered = true;
-                        continue;
-
-                    case MediaEventTypes.TransformHaveOutput:
-                        var au = DrainOne();
-                        if (au != null) return au;
-                        continue;
-
-                    default:
-                        continue;
-                }
+                if (evt.EventType == MediaEventTypes.TransformNeedInput)
+                    _inputRequests++;
+                else if (evt.EventType == MediaEventTypes.TransformHaveOutput && DrainOne() is { } au)
+                    _readyOutput.Enqueue(au);
             }
         }
-        return null;
+        // Out of time. A frame it never asked for is not encoded; one it took
+        // comes out of a later call.
+        return _readyOutput.Count > 0 ? _readyOutput.Dequeue() : null;
+    }
+
+    /// <summary>The transform's next event, or null when it has none yet.
+    /// Never waits: a transform that has gone quiet must not hold up the streamer.</summary>
+    private IMFMediaEvent? NextEvent()
+    {
+        try { return _events!.GetEvent(MfEventFlagNoWait); }
+        catch (SharpGenException e) when (e.ResultCode.Code == NoEventsAvailable) { return null; }
     }
 
     private byte[]? DrainOne()
