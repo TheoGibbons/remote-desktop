@@ -159,6 +159,10 @@ public partial class MainWindow : Window
         {
             if (!streaming) RestorePrivacyForEndedViewers();
         };
+        // Once per run at most: the stream carries on as JPEG, and this says
+        // why the graphics card's encoder was given up, for whoever is here.
+        _streamer.H264Failed += why =>
+            Toast.Show($"Screen sharing switched to JPEG until Remote Desktop restarts: {why}", 15_000);
 
         // Checked on the capture thread: use the persisted consent flag, not the CheckBox.
         _streamer.Gate = () => _settings.AllowRemoteControl && StreamStaysWithViewers;
@@ -1112,7 +1116,7 @@ public partial class MainWindow : Window
             case "diagnostic-ping":
                 if (_auth.IsTrusted(from) && from != null)
                 {
-                    _ws.SendJson(new JsonObject
+                    var pong = new JsonObject
                     {
                         ["type"] = "diagnostic-pong",
                         ["nonce"] = msg["nonce"]?.GetValue<long>() ?? -1,
@@ -1125,7 +1129,12 @@ public partial class MainWindow : Window
                         ["maxWidth"] = _streamer.ActiveWidth,
                         ["codec"] = _streamer.ActiveCodec,
                         ["to"] = from,
-                    });
+                    };
+                    // Which graphics-card encoder this PC streams with, or
+                    // why it stopped using one. Left out until there is
+                    // anything to say; viewers before it ignore it.
+                    if (ScreenStreamer.H264Note is { } note) pong["h264Note"] = note;
+                    _ws.SendJson(pong);
                 }
                 break;
 

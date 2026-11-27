@@ -78,6 +78,9 @@ public sealed class H264Encoder : IDisposable
     // MF_E_NO_EVENTS_AVAILABLE.
     private const int MfEventFlagNoWait = 0x1;
     private const int NoEventsAvailable = unchecked((int)0xC00D3E80);
+    // MF_E_TRANSFORM_STREAM_CHANGE: the encoder has changed the format of its
+    // output and holds the access unit until it is told the new one is fine.
+    private const int StreamChange = unchecked((int)0xC00D6D61);
 
     /// <summary>The longest one <see cref="Encode"/> call waits on a hardware
     /// encoder, for it to ask for the frame and then to hand back its output.</summary>
@@ -98,10 +101,40 @@ public sealed class H264Encoder : IDisposable
     private readonly Queue<byte[]> _readyOutput = new();
     private bool _disposed;
 
+    // What the encoder has done so far, for when it stops: see Activity.
+    private int _framesAskedFor, _outputsAnnounced, _unitsOut, _formatChanges;
+    private int _lastOutputError;
+    private string? _otherEvent;
+
     public int Width { get; }
     public int Height { get; }
     public bool IsHardware { get; }
     public string Name { get; }
+
+    /// <summary>
+    /// The encoder being started right now, by name, on whichever thread is
+    /// starting it. When starting one takes too long, this says which.
+    /// </summary>
+    public static string? Starting => Volatile.Read(ref s_starting);
+    private static string? s_starting;
+
+    /// <summary>
+    /// What this encoder has done so far, in a few words: for saying why it
+    /// was given up. Read from any thread; the counts may be a frame out.
+    /// </summary>
+    public string Activity
+    {
+        get
+        {
+            var said = _events == null
+                ? $"gave {_unitsOut} frames"
+                : $"asked for {_framesAskedFor} frames, announced {_outputsAnnounced}, gave {_unitsOut}";
+            if (_formatChanges > 0) said += $", changed format {_formatChanges}x";
+            if (_lastOutputError != 0) said += $", last error 0x{_lastOutputError:X8}";
+            if (_otherEvent != null) said += $", also sent {_otherEvent}";
+            return said;
+        }
+    }
 
     private H264Encoder(IMFTransform mft, IMFMediaEventGenerator? events, bool hardware,
         string name, int width, int height, int fps)
@@ -196,6 +229,7 @@ public sealed class H264Encoder : IDisposable
                 try
                 {
                     string name = SafeName(activate);
+                    Volatile.Write(ref s_starting, name);
                     mft = activate.ActivateObject<IMFTransform>();
                     // Throws if the transform will not take these formats.
                     var events = Configure(mft, hardware, width, height, bitrate, fps);
@@ -384,10 +418,22 @@ public sealed class H264Encoder : IDisposable
             }
             using (evt)
             {
-                if (evt.EventType == MediaEventTypes.TransformNeedInput)
+                var type = evt.EventType;
+                if (type == MediaEventTypes.TransformNeedInput)
+                {
                     _inputRequests++;
-                else if (evt.EventType == MediaEventTypes.TransformHaveOutput && DrainOne() is { } au)
-                    _readyOutput.Enqueue(au);
+                    _framesAskedFor++;
+                }
+                else if (type == MediaEventTypes.TransformHaveOutput)
+                {
+                    _outputsAnnounced++;
+                    if (DrainOne() is { } au) _readyOutput.Enqueue(au);
+                }
+                else
+                {
+                    // Anything else (an error, a drain finishing) is only noted.
+                    _otherEvent = $"{type} (0x{evt.Status.Code:X8})";
+                }
             }
         }
         // Out of time. A frame it never asked for is not encoded; one it took
@@ -406,28 +452,50 @@ public sealed class H264Encoder : IDisposable
     private byte[]? DrainOne()
     {
         var buffers = new OutputDataBuffer[1];
-        buffers[0].StreamID = 0;
         // A hardware encoder hands out its own sample. The software one
         // writes into ours.
         bool ours = _events == null;
-        if (ours)
+        var result = default(SharpGen.Runtime.Result);
+        // Twice at most: once more after accepting a new output format.
+        for (int attempt = 0; attempt < 2; attempt++)
         {
-            if (_outSample == null)
+            buffers[0] = default;
+            buffers[0].StreamID = 0;
+            if (ours)
             {
-                int size = Math.Max(_mft.GetOutputStreamInfo(0).Size, Width * Height * 3 / 2);
-                _outBuffer = MediaFactory.MFCreateMemoryBuffer(size);
-                _outSample = MediaFactory.MFCreateSample();
-                _outSample.AddBuffer(_outBuffer);
+                if (_outSample == null)
+                {
+                    int size = Math.Max(_mft.GetOutputStreamInfo(0).Size, Width * Height * 3 / 2);
+                    _outBuffer = MediaFactory.MFCreateMemoryBuffer(size);
+                    _outSample = MediaFactory.MFCreateSample();
+                    _outSample.AddBuffer(_outBuffer);
+                }
+                _outBuffer!.CurrentLength = 0;
+                buffers[0].Sample = _outSample;
             }
-            _outBuffer!.CurrentLength = 0;
-            buffers[0].Sample = _outSample;
+            result = _mft.ProcessOutput(ProcessOutputFlags.None, 1, ref buffers[0], out _);
+            try { buffers[0].Events?.Dispose(); } catch { }
+            if (result.Code != StreamChange || attempt > 0) break;
+
+            // Media Foundation's rule for this answer: take the format it
+            // now offers, then ask again for the same output. Treating it as
+            // "nothing yet" left the encoder holding its first access unit.
+            _formatChanges++;
+            using (var offered = _mft.GetOutputAvailableType(0, 0))
+                _mft.SetOutputType(0, offered, 0);
+            if (ours)
+            {
+                // The new format may need a bigger buffer.
+                try { _outSample?.Dispose(); } catch { }
+                try { _outBuffer?.Dispose(); } catch { }
+                _outSample = null;
+                _outBuffer = null;
+            }
         }
-        var result = _mft.ProcessOutput(ProcessOutputFlags.None, 1, ref buffers[0], out _);
-        try { buffers[0].Events?.Dispose(); } catch { }
         if (result.Failure)
         {
             // Needing more input is the normal pipelining case, not an error.
-            if (result.Code == NeedMoreInput) return null;
+            if (result.Code != NeedMoreInput) _lastOutputError = result.Code;
             return null;
         }
 
@@ -441,6 +509,7 @@ public sealed class H264Encoder : IDisposable
             {
                 var bytes = new byte[length];
                 Marshal.Copy(data, bytes, 0, length);
+                _unitsOut++;
                 return bytes;
             }
             finally { contiguous.Unlock(); }

@@ -202,6 +202,8 @@ class ViewerActivity : AppCompatActivity() {
     @Volatile private var latchedFrameH = 0
     @Volatile private var latchedRegion: Rect? = null
     private var hostCodec: String? = null
+    // The PC's own word on its H.264 encoder: which one, or why it gave up.
+    private var hostH264Note: String? = null
 
     private val binaryListener: (ByteArray) -> Unit = { data ->
         // No type 1: only phones send full-frame JPEGs, and this views a
@@ -605,6 +607,7 @@ class ViewerActivity : AppCompatActivity() {
             hostJpegQuality = msg.optInt("jpegQuality", -1).takeIf { it > 0 }
             hostMaxWidth = msg.optInt("maxWidth", -1).takeIf { it >= 0 }
             hostCodec = msg.optString("codec").takeIf { it.isNotEmpty() }
+            hostH264Note = msg.optString("h264Note").takeIf { it.isNotEmpty() && !msg.isNull("h264Note") }
             pendingPingNonce = -1L
             pingTimedOut = false
         }
@@ -1119,7 +1122,7 @@ class ViewerActivity : AppCompatActivity() {
             // JPEG quality means nothing on the codec path, so do not print it.
             hostCodec == "h264" -> "${hostTargetFps} FPS • H.264 • $size"
             else -> "${hostTargetFps} FPS • JPEG ${hostJpegQuality ?: "?"} • $size"
-        }
+        } + (hostH264Note?.let { "\nH.264       $it" } ?: "")
 
         return String.format(
             Locale.US,

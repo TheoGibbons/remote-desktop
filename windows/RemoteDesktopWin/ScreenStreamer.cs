@@ -85,14 +85,32 @@ public class ScreenStreamer
     // first frame goes out as JPEG, and the viewer's view-region turned the
     // stream over to an encoder that never gave anything back. So making the
     // encoder, and each frame, gets a time limit, and the stream goes back to
-    // JPEG when one is missed or no frame has come out for a while. H.264 is
-    // tried again only after H264RetryMs, by any stream on this PC.
+    // JPEG when one is missed or no frame has come out for a while. That is
+    // for as long as the app runs: on a PC where it happens it happens again,
+    // and every retry froze the viewer's picture for another two seconds.
     private const int EncoderCreateTimeoutMs = 3_000;
     private const int EncodeTimeoutMs = 2_000;
     private const int H264StallMs = 2_000;
     private const int H264StallFrames = 4;
-    private const int H264RetryMs = 10 * 60_000;
-    private static long s_h264RetryAt;
+    // Why this PC stopped using H.264, or null while it may still.
+    private static string? s_h264Off;
+    // The encoder a stream on this PC is using right now, by name.
+    private static string? s_h264Encoder;
+
+    /// <summary>
+    /// What this PC's H.264 is doing, for a viewer's diagnostics: "on" and the
+    /// encoder's name, "off" and why, or null before any stream has tried it.
+    /// </summary>
+    public static string? H264Note =>
+        Volatile.Read(ref s_h264Off) is { } off ? "off: " + off
+        : Volatile.Read(ref s_h264Encoder) is { } name ? "on: " + name
+        : null;
+
+    /// <summary>
+    /// H.264 has broken on this PC and is off until the app restarts, with
+    /// why. Not raised for a PC that simply has no encoder. Any thread.
+    /// </summary>
+    public event Action<string>? H264Failed;
 
     private readonly WsClient _ws;
     private CancellationTokenSource? _cts;
@@ -219,6 +237,8 @@ public class ScreenStreamer
         // when the first of them went in.
         int h264EmptyFrames = 0;
         long h264WaitingSince = 0;
+        // A frame size no encoder would start at, so it is not asked again every tick.
+        (int W, int H) noEncoderAt = (0, 0);
         bool lastRegionMode = false;
         var dirty = new List<Rectangle>();
         var damage = new DamageMap();
@@ -353,7 +373,7 @@ public class ScreenStreamer
                 // rides on region mode only. A whole 7680-wide desktop is past
                 // what most hardware encoders will take anyway.
                 bool wantH264 = regionMode && Regions.AllSupportH264
-                    && Environment.TickCount64 >= Volatile.Read(ref s_h264RetryAt);
+                    && Volatile.Read(ref s_h264Off) == null;
 
                 double userScale = MaxWidth > 0 && reqOutW > MaxWidth ? (double)MaxWidth / reqOutW : 1.0;
                 double scale = Math.Min(userScale, Ladder[level].Scale);
@@ -523,18 +543,32 @@ public class ScreenStreamer
                 }
 
                 // ---- codec ------------------------------------------------------
-                if (wantH264 && (encoder == null || encoderW != outW || encoderH != outH))
+                if (wantH264 && encoder != null && (encoderW != outW || encoderH != outH))
                 {
-                    encoder?.Dispose();
+                    // Made for another size: an encoder's size is fixed.
+                    encoder.Dispose();
+                    encoder = null;
+                }
+                if (wantH264 && encoder == null && (outW, outH) != noEncoderAt)
+                {
                     // Roughly a tenth of a bit per pixel per frame, which is
                     // generous for desktop content and still a fraction of what
                     // the same region costs as fresh JPEG every frame.
                     int bitrate = (int)Math.Clamp((long)outW * outH * ActiveFps / 10, 800_000, 12_000_000);
-                    encoder = await CreateEncoderAsync(outW, outH, bitrate, ActiveFps, ct);
+                    var started = Environment.TickCount64;
+                    (encoder, bool inTime) = await CreateEncoderAsync(outW, outH, bitrate, ActiveFps, ct);
                     ct.ThrowIfCancellationRequested();
                     // None, or none in time: JPEG, without asking the driver
                     // again on every tick.
-                    if (encoder == null) GiveUpH264(null);
+                    if (encoder != null)
+                        Volatile.Write(ref s_h264Encoder, encoder.Name);
+                    else if (inTime)
+                        // This PC has none, or none that takes this size. Not
+                        // broken: tiles at this size, and another size may work.
+                        noEncoderAt = (outW, outH);
+                    else
+                        GiveUpH264(null, $"{H264Encoder.Starting ?? "the graphics card's encoder"} took over " +
+                            $"{(Environment.TickCount64 - started) / 1000.0:0.#} s to start");
                     encoderW = outW;
                     encoderH = outH;
                     h264EmptyFrames = 0;
@@ -596,17 +630,17 @@ public class ScreenStreamer
                         encoder = null;
                         ct.ThrowIfCancellationRequested();
                         // The driver has not come back: this stream goes on as JPEG.
-                        GiveUpH264(null);
+                        GiveUpH264(null, $"{busy.Name} took over {EncodeTimeoutMs / 1000} s on one frame ({busy.Activity})");
                         forceKeyframe = true;
                         await PaceAsync(frameStart, ct);
                         continue;
                     }
                     try { au = await encode; }
-                    catch
+                    catch (Exception ex)
                     {
                         // Lost the encoder (device reset, driver update): JPEG
                         // from the next tick, which starts with a full frame.
-                        GiveUpH264(encoder);
+                        GiveUpH264(encoder, $"{busy.Name} failed: {ex.Message} ({busy.Activity})");
                         encoder = null;
                         forceKeyframe = true;
                         await PaceAsync(frameStart, ct);
@@ -621,7 +655,8 @@ public class ScreenStreamer
                         if (h264EmptyFrames++ == 0) h264WaitingSince = now;
                         else if (h264EmptyFrames >= H264StallFrames && now - h264WaitingSince > H264StallMs)
                         {
-                            GiveUpH264(encoder);
+                            GiveUpH264(encoder, $"{busy.Name} gave nothing back for {h264EmptyFrames} frames " +
+                                $"over {(now - h264WaitingSince) / 1000.0:0.#} s ({busy.Activity})");
                             encoder = null;
                             forceKeyframe = true;
                         }
@@ -790,29 +825,34 @@ public class ScreenStreamer
     /// <summary>
     /// A hardware encoder for this size, or null when there is none or the
     /// driver takes longer than <see cref="EncoderCreateTimeoutMs"/> to make
-    /// one. One that turns up late is let go unused.
+    /// one; <c>inTime</c> tells the two apart. One that turns up late is let
+    /// go unused.
     /// </summary>
-    private static async Task<H264Encoder?> CreateEncoderAsync(int width, int height, int bitrate, int fps, CancellationToken ct)
+    private static async Task<(H264Encoder? Encoder, bool InTime)> CreateEncoderAsync(
+        int width, int height, int bitrate, int fps, CancellationToken ct)
     {
         var create = Task.Run(() => H264Encoder.TryCreate(width, height, bitrate, fps));
         if (await Task.WhenAny(create, Task.Delay(EncoderCreateTimeoutMs, ct)) == create)
         {
-            try { return await create; }
-            catch { return null; }
+            try { return (await create, true); }
+            catch { return (null, true); }
         }
         _ = create.ContinueWith(t => { if (t.Status == TaskStatus.RanToCompletion) t.Result?.Dispose(); },
             TaskScheduler.Default);
-        return null;
+        return (null, false);
     }
 
     /// <summary>
-    /// No H.264 from this PC for <see cref="H264RetryMs"/>: every stream sends
-    /// JPEG until then. The encoder, if any, is disposed off this thread,
-    /// because a driver that stopped answering may not answer that either.
+    /// No H.264 from this PC until the app restarts: every stream sends JPEG.
+    /// The first reason given is kept for <see cref="H264Note"/> and raised as
+    /// <see cref="H264Failed"/>. The encoder, if any, is disposed off this
+    /// thread, because a driver that stopped answering may not answer that either.
     /// </summary>
-    private static void GiveUpH264(H264Encoder? encoder)
+    private void GiveUpH264(H264Encoder? encoder, string why)
     {
-        Volatile.Write(ref s_h264RetryAt, Environment.TickCount64 + H264RetryMs);
+        Volatile.Write(ref s_h264Encoder, null);
+        if (Interlocked.CompareExchange(ref s_h264Off, why, null) == null)
+            H264Failed?.Invoke(why);
         if (encoder != null) _ = Task.Run(encoder.Dispose);
     }
 
